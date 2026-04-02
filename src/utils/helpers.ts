@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { JsonRpcProvider } from "ethers";
 
 export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
 
@@ -15,4 +16,15 @@ export function walletNameToDirSegment(name: string): string {
     );
   }
   return safe;
+}
+
+export async function isAddressUsed(
+  address: string,
+  provider: JsonRpcProvider
+): Promise<boolean> {
+  const [nonce, balance] = await Promise.all([
+    provider.getTransactionCount(address),
+    provider.getBalance(address),
+  ]);
+  return nonce > 0 || balance > 0n;
 }

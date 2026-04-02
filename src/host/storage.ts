@@ -4,20 +4,19 @@ import { loadStore, saveStore } from "../utils/aes-storage";
 
 export type PluginId = "rg" | "tc" | "ppv1";
 
-function pluginStorePathForWallet(walletDir: string, pluginId: PluginId, chainIdString: string): string {
-  return join(walletDir, `${pluginId}-${chainIdString}-storage.json`);
+function pluginStorePathForWallet(walletDir: string, pluginId: PluginId): string {
+  return join(walletDir, `${pluginId}-storage.json`);
 }
 
 export function makeStorage(
   walletDir: string,
   pluginId: PluginId,
-  chainIdString: string,
   password: string
 ): Storage {
   if (!password) {
     throw new Error("Password cannot be empty");
   }
-  const storePath = pluginStorePathForWallet(walletDir, pluginId, chainIdString);
+  const storePath = pluginStorePathForWallet(walletDir, pluginId);
   const { store: initial, salt } = loadStore(storePath, password);
   const initialStore = JSON.parse(initial);
   const saltRef = { current: salt };

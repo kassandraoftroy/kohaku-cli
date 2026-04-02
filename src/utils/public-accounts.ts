@@ -3,8 +3,8 @@ import { loadStore, saveStore } from "./aes-storage";
 import { Mnemonic } from "derive-railgun-keys";
 import { ethers } from "ethers";
 
-function accountsStorePathForWallet(walletDir: string, chainIdString: string): string {
-  return join(walletDir, `public-accounts-${chainIdString}.json`);
+function accountsStorePathForWallet(walletDir: string): string {
+  return join(walletDir, "public-accounts.json");
 }
 
 export type PublicAccount = {
@@ -29,16 +29,18 @@ export type PublicAccountsStorage = {
 
   getAccount(key: number): PublicAccount | null;
 
+  getAccounts(): PublicAccount[];
+
   generateNextIndex(): PublicAccount;
 };
 
-export function savePublicAccounts(walletDir: string, password: string, chainIdString: string, accounts: PublicAccountsStore, saltRef: { current: Uint8Array | null }): void {
-  const storePath = accountsStorePathForWallet(walletDir, chainIdString);
+export function savePublicAccounts(walletDir: string, password: string, accounts: PublicAccountsStore, saltRef: { current: Uint8Array | null }): void {
+  const storePath = accountsStorePathForWallet(walletDir);
   saveStore(storePath, JSON.stringify(accounts), password, saltRef);
 }
 
-export function makePublicAccountsStorage(walletDir: string, mnemonic: string, password: string, chainIdString: string): PublicAccountsStorage {
-  const storePath = accountsStorePathForWallet(walletDir, chainIdString);
+export function makePublicAccountsStorage(walletDir: string, mnemonic: string, password: string): PublicAccountsStorage {
+  const storePath = accountsStorePathForWallet(walletDir);
   const { store: initial, salt } = loadStore(storePath, password);
   const store: PublicAccountsStore = initial != "{}" ? JSON.parse(initial) : {
     nextIndex: 0,
@@ -49,13 +51,16 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
       accts.forEach(acct => {
         store.accounts[acct.index] = acct;
       });
-      savePublicAccounts(walletDir, password, chainIdString, store, { current: salt });
+      savePublicAccounts(walletDir, password, store, { current: salt });
     },
     getAccount: (index: number) => {
       if (store.nextIndex <= index) {
         return null;
       }
       return store.accounts[index];
+    },
+    getAccounts: () => {
+      return Object.values(store.accounts).sort((a, b) => a.index - b.index);
     },
     generateNextIndex: () => {
       const index = store.nextIndex++;
@@ -72,7 +77,7 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
         erc721Holdings: {},
       };
       store.accounts[index] = acct;
-      savePublicAccounts(walletDir, password, chainIdString, store, { current: salt });
+      savePublicAccounts(walletDir, password, store, { current: salt });
       return acct;
     },
   };

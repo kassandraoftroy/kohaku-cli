@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Mnemonic } from "derive-railgun-keys";
+import { ethers } from "ethers";
 
 import {
   decrypt,
@@ -109,3 +110,13 @@ export function readSeedKeystore(password: string, walletDir: string): string {
 export function generateMnemonic(): string {
   return Mnemonic.generate();
 }
+
+export function peekAddressesFromMnemonic(
+  mnemonic: string,
+  indexes: number[]
+): string[] {
+  return indexes.map((index) =>
+    ethers.computeAddress(Mnemonic.to0xPrivateKeyByIndex(mnemonic, index))
+  );
+}
+

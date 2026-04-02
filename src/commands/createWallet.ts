@@ -5,23 +5,68 @@ import { password } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 
+import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
   DEFAULT_DATA_DIR,
+  isAddressUsed,
   walletNameToDirSegment,
 } from "../utils/helpers";
 import {
   generateMnemonic,
   normalizeValidatedMnemonic,
+  peekAddressesFromMnemonic,
   writeSeedKeystore,
 } from "../utils/mnemonic";
+import { writeWalletChainId } from "../utils/chain-id";
+import { makeEthersProvider } from "../utils/eth-provider";
 
 type CreateWalletOpts = {
   import?: boolean;
   nonInteractive?: boolean;
   password?: string;
   mnemonic?: string;
+  rpcUrl?: string;
+  testnet?: boolean;
   dataDir?: string;
 };
+
+async function findLastTouchedIndex(
+  mnemonic: string,
+  rpcUrl: string,
+): Promise<number> {
+  const provider = await makeEthersProvider(rpcUrl);
+  try {
+    let start = 0;
+    let lastTouched = -1;
+    const WINDOW_SIZE = 10;
+
+    for (;;) {
+      const indexes = Array.from(
+        { length: WINDOW_SIZE },
+        (_, i) => start + i
+      );
+      const addresses: string[] = peekAddressesFromMnemonic(mnemonic, indexes);
+      const touched = await Promise.all(
+        addresses.map(async (address: string) => {
+          return isAddressUsed(address, provider);
+        })
+      );
+
+      for (let i = 0; i < touched.length; i += 1) {
+        if (touched[i]) {
+          lastTouched = indexes[i]!;
+        }
+      }
+
+      if (!touched.some(Boolean)) {
+        return lastTouched;
+      }
+      start += WINDOW_SIZE;
+    }
+  } finally {
+    provider.destroy();
+  }
+}
 
 function printMnemonicBox(mnemonic: string): void {
   const line = mnemonic.trim();
@@ -74,11 +119,13 @@ async function promptPasswordEncryptWallet(): Promise<string> {
 export function registerCreateWalletCommand(program: Command): void {
   program
     .command("create-wallet <name>")
-    .description("Create an encrypted wallet (BIP-39 seed on disk)")
+    .description("Create a kohaku-cli wallet (BIP-39 seed ecrypted on disk)")
     .option("--import", "Paste an existing mnemonic instead of generating one")
     .option("--non-interactive", "Run with no interactive prompts")
-    .option("--password <password>", "Password to encrypt this wallet")
+    .option("--password <password>", "Password to encrypt this wallet (required with --non-interactive)")
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
+    .option("--rpc-url <url>", "RPC URL (required with --import)")
+    .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
     .action(async (name: string, opts: CreateWalletOpts) => {
       if (!opts.nonInteractive) {
@@ -103,6 +150,7 @@ export function registerCreateWalletCommand(program: Command): void {
       }
 
       let mnemonicPhrase: string;
+      let rpcUrl: string | undefined;
       if (opts.import) {
         const pasted = opts.nonInteractive
           ? opts.mnemonic
@@ -112,6 +160,12 @@ export function registerCreateWalletCommand(program: Command): void {
             });
         if (opts.nonInteractive && !pasted?.trim()) {
           log.error(chalk.red("✖ --mnemonic is required when using --non-interactive --import."));
+          process.exitCode = 1;
+          return;
+        }
+        rpcUrl = opts.rpcUrl;
+        if (!rpcUrl?.trim()) {
+          log.error(chalk.red("✖ --rpc-url is required when using --import."));
           process.exitCode = 1;
           return;
         }
@@ -142,8 +196,42 @@ export function registerCreateWalletCommand(program: Command): void {
         encryptPassword = await promptPasswordEncryptWallet();
       }
 
+      const chainIdString = opts.testnet ? "11155111" : "1";
+      const expectedChainId = opts.testnet ? 11155111n : 1n;
+
+      let lastTouchedIndex = -1;
+      if (opts.import && rpcUrl) {
+        const provider = await makeEthersProvider(rpcUrl);
+        try {
+          const network = await provider.getNetwork();
+          if (network.chainId !== expectedChainId) {
+            log.error(
+              chalk.red(
+                `✖ RPC chain ID ${network.chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
+              )
+            );
+            process.exitCode = 1;
+            return;
+          }
+        } finally {
+          provider.destroy();
+        }
+        lastTouchedIndex = await findLastTouchedIndex(mnemonicPhrase, rpcUrl);
+      }
+
       try {
         writeSeedKeystore(mnemonicPhrase, encryptPassword, walletDir);
+        writeWalletChainId(chainIdString, walletDir);
+        if (opts.import && lastTouchedIndex >= 0) {
+          const publicAccountsStorage = makePublicAccountsStorage(
+            walletDir,
+            mnemonicPhrase,
+            encryptPassword
+          );
+          for (let i = 0; i <= lastTouchedIndex; i += 1) {
+            publicAccountsStorage.generateNextIndex();
+          }
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         log.error(chalk.red(`✖ ${msg}`));

@@ -4,6 +4,7 @@ import type { JsonRpcProvider } from "ethers";
 
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
 import { makeStorage, type PluginId } from "./storage";
+import { readWalletChainId } from "../utils/chain-id";
 
 export type MakeHostOptions = {
   rpc: JsonRpcProvider;
@@ -35,13 +36,13 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
 
   const provider = kohakuEthersProvider(rpc);
 
-  const chainIdString = (await provider.getChainId()).toString();
+  readWalletChainId(walletDir);
 
   const keystore = pluginId === "rg" ? makeRailgunKeystore(mnemonic) : makeKeystore(mnemonic);
 
   return {
     network: makeNetwork(),
-    storage: makeStorage(walletDir, pluginId, chainIdString, password),
+    storage: makeStorage(walletDir, pluginId, password),
     keystore,
     provider,
   };

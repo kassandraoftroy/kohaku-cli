@@ -1,0 +1,41 @@
+import { PrivacyPoolsV1_0xBow, createPPv1Plugin } from "@kohaku-eth/privacy-pools";
+import { createRailgunPlugin } from "@kohaku-eth/railgun";
+import type { AssetAmount, Host } from "@kohaku-eth/plugins";
+
+export type SupportedProtocol = "railgun" | "privacy-pools";
+
+export type AnyPlugin = {
+  balance(assets: Array<unknown> | undefined): Promise<Array<AssetAmount>>;
+  prepareShield(asset: AssetAmount): Promise<unknown>;
+  sync?: () => Promise<void>;
+};
+
+export const ETH_AS_ERC20 = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+export const PRIVACY_POOLS_TOKEN_WHITELIST: Record<string, Set<string>> = {
+  "1": new Set<string>(),
+  "11155111": new Set<string>(),
+};
+
+export async function createProtocolPlugin(
+  protocol: SupportedProtocol,
+  host: Host,
+  chainId: bigint
+): Promise<AnyPlugin> {
+  if (protocol === "railgun") {
+    return createRailgunPlugin(host, 0);
+  }
+
+  const params = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
+  if (!params) {
+    throw new Error(`No Privacy Pools deployment config for chainId ${chainId.toString()}`);
+  }
+  return createPPv1Plugin(host, {
+    accountIndex: 0,
+    entrypoint: {
+      address: BigInt(params.entrypoint.entrypointAddress),
+      deploymentBlock: params.entrypoint.deploymentBlock,
+    },
+    broadcasterUrl: "",
+  });
+}
