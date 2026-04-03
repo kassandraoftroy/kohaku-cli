@@ -17,7 +17,7 @@ import {
   peekAddressesFromMnemonic,
   writeSeedKeystore,
 } from "../utils/mnemonic";
-import { writeWalletChainId } from "../utils/chain-id";
+import { writeWalletType } from "../utils/wallet-type";
 import { makeEthersProvider } from "../utils/eth-provider";
 
 type CreateWalletOpts = {
@@ -224,7 +224,8 @@ export function registerCreateWalletCommand(program: Command): void {
 
       try {
         writeSeedKeystore(mnemonicPhrase, encryptPassword, walletDir);
-        writeWalletChainId(chainIdString, walletDir);
+        const walletType = opts.testnet ? "testnet" : "mainnet";
+        writeWalletType(walletType, walletDir);
         if (opts.import && lastTouchedIndex >= 0) {
           const publicAccountsStorage = makePublicAccountsStorage(
             walletDir,

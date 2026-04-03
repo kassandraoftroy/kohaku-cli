@@ -5,6 +5,7 @@ import { registerBalancesCommand } from "./commands/balances";
 import { registerCreateWalletCommand } from "./commands/createWallet";
 import { registerNextFreshAddressCommand } from "./commands/nextFreshAddress";
 import { registerShieldCommand } from "./commands/shield";
+import { registerUnshieldCommand } from "./commands/unshield";
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -16,6 +17,7 @@ async function main(): Promise<void> {
   registerCreateWalletCommand(program);
   registerNextFreshAddressCommand(program);
   registerShieldCommand(program);
+  registerUnshieldCommand(program);
   registerBalancesCommand(program);
 
   await program.parseAsync(process.argv);

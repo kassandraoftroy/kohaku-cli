@@ -17,6 +17,8 @@ export const PRIVACY_POOLS_TOKEN_WHITELIST: Record<string, Set<string>> = {
   "11155111": new Set<string>(),
 };
 
+export const PRIVACY_POOLS_BROADCASTER_URL = "https://fastrelay.xyz/relayer";
+
 export async function createProtocolPlugin(
   protocol: SupportedProtocol,
   host: Host,
@@ -36,6 +38,6 @@ export async function createProtocolPlugin(
       address: BigInt(params.entrypoint.entrypointAddress),
       deploymentBlock: params.entrypoint.deploymentBlock,
     },
-    broadcasterUrl: "",
+    broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
   });
 }

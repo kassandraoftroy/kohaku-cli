@@ -8,7 +8,7 @@ import { Contract, Wallet, formatUnits, getAddress, isAddress, parseUnits } from
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
-import { readWalletChainId } from "../utils/chain-id";
+import { readWalletType } from "../utils/wallet-type";
 import { makeEthersProvider } from "../utils/eth-provider";
 import { DEFAULT_DATA_DIR, walletNameToDirSegment } from "../utils/helpers";
 import { readSeedKeystore } from "../utils/mnemonic";
@@ -214,7 +214,7 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      const walletChainId = readWalletChainId(walletDir);
+      const walletChainId = readWalletType(walletDir) === "testnet" ? "11155111" : "1";
       const rpc = await makeEthersProvider(rpcUrl);
       let chainId: bigint;
       try {

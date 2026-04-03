@@ -6,7 +6,7 @@ import type { Command } from "commander";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
 import { makeHost } from "../host/makeHost";
-import { readWalletChainId } from "../utils/chain-id";
+import { readWalletType } from "../utils/wallet-type";
 import { makeEthersProvider } from "../utils/eth-provider";
 import { DEFAULT_DATA_DIR, walletNameToDirSegment } from "../utils/helpers";
 import { readSeedKeystore } from "../utils/mnemonic";
@@ -162,7 +162,7 @@ export function registerBalancesCommand(program: Command): void {
         return;
       }
 
-      const chainIdFile = readWalletChainId(walletDir);
+      const chainIdString = readWalletType(walletDir) === "testnet" ? "11155111" : "1";
       const rpc = await makeEthersProvider(rpcUrl);
       let rpcChainId: bigint;
       try {
@@ -171,10 +171,10 @@ export function registerBalancesCommand(program: Command): void {
       } finally {
         rpc.destroy();
       }
-      if (rpcChainId.toString() !== chainIdFile) {
+      if (rpcChainId.toString() !== chainIdString) {
         log.error(
           chalk.red(
-            `✖ RPC chainId ${rpcChainId.toString()} does not match wallet chainId ${chainIdFile}.`
+            `✖ RPC chainId ${rpcChainId.toString()} does not match wallet chainId ${chainIdString}.`
           )
         );
         process.exitCode = 1;
