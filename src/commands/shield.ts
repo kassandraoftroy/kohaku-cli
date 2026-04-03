@@ -19,6 +19,7 @@ import {
   createProtocolPlugin,
   type SupportedProtocol,
 } from "../utils/plugins";
+import { resolveWalletPassword } from "../utils/wallet-password";
 
 const ERC20_ABI = [
   "function decimals() view returns (uint8)",
@@ -145,7 +146,7 @@ export function registerShieldCommand(program: Command): void {
     .description("Shield public funds into a privacy protocol")
     .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
     .option("--wallet <name>", "Wallet name", "default")
-    .requiredOption("--password <password>", "Wallet password")
+    .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
     .requiredOption("--from <address-or-index>", "Public sender address or public-account index")
     .option("--from-priv", "Allow deriving the --from index directly from mnemonic if not in public accounts")
     .option("--token <address|eth>", "Token address (default: eth)")
@@ -154,7 +155,10 @@ export function registerShieldCommand(program: Command): void {
     .option("--rpc-url <url>", "RPC URL (or set RPC_URL)")
     .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
-    .option("--non-interactive", "Run with no confirmation prompts")
+    .option(
+      "--non-interactive",
+      "Run with no confirmation prompts (requires --password)"
+    )
     .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
     .action(async (opts: ShieldOpts) => {
       const protocol = opts.protocol;
@@ -179,7 +183,6 @@ export function registerShieldCommand(program: Command): void {
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = opts.wallet ?? "default";
-      const password = opts.password ?? "";
       const fromValue = opts.from ?? "";
 
       let walletDir: string;
@@ -188,6 +191,15 @@ export function registerShieldCommand(program: Command): void {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         log.error(chalk.red(`✖ ${msg}`));
+        process.exitCode = 1;
+        return;
+      }
+
+      const password = await resolveWalletPassword({
+        flagPassword: opts.password,
+        nonInteractive: opts.nonInteractive,
+      });
+      if (!password) {
         process.exitCode = 1;
         return;
       }

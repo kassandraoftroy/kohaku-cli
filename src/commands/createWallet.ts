@@ -122,7 +122,10 @@ export function registerCreateWalletCommand(program: Command): void {
     .description("Create a kohaku-cli wallet (BIP-39 seed ecrypted on disk)")
     .option("--import", "Paste an existing mnemonic instead of generating one")
     .option("--non-interactive", "Run with no interactive prompts")
-    .option("--password <password>", "Password to encrypt this wallet (required with --non-interactive)")
+    .option(
+      "--password <password>",
+      "Password to encrypt this wallet (required with --non-interactive; else prompted)"
+    )
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
     .option("--rpc-url <url>", "RPC URL (required with --import)")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
@@ -228,9 +231,7 @@ export function registerCreateWalletCommand(program: Command): void {
             mnemonicPhrase,
             encryptPassword
           );
-          for (let i = 0; i <= lastTouchedIndex; i += 1) {
-            publicAccountsStorage.generateNextIndex();
-          }
+          publicAccountsStorage.addNextAccounts(lastTouchedIndex + 1);
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

@@ -31,7 +31,7 @@ export type PublicAccountsStorage = {
 
   getAccounts(): PublicAccount[];
 
-  generateNextIndex(): PublicAccount;
+  addNextAccounts(n: number): PublicAccount[];
 };
 
 export function savePublicAccounts(walletDir: string, password: string, accounts: PublicAccountsStore, saltRef: { current: Uint8Array | null }): void {
@@ -62,23 +62,30 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
     getAccounts: () => {
       return Object.values(store.accounts).sort((a, b) => a.index - b.index);
     },
-    generateNextIndex: () => {
-      const index = store.nextIndex++;
-      const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
-      const address = ethers.computeAddress(priv);
-      const acct: PublicAccount = {
-        address,
-        index,
-        priv,
-        tags: [],
-        lastUpdated: 0,
-        ethBalance: "0",
-        erc20Balances: {},
-        erc721Holdings: {},
-      };
-      store.accounts[index] = acct;
+    addNextAccounts: (n: number) => {
+      if (n <= 0) {
+        throw new Error("addNextAccounts: n must be positive");
+      }
+      const created: PublicAccount[] = [];
+      for (let k = 0; k < n; k += 1) {
+        const index = store.nextIndex++;
+        const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
+        const address = ethers.computeAddress(priv);
+        const acct: PublicAccount = {
+          address,
+          index,
+          priv,
+          tags: [],
+          lastUpdated: 0,
+          ethBalance: "0",
+          erc20Balances: {},
+          erc721Holdings: {},
+        };
+        store.accounts[index] = acct;
+        created.push(acct);
+      }
       savePublicAccounts(walletDir, password, store, { current: salt });
-      return acct;
+      return created;
     },
   };
 }
