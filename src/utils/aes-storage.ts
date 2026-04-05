@@ -112,7 +112,7 @@ export function loadStore(
   const parsed: unknown = JSON.parse(readFileSync(storePath, "utf-8"));
   if (isEncryptedEnvelopeV1(parsed)) {
     try {
-      const store = JSON.parse(decrypt(parsed, password));
+      const store = decrypt(parsed, password);
       const salt = Buffer.from(parsed.salt, "base64");
       return { store, salt };
     } catch {

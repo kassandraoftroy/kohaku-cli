@@ -4,6 +4,20 @@ import type { JsonRpcProvider } from "ethers";
 
 export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
 
+/**
+ * RPC endpoint from `--rpc-url` or the `RPC_URL` environment variable (trimmed).
+ * Returns empty string if neither is set.
+ */
+export function resolveRpcUrl(optsRpcUrl?: string): string {
+  return optsRpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
+}
+
+/** Trimmed wallet name from CLI, or null if missing/blank (after trim). */
+export function parseRequiredWalletName(wallet: string | undefined): string | null {
+  const trimmed = wallet?.trim();
+  return trimmed ? trimmed : null;
+}
+
 export function walletNameToDirSegment(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) {

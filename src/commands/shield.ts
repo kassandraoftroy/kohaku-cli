@@ -10,7 +10,12 @@ import { Mnemonic } from "derive-railgun-keys";
 import { makeHost } from "../host/makeHost";
 import { readWalletType } from "../utils/wallet-type";
 import { makeEthersProvider } from "../utils/eth-provider";
-import { DEFAULT_DATA_DIR, walletNameToDirSegment } from "../utils/helpers";
+import {
+  DEFAULT_DATA_DIR,
+  resolveRpcUrl,
+  walletNameToDirSegment,
+} from "../utils/helpers";
+import { resolveWalletNameOrPrompt } from "../utils/wallets";
 import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
@@ -145,7 +150,10 @@ export function registerShieldCommand(program: Command): void {
     .command("shield")
     .description("Shield public funds into a privacy protocol")
     .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
-    .option("--wallet <name>", "Wallet name", "default")
+    .option(
+      "--wallet <name>",
+      "Wallet name (omit to choose interactively from the list)"
+    )
     .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
     .requiredOption("--from <address-or-index>", "Public sender address or public-account index")
     .option("--from-priv", "Allow deriving the --from index directly from mnemonic if not in public accounts")
@@ -157,7 +165,7 @@ export function registerShieldCommand(program: Command): void {
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
     .option(
       "--non-interactive",
-      "Run with no confirmation prompts (requires --password)"
+      "Agent mode: no confirmation prompts; requires --password; --wallet required if omitted"
     )
     .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
     .action(async (opts: ShieldOpts) => {
@@ -174,7 +182,7 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = opts.rpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
+      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
       if (!rpcUrl) {
         log.error(chalk.red("✖ Missing --rpc-url (or environment variable RPC_URL)."));
         process.exitCode = 1;
@@ -182,7 +190,15 @@ export function registerShieldCommand(program: Command): void {
       }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
-      const walletName = opts.wallet ?? "default";
+      const walletName = await resolveWalletNameOrPrompt({
+        dataDir,
+        wallet: opts.wallet,
+        nonInteractive: opts.nonInteractive,
+      });
+      if (!walletName) {
+        process.exitCode = 1;
+        return;
+      }
       const fromValue = opts.from ?? "";
 
       let walletDir: string;
@@ -307,11 +323,6 @@ export function registerShieldCommand(program: Command): void {
           pluginId: protocol === "railgun" ? "rg" : "ppv1",
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
-        if ("sync" in plugin && typeof plugin.sync === "function") {
-          txSpinner.start("Syncing private state...");
-          await plugin.sync();
-          txSpinner.stop("Private state synced.");
-        }
 
         const asset: AssetAmount = {
           asset: { __type: "erc20", contract: tokenMeta.tokenAddress as `0x${string}` },
@@ -321,7 +332,7 @@ export function registerShieldCommand(program: Command): void {
         const txs = toShieldTxs(op);
 
         const signer = new Wallet(senderPrivateKey, rpcForHost);
-        const feeOverrides = await computeFees(rpcUrl, opts);
+        // const feeOverrides = await computeFees(rpcUrl, opts);
         const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
         for (const [i, tx] of txs.entries()) {
@@ -334,7 +345,7 @@ export function registerShieldCommand(program: Command): void {
                 `Send approval transaction (${tokenMeta.symbol}) to ${tx.to}?`
               );
               txSpinner.start(`Sending approval ${i + 1}/${txs.length}...`);
-              const approveTx = await erc20.approve(tx.to, amount, feeOverrides);
+              const approveTx = await erc20.approve(tx.to, amount/*, feeOverrides*/);
               await approveTx.wait();
               txSpinner.stop(`Approval mined: ${approveTx.hash}`);
             }
@@ -345,11 +356,13 @@ export function registerShieldCommand(program: Command): void {
             `Send shield transaction ${i + 1}/${txs.length} for ${amountPreview} from ${senderAddress}?`
           );
           txSpinner.start(`Sending shield tx ${i + 1}/${txs.length}...`);
+
           const sent = await signer.sendTransaction({
             to: tx.to,
             data: tx.data,
             value: tx.value,
-            ...feeOverrides,
+            gasLimit: 2000000,
+            // ...feeOverrides,
           });
           await sent.wait();
           txSpinner.stop(`Shield tx mined: ${sent.hash}`);

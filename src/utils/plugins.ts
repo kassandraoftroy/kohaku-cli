@@ -1,6 +1,14 @@
-import { PrivacyPoolsV1_0xBow, createPPv1Plugin } from "@kohaku-eth/privacy-pools";
+import {
+  OxBowAspService,
+  PrivacyPoolsV1_0xBow,
+  createPPv1Plugin,
+} from "@kohaku-eth/privacy-pools";
 import { createRailgunPlugin } from "@kohaku-eth/railgun";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
+
+import ppv1SepoliaState from "./ppv1-sepolia-state.json"
+
+const OXBOW_ASP_URL = "https://dw.0xbow.io";
 
 export type SupportedProtocol = "railgun" | "privacy-pools";
 
@@ -32,12 +40,23 @@ export async function createProtocolPlugin(
   if (!params) {
     throw new Error(`No Privacy Pools deployment config for chainId ${chainId.toString()}`);
   }
-  return createPPv1Plugin(host, {
+
+  const ppv1Params = {
     accountIndex: 0,
     entrypoint: {
       address: BigInt(params.entrypoint.entrypointAddress),
       deploymentBlock: params.entrypoint.deploymentBlock,
     },
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
-  });
+    aspServiceFactory: () =>
+      new OxBowAspService({
+        network: host.network,
+        aspUrl: OXBOW_ASP_URL,
+      }),
+    ...(chainId === 11155111n
+      ? { initialState: ppv1SepoliaState as never }
+      : {}),
+  };
+
+  return createPPv1Plugin(host, ppv1Params);
 }

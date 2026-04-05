@@ -9,6 +9,7 @@ import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
   DEFAULT_DATA_DIR,
   isAddressUsed,
+  resolveRpcUrl,
   walletNameToDirSegment,
 } from "../utils/helpers";
 import {
@@ -121,13 +122,16 @@ export function registerCreateWalletCommand(program: Command): void {
     .command("create-wallet <name>")
     .description("Create a kohaku-cli wallet (BIP-39 seed ecrypted on disk)")
     .option("--import", "Paste an existing mnemonic instead of generating one")
-    .option("--non-interactive", "Run with no interactive prompts")
+    .option(
+      "--non-interactive",
+      "Agent mode: no interactive prompts (requires --password and other flags as documented)"
+    )
     .option(
       "--password <password>",
       "Password to encrypt this wallet (required with --non-interactive; else prompted)"
     )
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
-    .option("--rpc-url <url>", "RPC URL (required with --import)")
+    .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL)")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
     .action(async (name: string, opts: CreateWalletOpts) => {
@@ -166,9 +170,13 @@ export function registerCreateWalletCommand(program: Command): void {
           process.exitCode = 1;
           return;
         }
-        rpcUrl = opts.rpcUrl;
-        if (!rpcUrl?.trim()) {
-          log.error(chalk.red("✖ --rpc-url is required when using --import."));
+        rpcUrl = resolveRpcUrl(opts.rpcUrl);
+        if (!rpcUrl) {
+          log.error(
+            chalk.red(
+              "✖ Missing --rpc-url (or environment variable RPC_URL) when using --import."
+            )
+          );
           process.exitCode = 1;
           return;
         }

@@ -10,7 +10,12 @@ import { Contract, formatUnits, getAddress, isAddress, parseUnits } from "ethers
 import { makeHost } from "../host/makeHost";
 import { readWalletType } from "../utils/wallet-type";
 import { makeEthersProvider } from "../utils/eth-provider";
-import { DEFAULT_DATA_DIR, walletNameToDirSegment } from "../utils/helpers";
+import {
+  DEFAULT_DATA_DIR,
+  resolveRpcUrl,
+  walletNameToDirSegment,
+} from "../utils/helpers";
+import { resolveWalletNameOrPrompt } from "../utils/wallets";
 import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
@@ -100,7 +105,10 @@ export function registerUnshieldCommand(program: Command): void {
     .command("unshield")
     .description("Unshield private balance to a public address (via protocol relayer/broadcaster)")
     .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
-    .option("--wallet <name>", "Wallet name", "default")
+    .option(
+      "--wallet <name>",
+      "Wallet name (omit to choose interactively from the list)"
+    )
     .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
     .option("--to <address>", "Public recipient address")
     .option("--next", "Unshield to the next fresh public account (addNextAccounts(1))")
@@ -110,7 +118,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--rpc-url <url>", "RPC URL (or set RPC_URL)")
     .option(
       "--non-interactive",
-      "Run with no confirmation prompts (requires --password)"
+      "Agent mode: no confirmation prompts; requires --password; --wallet required if omitted"
     )
     .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
     .action(async (opts: UnshieldOpts) => {
@@ -137,7 +145,7 @@ export function registerUnshieldCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = opts.rpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
+      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
       if (!rpcUrl) {
         log.error(chalk.red("✖ Missing --rpc-url (or environment variable RPC_URL)."));
         process.exitCode = 1;
@@ -145,7 +153,15 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
-      const walletName = opts.wallet ?? "default";
+      const walletName = await resolveWalletNameOrPrompt({
+        dataDir,
+        wallet: opts.wallet,
+        nonInteractive: opts.nonInteractive,
+      });
+      if (!walletName) {
+        process.exitCode = 1;
+        return;
+      }
 
       let walletDir: string;
       try {
@@ -270,7 +286,7 @@ export function registerUnshieldCommand(program: Command): void {
           );
         }
 
-        if ("sync" in plugin && typeof plugin.sync === "function") {
+        if (protocol === "privacy-pools" && "sync" in plugin && typeof plugin.sync === "function") {
           spin.start("Syncing private state…");
           try {
             await plugin.sync();
