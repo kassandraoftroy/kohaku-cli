@@ -367,6 +367,7 @@ function printHumanBalances(opts: {
   chainId: string;
   publicAggregated: BalanceItem[];
   publicByAddress: Record<string, BalanceItem[]>;
+  publicAccountIndexByAddress?: Record<string, number>;
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   verbose: boolean;
@@ -408,8 +409,13 @@ function printHumanBalances(opts: {
     for (const addr of addrs) {
       const rows = opts.publicByAddress[addr];
       if (!rows) continue;
+      const index = opts.publicAccountIndexByAddress?.[addr];
       console.log();
-      console.log(`  ${chalk.cyan.bold(addr)}`);
+      console.log(
+        index !== undefined
+          ? `  ${chalk.cyan.bold(`[${index}]`)} ${chalk.cyan.bold(addr)}`
+          : `  ${chalk.cyan.bold(addr)}`
+      );
       console.log(chalk.dim(`  ${THIN}`));
       printBalanceItemRows(rows);
     }
@@ -580,6 +586,10 @@ export function registerBalancesCommand(program: Command): void {
       try {
         const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
         const publicAccounts = publicStorage.getAccounts();
+        const publicAccountIndexByAddress: Record<string, number> = {};
+        for (const acct of publicAccounts) {
+          publicAccountIndexByAddress[acct.address] = acct.index;
+        }
 
         const publicByAddress: Record<string, BalanceItem[]> = {};
         const aggregatedEth: bigint[] = [];
@@ -721,6 +731,14 @@ export function registerBalancesCommand(program: Command): void {
           },
         };
         if (opts.verbose) {
+          const publicAccountIndexesOut: Record<string, number> = {};
+          for (const addr of Object.keys(publicByAddressOut)) {
+            const idx = publicAccountIndexByAddress[addr];
+            if (idx !== undefined) {
+              publicAccountIndexesOut[addr] = idx;
+            }
+          }
+          payload.public_account_indexes_by_address = publicAccountIndexesOut;
           payload.private_notes = {
             "privacy-pools": privacyPoolsNotesOut ?? [],
           };
@@ -734,6 +752,7 @@ export function registerBalancesCommand(program: Command): void {
             chainId: chainIdString,
             publicAggregated: publicAggregatedOut,
             publicByAddress: publicByAddressOut,
+            publicAccountIndexByAddress,
             privateRailgun: privateRailgunOut,
             privatePrivacyPools: privatePrivacyPoolsOut,
             verbose: !!opts.verbose,

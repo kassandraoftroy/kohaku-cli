@@ -35,6 +35,7 @@ import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
   assertPpErc20TokenWhitelisted,
   createProtocolPlugin,
+  ETH_AS_ERC20,
   isSupportedProtocol,
   pluginIdForProtocol,
   type SupportedProtocol,
@@ -154,6 +155,9 @@ function printShieldDryRunInteractive(
 }
 
 function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigint }> {
+  if (Array.isArray(op)) {
+    return op as Array<{ to: string; data: string; value: bigint }>;
+  }
   if (
     typeof op === "object" &&
     op !== null &&
@@ -334,10 +338,20 @@ export function registerShieldCommand(program: Command): void {
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
-        const asset: AssetAmount = {
-          asset: { __type: "erc20", contract: tokenMeta.tokenAddress as `0x${string}` },
-          amount,
-        };
+        const asset = tokenMeta.isEth && protocol === "railgun"
+          ? {
+              asset: { __type: "native" },
+              amount,
+            }
+          : {
+              asset: {
+                __type: "erc20",
+                contract: (tokenMeta.isEth
+                  ? ETH_AS_ERC20
+                  : tokenMeta.tokenAddress) as `0x${string}`,
+              },
+              amount,
+            };
         let txs: Array<{ to: string; data: string; value: bigint }>;
         try {
           const op = await plugin.prepareShield(asset as AssetAmount);

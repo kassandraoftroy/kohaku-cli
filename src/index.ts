@@ -30,6 +30,14 @@ async function main(): Promise<void> {
   await program.parseAsync(process.argv);
 }
 
-main().catch((err: unknown) => {
-  cliErrorFromCaught(err);
-});
+function exitCli(forceCode?: number): never {
+  const code = forceCode ?? process.exitCode ?? 0;
+  process.exit(code);
+}
+
+main()
+  .then(() => exitCli())
+  .catch((err: unknown) => {
+    cliErrorFromCaught(err);
+    exitCli(1);
+  });
