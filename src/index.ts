@@ -1,3 +1,4 @@
+import "./bigint-json";
 import "./reselect-init";
 
 import { Command } from "commander";

@@ -543,19 +543,19 @@ export function registerBalancesCommand(program: Command): void {
 
       let rgRows: AssetAmount[] = [];
       let ppRows: AssetAmount[] = [];
-      // try {
-      //   rgRows = await loadPrivateBalancesForProtocol(
-      //     "railgun",
-      //     rpcUrl,
-      //     walletDir,
-      //     password,
-      //     mnemonic,
-      //     chainIdBn
-      //   );
-      // } catch (e) {
-      //   const msg = e instanceof Error ? e.message : String(e);
-      //   log.warn(chalk.yellow(`Railgun private balances unavailable: ${msg}`));
-      // }
+      try {
+        rgRows = await loadPrivateBalancesForProtocol(
+          "railgun",
+          rpcUrl,
+          walletDir,
+          password,
+          mnemonic,
+          chainIdBn
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        log.warn(chalk.yellow(`Railgun private balances unavailable: ${msg}`));
+      }
       try {
         ppRows = await loadPrivateBalancesForProtocol(
           "privacy-pools",

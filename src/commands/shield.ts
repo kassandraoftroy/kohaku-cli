@@ -1,4 +1,4 @@
-import { confirm } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
@@ -63,6 +63,13 @@ type FeeOverrides = {
   maxPriorityFeePerGas: bigint;
 };
 
+type PublicAccountWithBalance = {
+  index: number;
+  address: string;
+  priv: string;
+  balance: bigint;
+};
+
 function parseFromIndex(fromValue: string): number | null {
   if (!/^\d+$/.test(fromValue)) return null;
   const parsed = Number(fromValue);
@@ -115,7 +122,7 @@ type TxPayloadJson = {
 };
 
 function printShieldDryRunInteractive(
-  txs: Array<{ to: string; data: string; value: bigint }>,
+  shieldTx: { to: string; data: string; value: bigint },
   approve: { to: string; data: string; value: bigint } | null,
   tokenMeta: { symbol: string },
   senderAddress: string
@@ -134,48 +141,34 @@ function printShieldDryRunInteractive(
       value: approve.value.toString(),
     };
     console.log(
-      chalk.cyan(`Approve ${tokenMeta.symbol} ERC20 tx:`),
+      chalk.cyan(`Approve ${tokenMeta.symbol} ERC20 tx (1/2):`),
       jsonStringifyWithBigInt(o)
     );
     console.log();
   }
-  txs.forEach((tx, i) => {
-    const label =
-      txs.length > 1
-        ? `Shield operation tx ${i + 1}/${txs.length}`
-        : "Shield operation tx";
-    const o: TxPayloadJson = {
-      data: tx.data,
-      to: tx.to,
-      from: senderAddress,
-      value: tx.value.toString(),
-    };
-    console.log(chalk.cyan(`${label}:`), jsonStringifyWithBigInt(o));
-  });
+  const o: TxPayloadJson = {
+    data: shieldTx.data,
+    to: shieldTx.to,
+    from: senderAddress,
+    value: shieldTx.value.toString(),
+  };
+  const label = approve
+    ? "Shield operation tx (2/2)"
+    : "Shield operation tx (1/1)";
+  console.log(chalk.cyan(`${label}:`), jsonStringifyWithBigInt(o));
 }
 
 function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigint }> {
-  if (Array.isArray(op)) {
-    return op as Array<{ to: string; data: string; value: bigint }>;
+  if (!Array.isArray(op)) {
+    throw new Error("Unsupported shield operation shape returned by plugin.");
   }
-  if (
-    typeof op === "object" &&
-    op !== null &&
-    "txns" in op &&
-    Array.isArray((op as { txns?: unknown[] }).txns)
-  ) {
-    return (op as { txns: Array<{ to: string; data: string; value: bigint }> }).txns;
+  const txs = op as Array<{ to: string; data: string; value: bigint }>;
+  if (txs.length !== 1) {
+    throw new Error(
+      `Expected prepareShield() to return exactly 1 tx, got ${txs.length}.`
+    );
   }
-  if (
-    typeof op === "object" &&
-    op !== null &&
-    "to" in op &&
-    "data" in op &&
-    "value" in op
-  ) {
-    return [op as { to: string; data: string; value: bigint }];
-  }
-  throw new Error("Unsupported shield operation shape returned by plugin.");
+  return txs;
 }
 
 export function registerShieldCommand(program: Command): void {
@@ -185,7 +178,7 @@ export function registerShieldCommand(program: Command): void {
     .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
-    .requiredOption("--from <address-or-index>", "Public sender address or public-account index")
+    .option("--from <address-or-index>", "Public sender address or public-account index")
     .option(
       "--from-priv",
       "With --broadcast: derive --from index from mnemonic when missing from public accounts (not required for dry-run)"
@@ -209,8 +202,8 @@ export function registerShieldCommand(program: Command): void {
       }
       const protocol = opts.protocol;
 
-      if (!!opts.amountWei === !!opts.amountFormatted) {
-        cliError("Provide exactly one of --amount-wei or --amount-formatted.");
+      if (opts.amountWei && opts.amountFormatted) {
+        cliError("Provide only one of --amount-wei or --amount-formatted.");
         return;
       }
 
@@ -227,7 +220,7 @@ export function registerShieldCommand(program: Command): void {
         nonInteractive: opts.nonInteractive,
       });
       if (!walletName) return;
-      const fromValue = opts.from ?? "";
+      let fromValue = opts.from ?? "";
 
       let walletDir: string;
       try {
@@ -276,10 +269,13 @@ export function registerShieldCommand(program: Command): void {
         }
       }
 
-      const amount = opts.amountWei
-        ? BigInt(opts.amountWei)
-        : parseUnits(opts.amountFormatted ?? "0", tokenMeta.decimals);
-      if (amount <= 0n) {
+      let amount: bigint | null = null;
+      if (opts.amountWei) {
+        amount = BigInt(opts.amountWei);
+      } else if (opts.amountFormatted) {
+        amount = parseUnits(opts.amountFormatted, tokenMeta.decimals);
+      }
+      if (amount !== null && amount <= 0n) {
         cliError("Amount must be greater than zero.");
         return;
       }
@@ -287,11 +283,116 @@ export function registerShieldCommand(program: Command): void {
       const broadcast = !!opts.broadcast;
       const dryRun = !broadcast;
 
+      if (!fromValue && opts.nonInteractive) {
+        cliError("Missing --from in non-interactive mode.");
+        return;
+      }
+      if (amount === null && opts.nonInteractive) {
+        cliError(
+          "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+        );
+        return;
+      }
+
+      const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+      const allPublicAccounts = publicStorage.getAccounts();
+
+      const rpcForSelection = await makeEthersProvider(rpcUrl);
+      try {
+        const withBalances: PublicAccountWithBalance[] = [];
+        for (const acct of allPublicAccounts) {
+          const bal = tokenMeta.isEth
+            ? await rpcForSelection.getBalance(acct.address)
+            : await new Contract(
+                tokenMeta.tokenAddress,
+                ERC20_ABI,
+                rpcForSelection
+              ).balanceOf(acct.address);
+          withBalances.push({
+            index: acct.index,
+            address: acct.address,
+            priv: acct.priv,
+            balance: bal,
+          });
+        }
+
+        if (amount === null) {
+          if (opts.nonInteractive) {
+            cliError(
+              "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+            );
+            return;
+          }
+
+          if (withBalances.length === 0) {
+            cliError(
+              "No public accounts found in this wallet. Create one with nextFreshAddress first."
+            );
+            return;
+          }
+
+          console.log();
+          console.log(
+            chalk.bold(`Available accounts (${tokenMeta.symbol} balances):`)
+          );
+          for (const acct of withBalances) {
+            console.log(
+              `  [${acct.index}] ${acct.address}  ${formatUnits(acct.balance, tokenMeta.decimals)} ${tokenMeta.symbol}`
+            );
+          }
+
+          const amountFormattedInput = await input({
+            message: `Amount to shield (${tokenMeta.symbol}, formatted):`,
+            validate: (value) => {
+              if (!value.trim()) return "Amount is required.";
+              try {
+                const parsed = parseUnits(value.trim(), tokenMeta.decimals);
+                if (parsed <= 0n) return "Amount must be greater than zero.";
+              } catch {
+                return `Invalid ${tokenMeta.symbol} amount format.`;
+              }
+              return true;
+            },
+          });
+          amount = parseUnits(amountFormattedInput.trim(), tokenMeta.decimals);
+        }
+        if (amount === null) {
+          cliError("Amount is required.");
+          return;
+        }
+
+        if (!fromValue) {
+          if (opts.nonInteractive) {
+            cliError("Missing --from in non-interactive mode.");
+            return;
+          }
+
+          const candidates = withBalances.filter((x) => x.balance >= amount!);
+          if (candidates.length === 0) {
+            const needed = formatUnits(amount, tokenMeta.decimals);
+            cliError(
+              `No public account has enough ${tokenMeta.symbol}. Required: ${needed} ${tokenMeta.symbol}.`
+            );
+            return;
+          }
+
+          const chosen = await select<string>({
+            message: `Pick source account (${tokenMeta.symbol})`,
+            choices: candidates.map((acct) => ({
+              value: acct.address,
+              name: `[${acct.index}] ${acct.address}  (${formatUnits(acct.balance, tokenMeta.decimals)} ${tokenMeta.symbol}, need ${formatUnits(amount!, tokenMeta.decimals)})`,
+            })),
+          });
+          fromValue = chosen;
+        }
+      } finally {
+        rpcForSelection.destroy();
+      }
+
       const fromIndex = parseFromIndex(fromValue);
       let senderPrivateKey: string | undefined;
       let senderAddress: string;
       if (fromIndex !== null) {
-        const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
         const account = publicStorage.getAccount(fromIndex);
         if (account) {
           senderPrivateKey = account.priv;
@@ -307,7 +408,6 @@ export function registerShieldCommand(program: Command): void {
         }
       } else if (isAddress(fromValue)) {
         senderAddress = getAddress(fromValue);
-        const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
         const match = publicStorage
           .getAccounts()
           .find((x) => x.address.toLowerCase() === senderAddress.toLowerCase());
@@ -352,10 +452,10 @@ export function registerShieldCommand(program: Command): void {
               },
               amount,
             };
-        let txs: Array<{ to: string; data: string; value: bigint }>;
+        let tx: { to: string; data: string; value: bigint };
         try {
           const op = await plugin.prepareShield(asset as AssetAmount);
-          txs = toShieldTxs(op);
+          tx = toShieldTxs(op)[0]!;
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
           cliError(msg);
@@ -372,12 +472,12 @@ export function registerShieldCommand(program: Command): void {
             );
             const allowance: bigint = await erc20Read.allowance(
               senderAddress,
-              txs[0]!.to
+              tx.to
             );
             if (allowance < amount) {
               approve = encodeErc20ApproveTx(
                 tokenMeta.tokenAddress,
-                txs[0]!.to,
+                tx.to,
                 amount
               );
             }
@@ -391,18 +491,16 @@ export function registerShieldCommand(program: Command): void {
               value: approve.value.toString(),
             });
           }
-          for (const tx of txs) {
-            transactions.push({
-              data: tx.data,
-              to: tx.to,
-              from: senderAddress,
-              value: tx.value.toString(),
-            });
-          }
+          transactions.push({
+            data: tx.data,
+            to: tx.to,
+            from: senderAddress,
+            value: tx.value.toString(),
+          });
           if (opts.nonInteractive) {
             console.log(jsonStringifyWithBigInt({ transactions }));
           } else {
-            printShieldDryRunInteractive(txs, approve, tokenMeta, senderAddress);
+            printShieldDryRunInteractive(tx, approve, tokenMeta, senderAddress);
             console.log(chalk.green("✔ Shield dry run complete."));
           }
           return;
@@ -419,38 +517,39 @@ export function registerShieldCommand(program: Command): void {
         // const feeOverrides = await computeFees(rpcUrl, opts);
         const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
-        for (const [i, tx] of txs.entries()) {
-          if (!tokenMeta.isEth) {
-            const erc20 = new Contract(tokenMeta.tokenAddress, ERC20_ABI, signer);
-            const allowance: bigint = await erc20.allowance(senderAddress, tx.to);
-            if (allowance < amount) {
-              await maybeConfirm(
-                !!opts.nonInteractive,
-                `Send approval transaction (${tokenMeta.symbol}) to ${tx.to}?`
-              );
-              txSpinner.start(`Sending approval ${i + 1}/${txs.length}...`);
-              const approveTx = await erc20.approve(tx.to, amount/*, feeOverrides*/);
-              await approveTx.wait();
-              txSpinner.stop(`Approval mined: ${approveTx.hash}`);
-            }
+        let hasApproval = false;
+        if (!tokenMeta.isEth) {
+          const erc20 = new Contract(tokenMeta.tokenAddress, ERC20_ABI, signer);
+          const allowance: bigint = await erc20.allowance(senderAddress, tx.to);
+          if (allowance < amount) {
+            hasApproval = true;
+            await maybeConfirm(
+              !!opts.nonInteractive,
+              `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
+            );
+            txSpinner.start("Sending approval 1/2...");
+            const approveTx = await erc20.approve(tx.to, amount/*, feeOverrides*/);
+            await approveTx.wait();
+            txSpinner.stop(`Approval mined (1/2): ${approveTx.hash}`);
           }
-
-          await maybeConfirm(
-            !!opts.nonInteractive,
-            `Send shield transaction ${i + 1}/${txs.length} for ${amountPreview} from ${senderAddress}?`
-          );
-          txSpinner.start(`Sending shield tx ${i + 1}/${txs.length}...`);
-
-          const sent = await signer.sendTransaction({
-            to: tx.to,
-            data: tx.data,
-            value: tx.value,
-            gasLimit: 2000000,
-            // ...feeOverrides,
-          });
-          await sent.wait();
-          txSpinner.stop(`Shield tx mined: ${sent.hash}`);
         }
+
+        const shieldStep = hasApproval ? "2/2" : "1/1";
+        await maybeConfirm(
+          !!opts.nonInteractive,
+          `Send shield transaction (${shieldStep}): shield ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
+        );
+        txSpinner.start(`Sending shield tx ${shieldStep}...`);
+
+        const sent = await signer.sendTransaction({
+          to: tx.to,
+          data: tx.data,
+          value: tx.value,
+          gasLimit: 2000000,
+          // ...feeOverrides,
+        });
+        await sent.wait();
+        txSpinner.stop(`Shield tx mined (${shieldStep}): ${sent.hash}`);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
