@@ -1,26 +1,32 @@
-import { join } from "node:path";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
+import type { AssetAmount } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
-import { readWalletType } from "../utils/wallet-type";
-import { makeEthersProvider } from "../utils/eth-provider";
+import { makeHost } from "../host/makeHost";
+import { cliOptions } from "../utils/cli-command-options";
+import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   DEFAULT_DATA_DIR,
+  getRpcChainIdMatchingWallet,
+  makeEthersProvider,
   resolveRpcUrl,
-  walletNameToDirSegment,
-} from "../utils/helpers";
-import { resolveWalletNameOrPrompt } from "../utils/wallets";
+} from "../utils/rpc";
+import { ERC20_ABI, mergeDefaultAndExtraErc20s } from "../utils/tokens-util";
+import {
+  createProtocolPlugin,
+  ETH_AS_ERC20,
+  pluginIdForProtocol,
+  type SupportedProtocol,
+} from "../utils/plugins";
+import {
+  resolveWalletDir,
+  resolveWalletNameOrPrompt,
+  resolveWalletPassword,
+} from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
-import { resolveWalletPassword } from "../utils/wallet-password";
-
-const ERC20_ABI = [
-  "function balanceOf(address account) view returns (uint256)",
-  "function decimals() view returns (uint8)",
-  "function symbol() view returns (string)",
-];
 
 type BalancesOpts = {
   wallet?: string;
@@ -39,6 +45,211 @@ type BalanceItem = {
   raw_token_holdings: string;
   formatted_token_holdings: string;
 };
+
+type PrivateNoteRowJson = {
+  label: string;
+  balance_raw: string;
+  balance_formatted: string;
+  asset_address: string;
+  approved: boolean;
+  precommitment: string;
+};
+
+function isNonZeroRawHoldings(raw: string): boolean {
+  try {
+    return BigInt(raw) !== 0n;
+  } catch {
+    return true;
+  }
+}
+
+function filterNonZeroBalanceItems(rows: BalanceItem[]): BalanceItem[] {
+  return rows.filter((r) => isNonZeroRawHoldings(r.raw_token_holdings));
+}
+
+function filterPublicByAddress(
+  byAddress: Record<string, BalanceItem[]>
+): Record<string, BalanceItem[]> {
+  const out: Record<string, BalanceItem[]> = {};
+  for (const [addr, rows] of Object.entries(byAddress)) {
+    const filtered = filterNonZeroBalanceItems(rows);
+    if (filtered.length > 0) {
+      out[addr] = filtered;
+    }
+  }
+  return out;
+}
+
+function filterNonZeroNotes(notes: PrivateNoteRowJson[]): PrivateNoteRowJson[] {
+  return notes.filter((n) => isNonZeroRawHoldings(n.balance_raw));
+}
+
+function collectErc20AddressesFromPrivateBalances(
+  rows: AssetAmount[]
+): `0x${string}`[] {
+  const seen = new Set<string>();
+  const out: `0x${string}`[] = [];
+  for (const row of rows) {
+    const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
+    if (!asset || asset.__type !== "erc20") continue;
+    const raw = asset.contract;
+    let addrStr: string | null = null;
+    if (typeof raw === "string" && isAddress(raw)) {
+      addrStr = raw;
+    } else if (typeof raw === "bigint") {
+      addrStr = `0x${raw.toString(16).padStart(40, "0")}`;
+    }
+    if (!addrStr || !isAddress(addrStr)) continue;
+    const checksum = getAddress(addrStr) as `0x${string}`;
+    if (checksum.toLowerCase() === ETH_AS_ERC20.toLowerCase()) continue;
+    const k = checksum.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(checksum);
+  }
+  return out;
+}
+
+function mapPrivateBalanceRows(
+  rows: AssetAmount[],
+  tokenMeta: Map<string, { symbol: string; decimals: number }>
+): BalanceItem[] {
+  return rows.map((row) => {
+    const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
+    const amount = row.amount;
+    const tag = "tag" in row ? (row as { tag?: string }).tag : undefined;
+
+    if (!asset || asset.__type !== "erc20") {
+      return {
+        symbol: "UNKNOWN",
+        token_address: "---",
+        decimals: 18,
+        raw_token_holdings: amount.toString(),
+        formatted_token_holdings: formatUnits(amount, 18),
+      };
+    }
+    const raw = asset.contract;
+    let addrStr: string;
+    if (typeof raw === "string") addrStr = raw;
+    else if (typeof raw === "bigint") {
+      addrStr = `0x${raw.toString(16).padStart(40, "0")}`;
+    } else {
+      addrStr = "---";
+    }
+    const isEth = addrStr.toLowerCase() === ETH_AS_ERC20.toLowerCase();
+    const key =
+      isEth || !isAddress(addrStr)
+        ? null
+        : (getAddress(addrStr).toLowerCase() as string);
+    const meta = key ? tokenMeta.get(key) : { symbol: "ETH", decimals: 18 };
+    const decimals = meta?.decimals ?? 18;
+    let symbol = meta?.symbol ?? "UNKNOWN";
+    if (tag === "pending") {
+      symbol = `${symbol} (pending)`;
+    }
+    const tokenAddr =
+      isEth || !isAddress(addrStr) ? "---" : getAddress(addrStr);
+    return {
+      symbol,
+      token_address: tokenAddr,
+      decimals,
+      raw_token_holdings: amount.toString(),
+      formatted_token_holdings: formatUnits(amount, decimals),
+    };
+  });
+}
+
+async function loadPrivateBalancesForProtocol(
+  protocol: SupportedProtocol,
+  rpcUrl: string,
+  walletDir: string,
+  password: string,
+  mnemonic: string,
+  chainId: bigint
+): Promise<AssetAmount[]> {
+  const rpc = await makeEthersProvider(rpcUrl);
+  try {
+    const host = await makeHost({
+      rpc,
+      walletDir,
+      password,
+      mnemonic,
+      pluginId: pluginIdForProtocol(protocol),
+    });
+    const plugin = await createProtocolPlugin(protocol, host, chainId);
+    // Must await before `finally` runs — bare `return plugin.balance()` would destroy
+    // the provider while the balance call is still in flight.
+    return await plugin.balance(undefined);
+  } finally {
+    rpc.destroy();
+  }
+}
+
+type PpNotesPlugin = {
+  notes: (
+    assets?: unknown,
+    includeSpent?: boolean
+  ) => Promise<
+    Array<{
+      label: bigint;
+      balance: bigint;
+      assetAddress: bigint | string;
+      approved: boolean;
+      precommitment: bigint;
+    }>
+  >;
+};
+
+async function loadPrivacyPoolsNotes(
+  rpcUrl: string,
+  walletDir: string,
+  password: string,
+  mnemonic: string,
+  chainId: bigint,
+  tokenMeta: Map<string, { symbol: string; decimals: number }>
+): Promise<PrivateNoteRowJson[]> {
+  const rpc = await makeEthersProvider(rpcUrl);
+  try {
+    const host = await makeHost({
+      rpc,
+      walletDir,
+      password,
+      mnemonic,
+      pluginId: pluginIdForProtocol("privacy-pools"),
+    });
+    const plugin = (await createProtocolPlugin(
+      "privacy-pools",
+      host,
+      chainId
+    )) as unknown as PpNotesPlugin;
+    const notes = await plugin.notes(undefined, false);
+    return notes.map((n) => {
+      const rawAddr = n.assetAddress;
+      const assetHex =
+        typeof rawAddr === "bigint"
+          ? `0x${rawAddr.toString(16).padStart(40, "0")}`
+          : String(rawAddr);
+      const addrStr = isAddress(assetHex) ? getAddress(assetHex) : assetHex;
+      const canonicalKey = isAddress(addrStr)
+        ? getAddress(addrStr).toLowerCase()
+        : String(addrStr).toLowerCase();
+      const meta = tokenMeta.get(canonicalKey) ?? {
+        symbol: "UNKNOWN",
+        decimals: 18,
+      };
+      return {
+        label: n.label.toString(),
+        balance_raw: n.balance.toString(),
+        balance_formatted: formatUnits(n.balance, meta.decimals),
+        asset_address: isAddress(addrStr) ? getAddress(addrStr) : addrStr,
+        approved: n.approved,
+        precommitment: n.precommitment.toString(),
+      };
+    });
+  } finally {
+    rpc.destroy();
+  }
+}
 
 function stringifyBalancesJson(payload: unknown): string {
   return JSON.stringify(
@@ -104,9 +315,16 @@ function columnWidths(rows: BalanceItem[]): { symW: number; amtW: number } {
   return { symW, amtW };
 }
 
-function printAggregatedTotalsTable(aggregated: BalanceItem[]): void {
-  console.log(chalk.bold("  ■ Totals (all public accounts)"));
+function printAggregatedTotalsTable(
+  aggregated: BalanceItem[],
+  sectionTitle = "  ■ Public — totals (all accounts)"
+): void {
+  console.log(chalk.bold(sectionTitle));
   console.log(chalk.dim(`  ${THIN}`));
+  if (aggregated.length === 0) {
+    console.log(chalk.dim("  (no non-zero balances)"));
+    return;
+  }
   const aggW = columnWidths(aggregated);
   console.log(
     chalk.dim(
@@ -124,17 +342,40 @@ function printAggregatedTotalsTable(aggregated: BalanceItem[]): void {
   }
 }
 
-function printHumanPublicBalances(opts: {
+function printBalanceItemRows(rows: BalanceItem[]): void {
+  if (rows.length === 0) {
+    console.log(chalk.dim("  (none)"));
+    return;
+  }
+  const w = columnWidths(rows);
+  console.log(
+    chalk.dim(`  ${padCell("Symbol", w.symW)}  ${padCell("Balance", w.amtW)}  Token`)
+  );
+  for (const r of rows) {
+    const tokenCol =
+      r.token_address === "---"
+        ? chalk.dim("native")
+        : chalk.dim(shortenAddr(r.token_address));
+    console.log(
+      `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}  ${tokenCol}`
+    );
+  }
+}
+
+function printHumanBalances(opts: {
   walletName: string;
   chainId: string;
-  aggregated: BalanceItem[];
-  byAddress: Record<string, BalanceItem[]>;
+  publicAggregated: BalanceItem[];
+  publicByAddress: Record<string, BalanceItem[]>;
+  privateRailgun: BalanceItem[];
+  privatePrivacyPools: BalanceItem[];
   verbose: boolean;
+  privacyPoolsNotes?: PrivateNoteRowJson[];
 }): void {
   console.log();
   console.log(chalk.bold(` ${BAR}`));
   console.log(
-    chalk.bold("  Public balances"),
+    chalk.bold("  Balances"),
     chalk.dim("·"),
     chalk.cyan(opts.walletName),
     chalk.dim(`· chain ${opts.chainId}`)
@@ -142,43 +383,75 @@ function printHumanPublicBalances(opts: {
   console.log(chalk.bold(` ${BAR}`));
   console.log();
 
-  printAggregatedTotalsTable(opts.aggregated);
+  printAggregatedTotalsTable(opts.publicAggregated);
+
+  console.log();
+  console.log(chalk.bold("  ■ Private — Railgun"));
+  console.log(chalk.dim(`  ${THIN}`));
+  printBalanceItemRows(opts.privateRailgun);
+
+  console.log();
+  console.log(chalk.bold("  ■ Private — Privacy pools"));
+  console.log(chalk.dim(`  ${THIN}`));
+  printBalanceItemRows(opts.privatePrivacyPools);
 
   if (opts.verbose) {
     console.log();
-    console.log(chalk.bold("  ■ By address"));
+    console.log(chalk.bold("  ■ Public — by address"));
     console.log(chalk.dim(`  ${THIN}`));
 
-    const addrs = Object.keys(opts.byAddress);
+    const addrs = Object.keys(opts.publicByAddress);
     if (addrs.length === 0) {
-      console.log(chalk.dim("  (no public accounts)"));
+      console.log(chalk.dim("  (no non-zero balances)"));
     }
 
     for (const addr of addrs) {
-      const rows = opts.byAddress[addr];
+      const rows = opts.publicByAddress[addr];
       if (!rows) continue;
       console.log();
       console.log(`  ${chalk.cyan.bold(addr)}`);
       console.log(chalk.dim(`  ${THIN}`));
-      const w = columnWidths(rows);
-      console.log(
-        chalk.dim(
-          `  ${padCell("Symbol", w.symW)}  ${padCell("Balance", w.amtW)}  Token`
-        )
-      );
-      for (const r of rows) {
-        const tokenCol =
-          r.token_address === "---"
-            ? chalk.dim("native")
-            : chalk.dim(shortenAddr(r.token_address));
-        console.log(
-          `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}  ${tokenCol}`
-        );
-      }
+      printBalanceItemRows(rows);
     }
 
     console.log();
-    printAggregatedTotalsTable(opts.aggregated);
+    printAggregatedTotalsTable(
+      opts.publicAggregated,
+      "  ■ Public — totals (repeat)"
+    );
+
+    console.log();
+    console.log(chalk.bold("  ■ Private — Railgun (aggregate)"));
+    console.log(chalk.dim(`  ${THIN}`));
+    printBalanceItemRows(opts.privateRailgun);
+
+    console.log();
+    console.log(chalk.bold("  ■ Private — Railgun (per-note detail)"));
+    console.log(chalk.dim(`  ${THIN}`));
+    console.log(
+      chalk.dim(
+        "  Railgun does not expose per-note rows in this CLI; see aggregate just above."
+      )
+    );
+
+    console.log();
+    console.log(chalk.bold("  ■ Private — Privacy pools (aggregate)"));
+    console.log(chalk.dim(`  ${THIN}`));
+    printBalanceItemRows(opts.privatePrivacyPools);
+
+    console.log();
+    console.log(chalk.bold("  ■ Private — Privacy pools (notes)"));
+    console.log(chalk.dim(`  ${THIN}`));
+    const notes = opts.privacyPoolsNotes ?? [];
+    if (notes.length === 0) {
+      console.log(chalk.dim("  (no notes)"));
+    } else {
+      for (const n of notes) {
+        console.log(
+          `  ${chalk.cyan(`label ${n.label}`)}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.approved ? "approved" : "unapproved"}`
+        );
+      }
+    }
   }
 
   console.log();
@@ -189,26 +462,22 @@ function printHumanPublicBalances(opts: {
 export function registerBalancesCommand(program: Command): void {
   program
     .command("balances")
-    .description("Print public account balances (ETH + optional ERC20s from --tokensList)")
-    .option(
-      "--wallet <name>",
-      "Wallet name (optional without --non-interactive; omit to pick from the list)"
+    .description(
+      "Public + private balances: ETH, default/extra ERC20s, Railgun & Privacy pools"
     )
-    .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
-    .option(
-      "--non-interactive",
-      "Agent mode: JSON only, no prompts; requires --password and --wallet"
-    )
+    .option("--wallet <name>", cliOptions.walletBalancesOptional)
+    .option("--password <password>", cliOptions.password)
+    .option("--non-interactive", cliOptions.nonInteractiveBalances)
     .option(
       "--verbose",
-      "With human-readable output, also show per-account breakdown (ignored with --non-interactive)"
+      "Human: public by-address + repeated totals + Privacy pools notes (JSON: adds private_notes)"
     )
-    .option("--rpc-url <url>", "RPC URL (or set RPC_URL)")
+    .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option(
       "--tokensList <addrs>",
-      "Comma- or space-separated ERC20 addresses to fetch for every public account"
+      "Extra ERC20 addresses (comma/space); merged with chain defaults, deduped"
     )
-    .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
+    .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: BalancesOpts) => {
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
@@ -216,24 +485,18 @@ export function registerBalancesCommand(program: Command): void {
         wallet: opts.wallet,
         nonInteractive: opts.nonInteractive,
       });
-      if (!walletName) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!walletName) return;
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
       if (!rpcUrl) {
-        log.error(chalk.red("✖ Missing --rpc-url (or environment variable RPC_URL)."));
-        process.exitCode = 1;
+        cliError("Missing --rpc-url (or environment variable RPC_URL).");
         return;
       }
 
       let walletDir: string;
       try {
-        walletDir = join(dataDir, walletNameToDirSegment(walletName));
+        walletDir = resolveWalletDir(dataDir, walletName);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
@@ -241,52 +504,79 @@ export function registerBalancesCommand(program: Command): void {
         flagPassword: opts.password,
         nonInteractive: opts.nonInteractive,
       });
-      if (!password) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!password) return;
 
       let mnemonic: string;
       try {
         mnemonic = readSeedKeystore(password, walletDir);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
-      const chainIdString = readWalletType(walletDir) === "testnet" ? "11155111" : "1";
-      const rpc = await makeEthersProvider(rpcUrl);
-      let rpcChainId: bigint;
+      let chainIdBn: bigint;
       try {
-        const network = await rpc.getNetwork();
-        rpcChainId = network.chainId;
-      } finally {
-        rpc.destroy();
-      }
-      if (rpcChainId.toString() !== chainIdString) {
-        log.error(
-          chalk.red(
-            `✖ RPC chainId ${rpcChainId.toString()} does not match wallet chainId ${chainIdString}.`
-          )
-        );
-        process.exitCode = 1;
-        return;
-      }
-
-      let tokenAddresses: `0x${string}`[];
-      try {
-        tokenAddresses = parseTokensList(opts.tokensList);
+        chainIdBn = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
+        return;
+      }
+
+      const chainIdString = chainIdBn.toString();
+
+      let extraTokenAddresses: `0x${string}`[];
+      try {
+        extraTokenAddresses = parseTokensList(opts.tokensList);
+      } catch (e) {
+        cliErrorFromCaught(e);
         return;
       }
 
       const loading = spinner();
-      loading.start("Loading public balances...");
+      loading.start("Loading balances...");
+
+      let rgRows: AssetAmount[] = [];
+      let ppRows: AssetAmount[] = [];
+      // try {
+      //   rgRows = await loadPrivateBalancesForProtocol(
+      //     "railgun",
+      //     rpcUrl,
+      //     walletDir,
+      //     password,
+      //     mnemonic,
+      //     chainIdBn
+      //   );
+      // } catch (e) {
+      //   const msg = e instanceof Error ? e.message : String(e);
+      //   log.warn(chalk.yellow(`Railgun private balances unavailable: ${msg}`));
+      // }
+      try {
+        ppRows = await loadPrivateBalancesForProtocol(
+          "privacy-pools",
+          rpcUrl,
+          walletDir,
+          password,
+          mnemonic,
+          chainIdBn
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        log.warn(
+          chalk.yellow(`Privacy pools private balances unavailable: ${msg}`)
+        );
+      }
+
+      const erc20FromPrivate = [
+        ...collectErc20AddressesFromPrivateBalances(rgRows),
+        ...collectErc20AddressesFromPrivateBalances(ppRows),
+      ];
+
+      const { erc20Addresses: tokenAddresses, knownMetaByLower } =
+        mergeDefaultAndExtraErc20s(chainIdString, [
+          ...extraTokenAddresses,
+          ...erc20FromPrivate,
+        ]);
+
       try {
         const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
         const publicAccounts = publicStorage.getAccounts();
@@ -300,9 +590,40 @@ export function registerBalancesCommand(program: Command): void {
 
         const rpcForPublic = await makeEthersProvider(rpcUrl);
         const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
+        let privateRailgun: BalanceItem[] = [];
+        let privatePrivacyPools: BalanceItem[] = [];
+        let privacyPoolsNotesJson: PrivateNoteRowJson[] | undefined;
         try {
           for (const token of tokenAddresses) {
-            tokenMeta.set(token.toLowerCase(), await loadErc20Meta(rpcForPublic, token));
+            const key = token.toLowerCase();
+            const known = knownMetaByLower.get(key);
+            if (known) {
+              tokenMeta.set(key, known);
+            } else {
+              tokenMeta.set(key, await loadErc20Meta(rpcForPublic, token));
+            }
+          }
+
+          privateRailgun = mapPrivateBalanceRows(rgRows, tokenMeta);
+          privatePrivacyPools = mapPrivateBalanceRows(ppRows, tokenMeta);
+
+          if (opts.verbose) {
+            try {
+              privacyPoolsNotesJson = await loadPrivacyPoolsNotes(
+                rpcUrl,
+                walletDir,
+                password,
+                mnemonic,
+                chainIdBn,
+                tokenMeta
+              );
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              log.warn(
+                chalk.yellow(`Privacy pools notes unavailable: ${msg}`)
+              );
+              privacyPoolsNotesJson = [];
+            }
           }
 
           const now = Date.now();
@@ -382,27 +703,46 @@ export function registerBalancesCommand(program: Command): void {
 
         loading.stop("Balances loaded.");
 
-        const payload = {
-          public_balances_aggregated: publicBalancesAggregated,
-          public_balances_by_address: publicByAddress,
+        const publicAggregatedOut = filterNonZeroBalanceItems(publicBalancesAggregated);
+        const publicByAddressOut = filterPublicByAddress(publicByAddress);
+        const privateRailgunOut = filterNonZeroBalanceItems(privateRailgun);
+        const privatePrivacyPoolsOut = filterNonZeroBalanceItems(privatePrivacyPools);
+        const privacyPoolsNotesOut =
+          privacyPoolsNotesJson !== undefined
+            ? filterNonZeroNotes(privacyPoolsNotesJson)
+            : undefined;
+
+        const payload: Record<string, unknown> = {
+          public_balances_aggregated: publicAggregatedOut,
+          public_balances_by_address: publicByAddressOut,
+          private_balances: {
+            railgun: privateRailgunOut,
+            "privacy-pools": privatePrivacyPoolsOut,
+          },
         };
+        if (opts.verbose) {
+          payload.private_notes = {
+            "privacy-pools": privacyPoolsNotesOut ?? [],
+          };
+        }
 
         if (opts.nonInteractive) {
           console.log(stringifyBalancesJson(payload));
         } else {
-          printHumanPublicBalances({
+          printHumanBalances({
             walletName,
             chainId: chainIdString,
-            aggregated: publicBalancesAggregated,
-            byAddress: publicByAddress,
+            publicAggregated: publicAggregatedOut,
+            publicByAddress: publicByAddressOut,
+            privateRailgun: privateRailgunOut,
+            privatePrivacyPools: privatePrivacyPoolsOut,
             verbose: !!opts.verbose,
+            privacyPoolsNotes: privacyPoolsNotesOut,
           });
         }
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
         loading.stop("Balances failed.", 1);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
       }
     });
 }

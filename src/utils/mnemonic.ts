@@ -13,9 +13,9 @@ import {
 
 /**
  * On-disk name for the encrypted BIP-39 seed file under each wallet directory
- * (`<dataDir>/wallets/<walletName>/seed.json`), alongside plugin `*-storage.json` files.
+ * (`<dataDir>/wallets/<walletName>/.encrypted-seed.json`), alongside plugin `*-storage.json` files.
  */
-export const SEED_FILENAME = "seed.json";
+export const SEED_FILENAME = ".encrypted-seed.json";
 
 /** Identifies this file format (similar in spirit to Ethereum `version` / `crypto` JSON keystores). */
 export const SEED_KIND = "kohaku-cli/seed" as const;
@@ -77,7 +77,6 @@ export function writeSeedKeystore(
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, JSON.stringify(doc, null, 2), {
     encoding: "utf-8",
-    mode: 0o600,
   });
 }
 

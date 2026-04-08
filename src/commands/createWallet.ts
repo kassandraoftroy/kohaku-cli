@@ -1,25 +1,25 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { intro, log, outro } from "@clack/prompts";
 import { password } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 
+import { cliOptions } from "../utils/cli-command-options";
+import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+import { isAddressUsed } from "../utils/address-used";
 import {
   DEFAULT_DATA_DIR,
-  isAddressUsed,
+  makeEthersProvider,
   resolveRpcUrl,
-  walletNameToDirSegment,
-} from "../utils/helpers";
+} from "../utils/rpc";
+import { resolveWalletDir, writeWalletType } from "../utils/wallets-util";
 import {
   generateMnemonic,
   normalizeValidatedMnemonic,
   peekAddressesFromMnemonic,
   writeSeedKeystore,
 } from "../utils/mnemonic";
-import { writeWalletType } from "../utils/wallet-type";
-import { makeEthersProvider } from "../utils/eth-provider";
 
 type CreateWalletOpts = {
   import?: boolean;
@@ -133,7 +133,7 @@ export function registerCreateWalletCommand(program: Command): void {
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
     .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL)")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
-    .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
+    .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (name: string, opts: CreateWalletOpts) => {
       if (!opts.nonInteractive) {
         intro(chalk.bold("kohaku-cli — create wallet"));
@@ -142,17 +142,14 @@ export function registerCreateWalletCommand(program: Command): void {
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       let walletDir: string;
       try {
-        walletDir = join(dataDir, walletNameToDirSegment(name));
+        walletDir = resolveWalletDir(dataDir, name);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
       if (existsSync(walletDir)) {
-        console.error(chalk.red(`✖ A wallet named "${name}" already exists.`));
-        process.exitCode = 1;
+        cliError(`A wallet named "${name}" already exists.`);
         return;
       }
 
@@ -166,26 +163,21 @@ export function registerCreateWalletCommand(program: Command): void {
               mask: "*",
             });
         if (opts.nonInteractive && !pasted?.trim()) {
-          log.error(chalk.red("✖ --mnemonic is required when using --non-interactive --import."));
-          process.exitCode = 1;
+          cliError("--mnemonic is required when using --non-interactive --import.");
           return;
         }
         rpcUrl = resolveRpcUrl(opts.rpcUrl);
         if (!rpcUrl) {
-          log.error(
-            chalk.red(
-              "✖ Missing --rpc-url (or environment variable RPC_URL) when using --import."
-            )
+          cliError(
+            "Missing --rpc-url (or environment variable RPC_URL) when using --import."
           );
-          process.exitCode = 1;
           return;
         }
         try {
           mnemonicPhrase = normalizeValidatedMnemonic(pasted ?? "");
         } catch (e) {
           const msg = e instanceof Error ? e.message : "Invalid mnemonic";
-          log.error(chalk.red(`✖ ${msg}`));
-          process.exitCode = 1;
+          cliError(msg);
           return;
         }
       } else {
@@ -198,8 +190,7 @@ export function registerCreateWalletCommand(program: Command): void {
       let encryptPassword: string;
       if (opts.nonInteractive) {
         if (!opts.password?.trim()) {
-          log.error(chalk.red("✖ --password is required when using --non-interactive."));
-          process.exitCode = 1;
+          cliError("--password is required when using --non-interactive.");
           return;
         }
         encryptPassword = opts.password;
@@ -216,12 +207,9 @@ export function registerCreateWalletCommand(program: Command): void {
         try {
           const network = await provider.getNetwork();
           if (network.chainId !== expectedChainId) {
-            log.error(
-              chalk.red(
-                `✖ RPC chain ID ${network.chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
-              )
+            cliError(
+              `RPC chain ID ${network.chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
             );
-            process.exitCode = 1;
             return;
           }
         } finally {
@@ -243,9 +231,7 @@ export function registerCreateWalletCommand(program: Command): void {
           publicAccountsStorage.addNextAccounts(lastTouchedIndex + 1);
         }
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 

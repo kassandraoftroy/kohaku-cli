@@ -6,11 +6,43 @@ import {
 import { createRailgunPlugin } from "@kohaku-eth/railgun";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 
-import ppv1SepoliaState from "./ppv1-sepolia-state.json"
+import type { PluginId } from "../host/storage";
+import ppv1SepoliaState from "./ppv1-sepolia-state.json";
 
 const OXBOW_ASP_URL = "https://dw.0xbow.io";
 
 export type SupportedProtocol = "railgun" | "privacy-pools";
+
+/** True when `value` is a valid CLI `--protocol` (see {@link pluginIdForProtocol}). */
+export function isSupportedProtocol(value: unknown): value is SupportedProtocol {
+  return value === "railgun" || value === "privacy-pools";
+}
+
+/**
+ * Maps CLI `--protocol` to {@link PluginId} for Host (storage paths + keystore flavor).
+ *
+ * | `--protocol`    | pluginId | Notes                          |
+ * |-----------------|----------|--------------------------------|
+ * | `railgun`       | `rg`     | Railgun keystore, rg-storage   |
+ * | `privacy-pools` | `ppv1`   | Default keystore, ppv1-storage |
+ */
+export function pluginIdForProtocol(protocol: SupportedProtocol): PluginId {
+  return protocol === "railgun" ? "rg" : "ppv1";
+}
+
+/** Throws if the ERC-20 is not on the Privacy Pools whitelist for this chain (non-ETH tokens only). */
+export function assertPpErc20TokenWhitelisted(
+  chainId: bigint,
+  tokenAddress: string
+): void {
+  const wl =
+    PRIVACY_POOLS_TOKEN_WHITELIST[chainId.toString()] ?? new Set<string>();
+  if (!wl.has(tokenAddress.toLowerCase())) {
+    throw new Error(
+      `Token ${tokenAddress} is not whitelisted for privacy-pools on chain ${chainId.toString()}.`
+    );
+  }
+}
 
 export type AnyPlugin = {
   balance(assets: Array<unknown> | undefined): Promise<Array<AssetAmount>>;

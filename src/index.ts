@@ -1,4 +1,5 @@
-import chalk from "chalk";
+import "./reselect-init";
+
 import { Command } from "commander";
 
 import { registerBalancesCommand } from "./commands/balances";
@@ -8,6 +9,7 @@ import { registerNextFreshAddressCommand } from "./commands/nextFreshAddress";
 import { registerSeeDecryptedStorageCommand } from "./commands/seeDecryptedStorage";
 import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
+import { cliErrorFromCaught } from "./utils/cli-errors";
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -29,7 +31,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error(chalk.red(msg));
-  process.exitCode = 1;
+  cliErrorFromCaught(err);
 });

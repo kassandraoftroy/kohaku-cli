@@ -1,13 +1,15 @@
-import { join } from "node:path";
-import { log } from "@clack/prompts";
-import chalk from "chalk";
 import type { Command } from "commander";
 
+import { cliOptions } from "../utils/cli-command-options";
+import { cliErrorFromCaught } from "../utils/cli-errors";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
-import { DEFAULT_DATA_DIR, walletNameToDirSegment } from "../utils/helpers";
-import { resolveWalletNameOrPrompt } from "../utils/wallets";
+import { DEFAULT_DATA_DIR } from "../utils/rpc";
+import {
+  resolveWalletDir,
+  resolveWalletNameOrPrompt,
+  resolveWalletPassword,
+} from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
-import { resolveWalletPassword } from "../utils/wallet-password";
 
 type NextFreshAddressOpts = {
   wallet?: string;
@@ -20,16 +22,10 @@ export function registerNextFreshAddressCommand(program: Command): void {
   program
     .command("next-fresh-address")
     .description("Generate and persist the next public account address")
-    .option(
-      "--wallet <name>",
-      "Wallet name (omit to choose interactively from the list)"
-    )
-    .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
-    .option(
-      "--non-interactive",
-      "Agent mode: no prompts; requires --password; --wallet required if omitted"
-    )
-    .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
+    .option("--wallet <name>", cliOptions.walletPickList)
+    .option("--password <password>", cliOptions.password)
+    .option("--non-interactive", cliOptions.nonInteractiveCompact)
+    .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: NextFreshAddressOpts) => {
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
@@ -37,18 +33,13 @@ export function registerNextFreshAddressCommand(program: Command): void {
         wallet: opts.wallet,
         nonInteractive: opts.nonInteractive,
       });
-      if (!walletName) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!walletName) return;
 
       let walletDir: string;
       try {
-        walletDir = join(dataDir, walletNameToDirSegment(walletName));
+        walletDir = resolveWalletDir(dataDir, walletName);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
@@ -56,18 +47,13 @@ export function registerNextFreshAddressCommand(program: Command): void {
         flagPassword: opts.password,
         nonInteractive: opts.nonInteractive,
       });
-      if (!password) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!password) return;
 
       let mnemonic: string;
       try {
         mnemonic = readSeedKeystore(password, walletDir);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 

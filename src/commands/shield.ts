@@ -1,37 +1,44 @@
-import { join } from "node:path";
 import { confirm } from "@inquirer/prompts";
-import { log, spinner } from "@clack/prompts";
+import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
-import { Contract, Wallet, formatUnits, getAddress, isAddress, parseUnits } from "ethers";
+import {
+  Contract,
+  Interface,
+  Wallet,
+  formatUnits,
+  getAddress,
+  isAddress,
+  parseUnits,
+} from "ethers";
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
-import { readWalletType } from "../utils/wallet-type";
-import { makeEthersProvider } from "../utils/eth-provider";
+import { cliOptions } from "../utils/cli-command-options";
+import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
   DEFAULT_DATA_DIR,
+  getRpcChainIdMatchingWallet,
+  makeEthersProvider,
   resolveRpcUrl,
-  walletNameToDirSegment,
-} from "../utils/helpers";
-import { resolveWalletNameOrPrompt } from "../utils/wallets";
+} from "../utils/rpc";
+import { ERC20_ABI, resolveTokenMeta } from "../utils/tokens-util";
+import {
+  resolveWalletDir,
+  resolveWalletNameOrPrompt,
+  resolveWalletPassword,
+} from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
-  ETH_AS_ERC20,
-  PRIVACY_POOLS_TOKEN_WHITELIST,
+  assertPpErc20TokenWhitelisted,
   createProtocolPlugin,
+  isSupportedProtocol,
+  pluginIdForProtocol,
   type SupportedProtocol,
 } from "../utils/plugins";
-import { resolveWalletPassword } from "../utils/wallet-password";
-
-const ERC20_ABI = [
-  "function decimals() view returns (uint8)",
-  "function symbol() view returns (string)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-];
 
 type ShieldOpts = {
   protocol?: SupportedProtocol;
@@ -46,6 +53,7 @@ type ShieldOpts = {
   baseFeeGwei?: string;
   priorityFeeGwei?: string;
   nonInteractive?: boolean;
+  broadcast?: boolean;
   dataDir?: string;
 };
 
@@ -53,42 +61,6 @@ type FeeOverrides = {
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
 };
-
-function resolveWalletDir(dataDir: string, walletName: string): string {
-  return join(dataDir, walletNameToDirSegment(walletName));
-}
-
-async function resolveTokenMeta(
-  tokenArg: string | undefined,
-  rpcUrl: string
-): Promise<{
-  symbol: string;
-  tokenAddress: string;
-  decimals: number;
-  isEth: boolean;
-}> {
-  if (!tokenArg || tokenArg.toLowerCase() === "eth") {
-    return { symbol: "ETH", tokenAddress: ETH_AS_ERC20, decimals: 18, isEth: true };
-  }
-  if (!isAddress(tokenArg)) {
-    throw new Error(`Invalid token address: ${tokenArg}`);
-  }
-  const tokenAddress = getAddress(tokenArg);
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const erc20 = new Contract(tokenAddress, ERC20_ABI, rpc);
-    let decimals: number;
-    try {
-      decimals = Number(await erc20.decimals());
-    } catch {
-      throw new Error(`Failed to read decimals() from token ${tokenAddress}`);
-    }
-    const symbol = await erc20.symbol().catch(() => "UNKNOWN");
-    return { symbol, tokenAddress, decimals, isEth: false };
-  } finally {
-    rpc.destroy();
-  }
-}
 
 function parseFromIndex(fromValue: string): number | null {
   if (!/^\d+$/.test(fromValue)) return null;
@@ -124,6 +96,63 @@ async function computeFees(rpcUrl: string, opts: ShieldOpts): Promise<FeeOverrid
   }
 }
 
+function encodeErc20ApproveTx(
+  tokenAddress: string,
+  spender: string,
+  amount: bigint
+): { to: string; data: string; value: bigint } {
+  const iface = new Interface(ERC20_ABI);
+  const data = iface.encodeFunctionData("approve", [spender, amount]);
+  return { to: tokenAddress, data, value: 0n };
+}
+
+type TxPayloadJson = {
+  data: string;
+  to: string;
+  from: string;
+  value: string;
+};
+
+function printShieldDryRunInteractive(
+  txs: Array<{ to: string; data: string; value: bigint }>,
+  approve: { to: string; data: string; value: bigint } | null,
+  tokenMeta: { symbol: string },
+  senderAddress: string
+): void {
+  console.log();
+  console.log(chalk.bold("Planned transactions (not submitted)"));
+  console.log(
+    chalk.dim("Add --broadcast to sign and send these transactions on-chain from the CLI.")
+  );
+  console.log();
+  if (approve) {
+    const o: TxPayloadJson = {
+      data: approve.data,
+      to: approve.to,
+      from: senderAddress,
+      value: approve.value.toString(),
+    };
+    console.log(
+      chalk.cyan(`Approve ${tokenMeta.symbol} ERC20 tx:`),
+      jsonStringifyWithBigInt(o)
+    );
+    console.log();
+  }
+  txs.forEach((tx, i) => {
+    const label =
+      txs.length > 1
+        ? `Shield operation tx ${i + 1}/${txs.length}`
+        : "Shield operation tx";
+    const o: TxPayloadJson = {
+      data: tx.data,
+      to: tx.to,
+      from: senderAddress,
+      value: tx.value.toString(),
+    };
+    console.log(chalk.cyan(`${label}:`), jsonStringifyWithBigInt(o));
+  });
+}
+
 function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigint }> {
   if (
     typeof op === "object" &&
@@ -150,42 +179,40 @@ export function registerShieldCommand(program: Command): void {
     .command("shield")
     .description("Shield public funds into a privacy protocol")
     .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
-    .option(
-      "--wallet <name>",
-      "Wallet name (omit to choose interactively from the list)"
-    )
-    .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
+    .option("--wallet <name>", cliOptions.walletPickList)
+    .option("--password <password>", cliOptions.password)
     .requiredOption("--from <address-or-index>", "Public sender address or public-account index")
-    .option("--from-priv", "Allow deriving the --from index directly from mnemonic if not in public accounts")
+    .option(
+      "--from-priv",
+      "With --broadcast: derive --from index from mnemonic when missing from public accounts (not required for dry-run)"
+    )
+    .option(
+      "--broadcast",
+      "Sign and submit on-chain (omit to print transaction payloads only)"
+    )
     .option("--token <address|eth>", "Token address (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
-    .option("--rpc-url <url>", "RPC URL (or set RPC_URL)")
+    .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
-    .option(
-      "--non-interactive",
-      "Agent mode: no confirmation prompts; requires --password; --wallet required if omitted"
-    )
-    .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
+    .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ShieldOpts) => {
-      const protocol = opts.protocol;
-      if (protocol !== "railgun" && protocol !== "privacy-pools") {
-        log.error(chalk.red('✖ --protocol must be "railgun" or "privacy-pools".'));
-        process.exitCode = 1;
+      if (!isSupportedProtocol(opts.protocol)) {
+        cliError('--protocol must be "railgun" or "privacy-pools".');
         return;
       }
+      const protocol = opts.protocol;
 
       if (!!opts.amountWei === !!opts.amountFormatted) {
-        log.error(chalk.red("✖ Provide exactly one of --amount-wei or --amount-formatted."));
-        process.exitCode = 1;
+        cliError("Provide exactly one of --amount-wei or --amount-formatted.");
         return;
       }
 
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
       if (!rpcUrl) {
-        log.error(chalk.red("✖ Missing --rpc-url (or environment variable RPC_URL)."));
-        process.exitCode = 1;
+        cliError("Missing --rpc-url (or environment variable RPC_URL).");
         return;
       }
 
@@ -195,19 +222,14 @@ export function registerShieldCommand(program: Command): void {
         wallet: opts.wallet,
         nonInteractive: opts.nonInteractive,
       });
-      if (!walletName) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!walletName) return;
       const fromValue = opts.from ?? "";
 
       let walletDir: string;
       try {
         walletDir = resolveWalletDir(dataDir, walletName);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
@@ -215,49 +237,37 @@ export function registerShieldCommand(program: Command): void {
         flagPassword: opts.password,
         nonInteractive: opts.nonInteractive,
       });
-      if (!password) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!password) return;
 
       let mnemonic: string;
       try {
         mnemonic = readSeedKeystore(password, walletDir);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
-      const walletChainId = readWalletType(walletDir) === "testnet" ? "11155111" : "1";
-      const rpc = await makeEthersProvider(rpcUrl);
       let chainId: bigint;
       try {
-        chainId = (await rpc.getNetwork()).chainId;
-      } finally {
-        rpc.destroy();
-      }
-      if (chainId.toString() !== walletChainId) {
-        log.error(
-          chalk.red(
-            `✖ RPC chainId ${chainId.toString()} does not match wallet chainId ${walletChainId}.`
-          )
-        );
-        process.exitCode = 1;
+        chainId = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
+      } catch (e) {
+        cliErrorFromCaught(e);
         return;
       }
 
-      const tokenMeta = await resolveTokenMeta(opts.token, rpcUrl);
+      let tokenMeta: Awaited<ReturnType<typeof resolveTokenMeta>>;
+      try {
+        tokenMeta = await resolveTokenMeta(opts.token, rpcUrl);
+      } catch (e) {
+        cliErrorFromCaught(e);
+        return;
+      }
+
       if (protocol === "privacy-pools" && !tokenMeta.isEth) {
-        const wl = PRIVACY_POOLS_TOKEN_WHITELIST[chainId.toString()] ?? new Set<string>();
-        if (!wl.has(tokenMeta.tokenAddress.toLowerCase())) {
-          log.error(
-            chalk.red(
-              `✖ Token ${tokenMeta.tokenAddress} is not whitelisted for privacy-pools on chain ${chainId.toString()}.`
-            )
-          );
-          process.exitCode = 1;
+        try {
+          assertPpErc20TokenWhitelisted(chainId, tokenMeta.tokenAddress);
+        } catch (e) {
+          cliErrorFromCaught(e);
           return;
         }
       }
@@ -266,13 +276,15 @@ export function registerShieldCommand(program: Command): void {
         ? BigInt(opts.amountWei)
         : parseUnits(opts.amountFormatted ?? "0", tokenMeta.decimals);
       if (amount <= 0n) {
-        log.error(chalk.red("✖ Amount must be greater than zero."));
-        process.exitCode = 1;
+        cliError("Amount must be greater than zero.");
         return;
       }
 
+      const broadcast = !!opts.broadcast;
+      const dryRun = !broadcast;
+
       const fromIndex = parseFromIndex(fromValue);
-      let senderPrivateKey: string;
+      let senderPrivateKey: string | undefined;
       let senderAddress: string;
       if (fromIndex !== null) {
         const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
@@ -280,35 +292,33 @@ export function registerShieldCommand(program: Command): void {
         if (account) {
           senderPrivateKey = account.priv;
           senderAddress = account.address;
-        } else if (opts.fromPriv) {
+        } else if (opts.fromPriv || dryRun) {
           senderPrivateKey = Mnemonic.to0xPrivateKeyByIndex(mnemonic, fromIndex);
           senderAddress = new Wallet(senderPrivateKey).address;
         } else {
-          log.error(
-            chalk.red(
-              `✖ Public account index ${fromIndex} not found. Use --from-priv to derive directly from mnemonic.`
-            )
+          cliError(
+            `Public account index ${fromIndex} not found. Use --from-priv with --broadcast to derive from mnemonic, or omit --broadcast for a dry-run.`
           );
-          process.exitCode = 1;
           return;
         }
       } else if (isAddress(fromValue)) {
         senderAddress = getAddress(fromValue);
         const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
-        const match = publicStorage.getAccounts().find((x) => x.address.toLowerCase() === senderAddress.toLowerCase());
-        if (!match) {
-          log.error(
-            chalk.red(
-              `✖ Address ${senderAddress} is not in this wallet's public accounts. Use an index with --from-priv for direct derivation.`
-            )
+        const match = publicStorage
+          .getAccounts()
+          .find((x) => x.address.toLowerCase() === senderAddress.toLowerCase());
+        if (match) {
+          senderPrivateKey = match.priv;
+        } else if (dryRun) {
+          senderPrivateKey = undefined;
+        } else {
+          cliError(
+            `Address ${senderAddress} is not in this wallet's public accounts. Use --broadcast with --from-priv and an index, or omit --broadcast to preview txs for this address.`
           );
-          process.exitCode = 1;
           return;
         }
-        senderPrivateKey = match.priv;
       } else {
-        log.error(chalk.red("✖ --from must be either a valid address or a non-negative index."));
-        process.exitCode = 1;
+        cliError("--from must be either a valid address or a non-negative index.");
         return;
       }
 
@@ -320,7 +330,7 @@ export function registerShieldCommand(program: Command): void {
           walletDir,
           password,
           mnemonic,
-          pluginId: protocol === "railgun" ? "rg" : "ppv1",
+          pluginId: pluginIdForProtocol(protocol),
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
@@ -328,8 +338,68 @@ export function registerShieldCommand(program: Command): void {
           asset: { __type: "erc20", contract: tokenMeta.tokenAddress as `0x${string}` },
           amount,
         };
-        const op = await plugin.prepareShield(asset as AssetAmount);
-        const txs = toShieldTxs(op);
+        let txs: Array<{ to: string; data: string; value: bigint }>;
+        try {
+          const op = await plugin.prepareShield(asset as AssetAmount);
+          txs = toShieldTxs(op);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : JSON.stringify(e);
+          cliError(msg);
+          return;
+        }
+
+        if (dryRun) {
+          let approve: { to: string; data: string; value: bigint } | null = null;
+          if (!tokenMeta.isEth) {
+            const erc20Read = new Contract(
+              tokenMeta.tokenAddress,
+              ERC20_ABI,
+              rpcForHost
+            );
+            const allowance: bigint = await erc20Read.allowance(
+              senderAddress,
+              txs[0]!.to
+            );
+            if (allowance < amount) {
+              approve = encodeErc20ApproveTx(
+                tokenMeta.tokenAddress,
+                txs[0]!.to,
+                amount
+              );
+            }
+          }
+          const transactions: TxPayloadJson[] = [];
+          if (approve) {
+            transactions.push({
+              data: approve.data,
+              to: approve.to,
+              from: senderAddress,
+              value: approve.value.toString(),
+            });
+          }
+          for (const tx of txs) {
+            transactions.push({
+              data: tx.data,
+              to: tx.to,
+              from: senderAddress,
+              value: tx.value.toString(),
+            });
+          }
+          if (opts.nonInteractive) {
+            console.log(jsonStringifyWithBigInt({ transactions }));
+          } else {
+            printShieldDryRunInteractive(txs, approve, tokenMeta, senderAddress);
+            console.log(chalk.green("✔ Shield dry run complete."));
+          }
+          return;
+        }
+
+        if (!senderPrivateKey) {
+          cliError(
+            "Cannot sign: no private key for this --from (use a saved public account or --from-priv with --broadcast)."
+          );
+          return;
+        }
 
         const signer = new Wallet(senderPrivateKey, rpcForHost);
         // const feeOverrides = await computeFees(rpcUrl, opts);
@@ -368,9 +438,7 @@ export function registerShieldCommand(program: Command): void {
           txSpinner.stop(`Shield tx mined: ${sent.hash}`);
         }
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       } finally {
         rpcForHost.destroy();

@@ -2,12 +2,13 @@ import { join } from "node:path";
 import chalk from "chalk";
 import type { Command } from "commander";
 
-import { DEFAULT_DATA_DIR } from "../utils/helpers";
+import { cliOptions } from "../utils/cli-command-options";
+import { DEFAULT_DATA_DIR } from "../utils/rpc";
 import {
   listWalletDirNames,
   walletNetworkKind,
   type WalletNetworkKind,
-} from "../utils/wallets";
+} from "../utils/wallets-util";
 
 type ListWalletsOpts = {
   dataDir?: string;
@@ -28,11 +29,8 @@ export function registerListWalletsCommand(program: Command): void {
   program
     .command("list-wallets")
     .description("List existing wallets by name with mainnet or testnet")
-    .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
-    .option(
-      "--non-interactive",
-      "Agent mode: print JSON instead of human-readable output (no prompts)"
-    )
+    .option("--dataDir <path>", cliOptions.dataDir)
+    .option("--non-interactive", cliOptions.nonInteractiveListWallets)
     .action((opts: ListWalletsOpts) => {
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const names = listWalletDirNames(dataDir);

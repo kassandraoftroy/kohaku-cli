@@ -1,12 +1,15 @@
 import { join } from "node:path";
-import { log } from "@clack/prompts";
-import chalk from "chalk";
 import type { Command } from "commander";
 
-import { DEFAULT_DATA_DIR, walletNameToDirSegment } from "../utils/helpers";
-import { resolveWalletNameOrPrompt } from "../utils/wallets";
+import { cliOptions } from "../utils/cli-command-options";
+import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import { DEFAULT_DATA_DIR } from "../utils/rpc";
+import {
+  resolveWalletDir,
+  resolveWalletNameOrPrompt,
+  resolveWalletPassword,
+} from "../utils/wallets-util";
 import { loadStore } from "../utils/aes-storage";
-import { resolveWalletPassword } from "../utils/wallet-password";
 
 const STORAGE_TYPES = ["public", "railgun", "privacy-pools"] as const;
 type StorageType = (typeof STORAGE_TYPES)[number];
@@ -50,25 +53,16 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
     .description(
       "Decrypt and print storage JSON: type is public | railgun | privacy-pools"
     )
-    .option(
-      "--wallet <name>",
-      "Wallet name (omit to choose interactively from the list)"
-    )
-    .option("--password <password>", "Wallet password (required with --non-interactive; else prompted)")
-    .option(
-      "--non-interactive",
-      "Agent mode: no prompts; requires --password; --wallet required if omitted"
-    )
-    .option("--dataDir <path>", "Kohaku data directory (default: ~/.kohaku-cli)")
+    .option("--wallet <name>", cliOptions.walletPickList)
+    .option("--password <password>", cliOptions.password)
+    .option("--non-interactive", cliOptions.nonInteractiveCompact)
+    .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (typeArg: string, opts: SeeDecryptedStorageOpts) => {
       const storageType = parseStorageType(typeArg);
       if (!storageType) {
-        log.error(
-          chalk.red(
-            `✖ <type> must be one of: ${STORAGE_TYPES.join(", ")} (got "${typeArg}")`
-          )
+        cliError(
+          `<type> must be one of: ${STORAGE_TYPES.join(", ")} (got "${typeArg}")`
         );
-        process.exitCode = 1;
         return;
       }
 
@@ -78,17 +72,12 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
         wallet: opts.wallet,
         nonInteractive: opts.nonInteractive,
       });
-      if (!walletName) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!walletName) return;
       let walletDir: string;
       try {
-        walletDir = join(dataDir, walletNameToDirSegment(walletName));
+        walletDir = resolveWalletDir(dataDir, walletName);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
@@ -96,10 +85,7 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
         flagPassword: opts.password,
         nonInteractive: opts.nonInteractive,
       });
-      if (!password) {
-        process.exitCode = 1;
-        return;
-      }
+      if (!password) return;
 
       const fileName = TYPE_TO_FILENAME[storageType];
       const storePath = join(walletDir, fileName);
@@ -108,9 +94,7 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
       try {
         ({ store: plaintext } = loadStore(storePath, password));
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log.error(chalk.red(`✖ ${msg}`));
-        process.exitCode = 1;
+        cliErrorFromCaught(e);
         return;
       }
 
