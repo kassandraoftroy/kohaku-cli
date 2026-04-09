@@ -13,7 +13,11 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { resolveWalletDir, writeWalletType } from "../utils/wallets-util";
+import {
+  resolvePasswordInputPreferFile,
+  resolveWalletDir,
+  writeWalletType,
+} from "../utils/wallets-util";
 import {
   generateMnemonic,
   normalizeValidatedMnemonic,
@@ -189,11 +193,12 @@ export function registerCreateWalletCommand(program: Command): void {
 
       let encryptPassword: string;
       if (opts.nonInteractive) {
-        if (!opts.password?.trim()) {
+        const resolved = resolvePasswordInputPreferFile(opts.password);
+        if (!resolved) {
           cliError("--password is required when using --non-interactive.");
           return;
         }
-        encryptPassword = opts.password;
+        encryptPassword = resolved;
       } else {
         encryptPassword = await promptPasswordEncryptWallet();
       }

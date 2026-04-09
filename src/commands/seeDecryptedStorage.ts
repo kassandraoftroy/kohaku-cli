@@ -81,14 +81,17 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
         return;
       }
 
+      const fileName = TYPE_TO_FILENAME[storageType];
+      const storePath = join(walletDir, fileName);
+
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
         nonInteractive: opts.nonInteractive,
+        validate: (candidate) => {
+          loadStore(storePath, candidate);
+        },
       });
       if (!password) return;
-
-      const fileName = TYPE_TO_FILENAME[storageType];
-      const storePath = join(walletDir, fileName);
 
       let plaintext: string;
       try {

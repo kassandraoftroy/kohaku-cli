@@ -509,6 +509,9 @@ export function registerBalancesCommand(program: Command): void {
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
         nonInteractive: opts.nonInteractive,
+        validate: (candidate) => {
+          readSeedKeystore(candidate, walletDir);
+        },
       });
       if (!password) return;
 

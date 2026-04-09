@@ -69,10 +69,34 @@ export function expectedChainIdStringFromWalletDir(walletDir: string): string {
 export async function resolveWalletPassword(opts: {
   flagPassword?: string | undefined;
   nonInteractive?: boolean | undefined;
+  validate?: ((password: string) => void | Promise<void>) | undefined;
 }): Promise<string | null> {
   const fromFlag = opts.flagPassword?.trim();
   if (fromFlag) {
-    return fromFlag;
+    const candidates: string[] = [fromFlag];
+    if (existsSync(fromFlag)) {
+      try {
+        const fromFile = readFileSync(fromFlag, "utf-8").trim();
+        if (fromFile && fromFile !== fromFlag) {
+          candidates.push(fromFile);
+        }
+      } catch {
+        // Ignore file read errors; keep raw password candidate.
+      }
+    }
+    if (opts.validate) {
+      let lastErr: unknown;
+      for (const pw of candidates) {
+        try {
+          await opts.validate(pw);
+          return pw;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error("Invalid wallet password.");
+    }
+    return candidates[0]!;
   }
   if (opts.nonInteractive) {
     cliError("--password is required when using --non-interactive.");
@@ -84,10 +108,43 @@ export async function resolveWalletPassword(opts: {
       mask: "*",
     });
     if (pw?.trim()) {
-      return pw.trim();
+      const trimmed = pw.trim();
+      if (!opts.validate) {
+        return trimmed;
+      }
+      try {
+        await opts.validate(trimmed);
+        return trimmed;
+      } catch (e) {
+        log.warn(e instanceof Error ? e.message : "Invalid wallet password.");
+        continue;
+      }
     }
     log.warn("Password cannot be empty.");
   }
+}
+
+/**
+ * For wallet creation we cannot validate against existing encrypted data yet.
+ * If --password points to an existing file, use its trimmed contents; otherwise
+ * treat --password as the literal password text.
+ */
+export function resolvePasswordInputPreferFile(
+  flagPassword: string | undefined
+): string | null {
+  const raw = flagPassword?.trim();
+  if (!raw) return null;
+
+  if (existsSync(raw)) {
+    try {
+      const fromFile = readFileSync(raw, "utf-8").trim();
+      if (fromFile) return fromFile;
+    } catch {
+      // Fall back to using raw flag text as password.
+    }
+  }
+
+  return raw;
 }
 
 // --- Listing & selection ---
@@ -100,11 +157,8 @@ export function walletNetworkKind(walletDir: string): WalletNetworkKind {
     return "unknown";
   }
   const raw = readFileSync(typePath, "utf-8").trim().toLowerCase();
-  if (raw === "testnet") {
-    return "testnet";
-  }
-  if (raw === "mainnet") {
-    return "mainnet";
+  if (raw === "testnet" || raw === "mainnet") {
+    return raw as WalletNetworkKind;
   }
   return "unknown";
 }
