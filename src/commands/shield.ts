@@ -159,10 +159,23 @@ function printShieldDryRunInteractive(
 }
 
 function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigint }> {
-  if (!Array.isArray(op)) {
+  let txs: Array<{ to: string; data: string; value: bigint }> | null = null;
+
+  if (Array.isArray(op)) {
+    txs = op as Array<{ to: string; data: string; value: bigint }>;
+  } else if (
+    typeof op === "object" &&
+    op !== null &&
+    "txns" in op &&
+    Array.isArray((op as { txns?: unknown[] }).txns)
+  ) {
+    txs = (op as { txns: Array<{ to: string; data: string; value: bigint }> }).txns;
+  }
+
+  if (!txs) {
     throw new Error("Unsupported shield operation shape returned by plugin.");
   }
-  const txs = op as Array<{ to: string; data: string; value: bigint }>;
+
   if (txs.length !== 1) {
     throw new Error(
       `Expected prepareShield() to return exactly 1 tx, got ${txs.length}.`
