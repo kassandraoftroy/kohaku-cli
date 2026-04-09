@@ -121,6 +121,11 @@ type TxPayloadJson = {
   value: string;
 };
 
+type BroadcastTxResultJson = {
+  type: "approval" | "shield";
+  hash: string;
+};
+
 function printShieldDryRunInteractive(
   shieldTx: { to: string; data: string; value: bigint },
   approve: { to: string; data: string; value: bigint } | null,
@@ -529,6 +534,7 @@ export function registerShieldCommand(program: Command): void {
         const signer = new Wallet(senderPrivateKey, rpcForHost);
         // const feeOverrides = await computeFees(rpcUrl, opts);
         const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
+        const broadcastTransactions: BroadcastTxResultJson[] = [];
 
         let hasApproval = false;
         if (!tokenMeta.isEth) {
@@ -540,10 +546,15 @@ export function registerShieldCommand(program: Command): void {
               !!opts.nonInteractive,
               `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
             );
-            txSpinner.start("Sending approval 1/2...");
+            if (!opts.nonInteractive) {
+              txSpinner.start("Sending approval 1/2...");
+            }
             const approveTx = await erc20.approve(tx.to, amount/*, feeOverrides*/);
             await approveTx.wait();
-            txSpinner.stop(`Approval mined (1/2): ${approveTx.hash}`);
+            broadcastTransactions.push({ type: "approval", hash: approveTx.hash });
+            if (!opts.nonInteractive) {
+              txSpinner.stop(`Approval mined (1/2): ${approveTx.hash}`);
+            }
           }
         }
 
@@ -552,7 +563,9 @@ export function registerShieldCommand(program: Command): void {
           !!opts.nonInteractive,
           `Send shield transaction (${shieldStep}): shield ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
         );
-        txSpinner.start(`Sending shield tx ${shieldStep}...`);
+        if (!opts.nonInteractive) {
+          txSpinner.start(`Sending shield tx ${shieldStep}...`);
+        }
 
         const sent = await signer.sendTransaction({
           to: tx.to,
@@ -562,7 +575,15 @@ export function registerShieldCommand(program: Command): void {
           // ...feeOverrides,
         });
         await sent.wait();
-        txSpinner.stop(`Shield tx mined (${shieldStep}): ${sent.hash}`);
+        broadcastTransactions.push({ type: "shield", hash: sent.hash });
+        if (!opts.nonInteractive) {
+          txSpinner.stop(`Shield tx mined (${shieldStep}): ${sent.hash}`);
+        } else {
+          console.log(
+            jsonStringifyWithBigInt({ transactions: broadcastTransactions })
+          );
+          return;
+        }
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -570,6 +591,8 @@ export function registerShieldCommand(program: Command): void {
         rpcForHost.destroy();
       }
 
-      console.log(chalk.green("✔ Shield flow completed."));
+      if (!opts.nonInteractive) {
+        console.log(chalk.green("✔ Shield flow completed."));
+      }
     });
 }
