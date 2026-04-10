@@ -8,6 +8,7 @@ import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
+import ppv1MainnetState from "./ppv1-mainnet-state.json";
 
 const OXBOW_ASP_URL = "https://dw.0xbow.io";
 
@@ -80,14 +81,16 @@ export async function createProtocolPlugin(
       deploymentBlock: params.entrypoint.deploymentBlock,
     },
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
-    aspServiceFactory: () =>
-      new OxBowAspService({
-        network: host.network,
-        aspUrl: OXBOW_ASP_URL,
-      }),
     ...(chainId === 11155111n
-      ? { initialState: ppv1SepoliaState as never }
-      : {}),
+      ? {
+          aspServiceFactory: () =>
+            new OxBowAspService({
+              network: host.network,
+              aspUrl: OXBOW_ASP_URL,
+            }),
+          initialState: ppv1SepoliaState as never,
+        }
+      : { initialState: ppv1MainnetState as never }),
   };
 
   return createPPv1Plugin(host, ppv1Params);

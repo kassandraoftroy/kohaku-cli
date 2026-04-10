@@ -259,6 +259,24 @@ function stringifyBalancesJson(payload: unknown): string {
   );
 }
 
+function formatWarningError(e: unknown): string {
+  if (e instanceof Error) {
+    return e.message;
+  }
+  if (typeof e === "object" && e !== null) {
+    try {
+      return JSON.stringify(
+        e,
+        (_key, value) => (typeof value === "bigint" ? value.toString() : value),
+        2
+      );
+    } catch {
+      return String(e);
+    }
+  }
+  return String(e);
+}
+
 function parseTokensList(raw: string | undefined): `0x${string}`[] {
   if (!raw?.trim()) return [];
   const parts = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
@@ -569,7 +587,7 @@ export function registerBalancesCommand(program: Command): void {
           chainIdBn
         );
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = formatWarningError(e);
         log.warn(
           chalk.yellow(`Privacy pools private balances unavailable: ${msg}`)
         );
