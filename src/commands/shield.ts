@@ -126,6 +126,28 @@ type BroadcastTxResultJson = {
   hash: string;
 };
 
+async function simulateTransactionOrThrow(
+  rpc: Awaited<ReturnType<typeof makeEthersProvider>>,
+  tx: { to: string; from: string; data: string; value: bigint; gasLimit?: bigint },
+  stepLabel: string
+): Promise<void> {
+  try {
+    await rpc.call({
+      to: tx.to,
+      from: tx.from,
+      data: tx.data,
+      value: tx.value,
+      gasLimit: tx.gasLimit,
+    });
+  } catch (e) {
+    const msg =
+      e instanceof Error
+        ? e.message
+        : `Simulation failed with non-Error value: ${jsonStringifyWithBigInt(e)}`;
+    throw new Error(`${stepLabel} simulation failed: ${msg}`);
+  }
+}
+
 function printShieldDryRunInteractive(
   shieldTx: { to: string; data: string; value: bigint },
   approve: { to: string; data: string; value: bigint } | null,
@@ -545,6 +567,16 @@ export function registerShieldCommand(program: Command): void {
           const allowance: bigint = await erc20.allowance(senderAddress, tx.to);
           if (allowance < amount) {
             hasApproval = true;
+            await simulateTransactionOrThrow(
+              rpcForHost,
+              {
+                to: tokenMeta.tokenAddress,
+                from: senderAddress,
+                data: encodeErc20ApproveTx(tokenMeta.tokenAddress, tx.to, amount).data,
+                value: 0n,
+              },
+              "Approval transaction"
+            );
             await maybeConfirm(
               !!opts.nonInteractive,
               `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
@@ -565,6 +597,17 @@ export function registerShieldCommand(program: Command): void {
         await maybeConfirm(
           !!opts.nonInteractive,
           `Send shield transaction (${shieldStep}): shield ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
+        );
+        await simulateTransactionOrThrow(
+          rpcForHost,
+          {
+            to: tx.to,
+            from: senderAddress,
+            data: tx.data,
+            value: tx.value,
+            gasLimit: 2000000n,
+          },
+          "Shield transaction"
         );
         if (!opts.nonInteractive) {
           txSpinner.start(`Sending shield tx ${shieldStep}...`);
