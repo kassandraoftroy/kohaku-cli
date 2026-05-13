@@ -16,6 +16,7 @@ import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
 import { cliOptions } from "../utils/cli-command-options";
+import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
@@ -471,6 +472,7 @@ export function registerShieldCommand(program: Command): void {
 
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const txSpinner = spinner();
+      const quiet = quietNonInteractive(opts.nonInteractive);
       try {
         const host = await makeHost({
           rpc: rpcForHost,
@@ -541,7 +543,7 @@ export function registerShieldCommand(program: Command): void {
             value: tx.value.toString(),
           });
           if (opts.nonInteractive) {
-            console.log(jsonStringifyWithBigInt({ transactions }));
+            logCliJson({ transactions });
           } else {
             printShieldDryRunInteractive(tx, approve, tokenMeta, senderAddress);
             console.log(chalk.green("✔ Shield dry run complete."));
@@ -581,15 +583,18 @@ export function registerShieldCommand(program: Command): void {
               !!opts.nonInteractive,
               `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
             );
-            if (!opts.nonInteractive) {
-              txSpinner.start("Sending approval 1/2...");
-            }
-            const approveTx = await erc20.approve(tx.to, amount/*, feeOverrides*/);
-            await approveTx.wait();
+            const approveTx = await runQuietSpinner(
+              quiet,
+              txSpinner,
+              { start: "Sending approval 1/2...", failure: "Approval failed." },
+              async () => {
+                const t = await erc20.approve(tx.to, amount/*, feeOverrides*/);
+                await t.wait();
+                return t;
+              },
+              (t) => `Approval mined (1/2): ${t.hash}`
+            );
             broadcastTransactions.push({ type: "approval", hash: approveTx.hash });
-            if (!opts.nonInteractive) {
-              txSpinner.stop(`Approval mined (1/2): ${approveTx.hash}`);
-            }
           }
         }
 
@@ -609,25 +614,29 @@ export function registerShieldCommand(program: Command): void {
           },
           "Shield transaction"
         );
-        if (!opts.nonInteractive) {
-          txSpinner.start(`Sending shield tx ${shieldStep}...`);
-        }
-
-        const sent = await signer.sendTransaction({
-          to: tx.to,
-          data: tx.data,
-          value: tx.value,
-          gasLimit: 2000000,
-          // ...feeOverrides,
-        });
-        await sent.wait();
+        const sent = await runQuietSpinner(
+          quiet,
+          txSpinner,
+          {
+            start: `Sending shield tx ${shieldStep}...`,
+            failure: "Shield transaction failed.",
+          },
+          async () => {
+            const s = await signer.sendTransaction({
+              to: tx.to,
+              data: tx.data,
+              value: tx.value,
+              gasLimit: 2000000,
+              // ...feeOverrides,
+            });
+            await s.wait();
+            return s;
+          },
+          (s) => `Shield tx mined (${shieldStep}): ${s.hash}`
+        );
         broadcastTransactions.push({ type: "shield", hash: sent.hash });
-        if (!opts.nonInteractive) {
-          txSpinner.stop(`Shield tx mined (${shieldStep}): ${sent.hash}`);
-        } else {
-          console.log(
-            jsonStringifyWithBigInt({ transactions: broadcastTransactions })
-          );
+        if (opts.nonInteractive) {
+          logCliJson({ transactions: broadcastTransactions });
           return;
         }
       } catch (e) {

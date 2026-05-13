@@ -1,4 +1,4 @@
-import { confirm } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import { createPPv1Broadcaster } from "@kohaku-eth/privacy-pools";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
@@ -8,8 +8,12 @@ import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
 import { makeHost } from "../host/makeHost";
 import { cliOptions } from "../utils/cli-command-options";
+import {
+  logCliJson,
+  quietNonInteractive,
+  runQuietSpinner,
+} from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
-import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -25,6 +29,7 @@ import {
 import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
+  ETH_AS_ERC20,
   PRIVACY_POOLS_BROADCASTER_URL,
   assertPpErc20TokenWhitelisted,
   createProtocolPlugin,
@@ -53,17 +58,17 @@ async function broadcastPreparedPrivateOp(
   host: Host,
   plugin: unknown,
   operation: unknown
-): Promise<void> {
+): Promise<unknown> {
   if (protocol === "railgun") {
     await (plugin as { broadcast: (op: unknown) => Promise<void> }).broadcast(
       operation
     );
-    return;
+    return undefined;
   }
   const broadcaster = createPPv1Broadcaster(host, {
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
   });
-  await broadcaster.broadcast(operation as never);
+  return await broadcaster.broadcast(operation as never);
 }
 
 export function registerUnshieldCommand(program: Command): void {
@@ -94,13 +99,24 @@ export function registerUnshieldCommand(program: Command): void {
 
       const hasTo = !!opts.to?.trim();
       const hasNext = !!opts.next;
-      if (hasTo === hasNext) {
-        cliError("Provide exactly one of --to <address> or --next.");
+      if (hasTo && hasNext) {
+        cliError("Provide only one of --to <address> or --next, not both.");
         return;
       }
 
-      if (!!opts.amountWei === !!opts.amountFormatted) {
-        cliError("Provide exactly one of --amount-wei or --amount-formatted.");
+      if (opts.amountWei && opts.amountFormatted) {
+        cliError("Provide only one of --amount-wei or --amount-formatted.");
+        return;
+      }
+
+      if (!hasTo && !hasNext && opts.nonInteractive) {
+        cliError("Missing --to or --next in non-interactive mode.");
+        return;
+      }
+      if (!opts.amountWei && !opts.amountFormatted && opts.nonInteractive) {
+        cliError(
+          "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+        );
         return;
       }
 
@@ -151,20 +167,6 @@ export function registerUnshieldCommand(program: Command): void {
         return;
       }
 
-      let recipient: `0x${string}`;
-      if (hasNext) {
-        const storage = makePublicAccountsStorage(walletDir, mnemonic, password);
-        const added = storage.addNextAccounts(1);
-        recipient = getAddress(added[0]!.address) as `0x${string}`;
-      } else {
-        const raw = opts.to!.trim();
-        if (!isAddress(raw)) {
-          cliError(`Invalid --to address: ${raw}`);
-          return;
-        }
-        recipient = getAddress(raw) as `0x${string}`;
-      }
-
       let tokenMeta: Awaited<ReturnType<typeof resolveTokenMeta>>;
       try {
         tokenMeta = await resolveTokenMeta(opts.token, rpcUrl);
@@ -182,24 +184,73 @@ export function registerUnshieldCommand(program: Command): void {
         }
       }
 
-      const amount = opts.amountWei
-        ? BigInt(opts.amountWei)
-        : parseUnits(opts.amountFormatted ?? "0", tokenMeta.decimals);
-      if (amount <= 0n) {
-        cliError("Amount must be greater than zero.");
-        return;
+      const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+
+      let recipient: `0x${string}`;
+      if (hasNext) {
+        const added = publicStorage.addNextAccounts(1);
+        recipient = getAddress(added[0]!.address) as `0x${string}`;
+      } else if (hasTo) {
+        const raw = opts.to!.trim();
+        if (!isAddress(raw)) {
+          cliError(`Invalid --to address: ${raw}`);
+          return;
+        }
+        recipient = getAddress(raw) as `0x${string}`;
+      } else {
+        const existingAccounts = publicStorage.getAccounts();
+        const NEXT_FRESH = "__next_fresh__";
+        const CUSTOM_ADDR = "__custom__";
+
+        const choices: Array<{ value: string; name: string }> = [];
+        choices.push({
+          value: NEXT_FRESH,
+          name: "Generate next fresh public account (--next)",
+        });
+        choices.push({
+          value: CUSTOM_ADDR,
+          name: "Enter a custom address",
+        });
+        for (const acct of existingAccounts) {
+          choices.push({
+            value: acct.address,
+            name: `[${acct.index}] ${acct.address}`,
+          });
+        }
+
+        const chosen = await select<string>({
+          message: `Recipient address (${tokenMeta.symbol} will be unshielded here)`,
+          choices,
+        });
+
+        if (chosen === NEXT_FRESH) {
+          const added = publicStorage.addNextAccounts(1);
+          recipient = getAddress(added[0]!.address) as `0x${string}`;
+        } else if (chosen === CUSTOM_ADDR) {
+          const addr = await input({
+            message: "Enter recipient address (0x...):",
+            validate: (value) => {
+              if (!isAddress(value.trim())) return "Invalid Ethereum address.";
+              return true;
+            },
+          });
+          recipient = getAddress(addr.trim()) as `0x${string}`;
+        } else {
+          recipient = getAddress(chosen) as `0x${string}`;
+        }
       }
 
-      const asset: AssetAmount = {
-        asset: {
-          __type: "erc20",
-          contract: tokenMeta.tokenAddress as `0x${string}`,
-        },
-        amount,
-      };
+      if (!opts.nonInteractive) {
+        console.log(
+          chalk.yellow(
+            "Unshielding sends a private withdrawal through the protocol relayer/broadcaster. Review the amount and recipient carefully."
+          )
+        );
+      }
 
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const spin = spinner();
+      const quiet = quietNonInteractive(opts.nonInteractive);
       try {
         const host = await makeHost({
           rpc: rpcForHost,
@@ -210,46 +261,101 @@ export function registerUnshieldCommand(program: Command): void {
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
-        if (!opts.nonInteractive) {
-          console.log(
-            chalk.yellow(
-              "Unshielding sends a private withdrawal through the protocol relayer/broadcaster. Review the amount and recipient carefully."
-            )
+        if (protocol === "privacy-pools" && "sync" in plugin && typeof plugin.sync === "function") {
+          const sync = (plugin as { sync: () => Promise<void> }).sync;
+          await runQuietSpinner(
+            quiet,
+            spin,
+            { start: "Syncing private state…", failure: "Sync failed." },
+            () => sync.call(plugin),
+            () => "Private state synced."
           );
         }
 
-        if (protocol === "privacy-pools" && "sync" in plugin && typeof plugin.sync === "function") {
-          spin.start("Syncing private state…");
-          try {
-            await plugin.sync();
-            spin.stop("Private state synced.");
-          } catch (syncErr) {
-            spin.stop("Sync failed.");
-            throw syncErr;
+        let shieldedBalance = 0n;
+        try {
+          const balances: AssetAmount[] = await (
+            plugin as unknown as { balance: (a: unknown) => Promise<AssetAmount[]> }
+          ).balance(undefined);
+          const targetAddr = tokenMeta.isEth
+            ? ETH_AS_ERC20.toLowerCase()
+            : tokenMeta.tokenAddress.toLowerCase();
+          for (const row of balances) {
+            const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
+            if (!asset || asset.__type !== "erc20") continue;
+            let addr: string;
+            if (typeof asset.contract === "string") addr = asset.contract.toLowerCase();
+            else if (typeof asset.contract === "bigint")
+              addr = `0x${asset.contract.toString(16).padStart(40, "0")}`;
+            else continue;
+            if (addr === targetAddr) {
+              shieldedBalance += row.amount;
+            }
           }
+        } catch {
+          // balance query may fail for some protocols; proceed without max hint
         }
+
+        const maxFormatted = formatUnits(shieldedBalance, tokenMeta.decimals);
+
+        let amount: bigint | null = null;
+        if (opts.amountWei) {
+          amount = BigInt(opts.amountWei);
+        } else if (opts.amountFormatted) {
+          amount = parseUnits(opts.amountFormatted, tokenMeta.decimals);
+        }
+
+        if (amount === null) {
+          const amountInput = await input({
+            message: `Amount to unshield (${tokenMeta.symbol}, max: ${maxFormatted}):`,
+            validate: (value) => {
+              if (!value.trim()) return "Amount is required.";
+              try {
+                const parsed = parseUnits(value.trim(), tokenMeta.decimals);
+                if (parsed <= 0n) return "Amount must be greater than zero.";
+                if (shieldedBalance > 0n && parsed > shieldedBalance)
+                  return `Exceeds shielded balance (max ${maxFormatted} ${tokenMeta.symbol}).`;
+              } catch {
+                return `Invalid ${tokenMeta.symbol} amount format.`;
+              }
+              return true;
+            },
+          });
+          amount = parseUnits(amountInput.trim(), tokenMeta.decimals);
+        }
+
+        if (amount <= 0n) {
+          cliError("Amount must be greater than zero.");
+          return;
+        }
+
+        const asset: AssetAmount = {
+          asset: {
+            __type: "erc20",
+            contract: tokenMeta.tokenAddress as `0x${string}`,
+          },
+          amount,
+        };
 
         const prepareLabel =
           protocol === "railgun"
             ? "Building Railgun unshield (proof + broadcaster selection)…"
             : "Building Privacy Pools unshield (proof + relayer quote)…";
-        spin.start(prepareLabel);
-        let privateOp: unknown;
-        try {
-          const prepareUnshield = (
-            plugin as unknown as {
-              prepareUnshield: (
-                a: AssetAmount,
-                t: `0x${string}`
-              ) => Promise<unknown>;
-            }
-          ).prepareUnshield.bind(plugin);
-          privateOp = await prepareUnshield(asset, recipient);
-          spin.stop("Unshield operation prepared.");
-        } catch (prepErr) {
-          spin.stop("Prepare failed.");
-          throw prepErr;
-        }
+        const prepareUnshield = (
+          plugin as unknown as {
+            prepareUnshield: (
+              a: AssetAmount,
+              t: `0x${string}`
+            ) => Promise<unknown>;
+          }
+        ).prepareUnshield.bind(plugin);
+        const privateOp = await runQuietSpinner(
+          quiet,
+          spin,
+          { start: prepareLabel, failure: "Prepare failed." },
+          () => prepareUnshield(asset, recipient),
+          () => "Unshield operation prepared."
+        );
 
         const amountLabel = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
         const via =
@@ -258,9 +364,21 @@ export function registerUnshieldCommand(program: Command): void {
             : "Privacy Pools relayer";
 
         if (!opts.broadcast) {
-          const payload = { privateOperation: privateOp };
+          const amountRaw = amount.toString();
+          const amountFormatted = formatUnits(amount, tokenMeta.decimals);
+          const payload = opts.nonInteractive
+            ? {
+                mode: "prepare" as const,
+                protocol,
+                recipient,
+                token: tokenMeta.symbol,
+                amountWei: amountRaw,
+                amountFormatted,
+                privateOperation: privateOp,
+              }
+            : { privateOperation: privateOp };
           if (opts.nonInteractive) {
-            console.log(jsonStringifyWithBigInt(payload));
+            logCliJson(payload);
           } else {
             console.log();
             console.log(chalk.bold("Prepared private operation (not broadcast)"));
@@ -276,7 +394,7 @@ export function registerUnshieldCommand(program: Command): void {
             );
             console.log();
             console.log(chalk.bold("JSON (pipe or save for tooling):"));
-            console.log(jsonStringifyWithBigInt(payload, 2));
+            logCliJson({ privateOperation: privateOp }, 2);
             console.log(chalk.green("✔ Unshield dry run complete."));
           }
           return;
@@ -298,18 +416,27 @@ export function registerUnshieldCommand(program: Command): void {
           }
         }
 
-        spin.start("Broadcasting unshield…");
-        try {
-          await broadcastPreparedPrivateOp(
+        const relayResult = await runQuietSpinner(
+          quiet,
+          spin,
+          { start: "Broadcasting unshield…", failure: "Broadcast failed." },
+          () => broadcastPreparedPrivateOp(protocol, host, plugin, privateOp),
+          () => "Unshield broadcast complete."
+        );
+
+        if (opts.nonInteractive) {
+          const amountRaw = amount.toString();
+          const amountFormatted = formatUnits(amount, tokenMeta.decimals);
+          logCliJson({
+            mode: "broadcast" as const,
             protocol,
-            host,
-            plugin,
-            privateOp
-          );
-          spin.stop("Unshield broadcast complete.");
-        } catch (bcErr) {
-          spin.stop("Broadcast failed.");
-          throw bcErr;
+            recipient,
+            token: tokenMeta.symbol,
+            amountWei: amountRaw,
+            amountFormatted,
+            relay: relayResult ?? null,
+          });
+          return;
         }
       } catch (e) {
         cliErrorFromCaught(e);
@@ -318,6 +445,8 @@ export function registerUnshieldCommand(program: Command): void {
         rpcForHost.destroy();
       }
 
-      console.log(chalk.green("✔ Unshield flow completed."));
+      if (!opts.nonInteractive) {
+        console.log(chalk.green("✔ Unshield flow completed."));
+      }
     });
 }

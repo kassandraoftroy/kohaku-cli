@@ -4,17 +4,17 @@
  */
 export const cliOptions = {
   password: "Wallet password (required with --non-interactive; else prompted)",
-  rpcUrl: "RPC URL (or set RPC_URL)",
+  rpcUrl: "RPC URL (or set RPC_URL in env)",
   dataDir: "Kohaku data directory (default: ~/.kohaku-cli)",
   walletPickList: "Wallet name (omit to choose interactively from the list)",
   walletBalancesOptional:
     "Wallet name (optional without --non-interactive; omit to pick from the list)",
   nonInteractiveShieldLike:
-    "Agent mode: no confirmation prompts; requires --password; --wallet required if omitted",
+    "Agent mode: JSON where applicable, no confirmations or spinners; requires --password and --wallet",
   nonInteractiveBalances:
-    "Agent mode: JSON only, no prompts; requires --password and --wallet",
+    "Agent mode: JSON only, no prompts or spinners; requires --password and --wallet",
   nonInteractiveCompact:
-    "Agent mode: no prompts; requires --password; --wallet required if omitted",
+    "Agent mode: no prompts or spinners; requires --password and --wallet",
   nonInteractiveListWallets:
     "Agent mode: print JSON instead of human-readable output (no prompts)",
 } as const;

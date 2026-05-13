@@ -6,6 +6,7 @@ import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
 import { makeHost } from "../host/makeHost";
 import { cliOptions } from "../utils/cli-command-options";
+import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   DEFAULT_DATA_DIR,
@@ -559,9 +560,14 @@ export function registerBalancesCommand(program: Command): void {
         return;
       }
 
+      const quiet = quietNonInteractive(opts.nonInteractive);
       const loading = spinner();
-      loading.start("Loading balances...");
-
+      try {
+        await runQuietSpinner(
+          quiet,
+          loading,
+          { start: "Loading balances...", failure: "Balances failed." },
+          async () => {
       let rgRows: AssetAmount[] = [];
       let ppRows: AssetAmount[] = [];
       try {
@@ -604,7 +610,7 @@ export function registerBalancesCommand(program: Command): void {
           ...erc20FromPrivate,
         ]);
 
-      try {
+      {
         const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
         const publicAccounts = publicStorage.getAccounts();
         const publicAccountIndexByAddress: Record<string, number> = {};
@@ -732,8 +738,6 @@ export function registerBalancesCommand(program: Command): void {
           });
         }
 
-        loading.stop("Balances loaded.");
-
         const publicAggregatedOut = filterNonZeroBalanceItems(publicBalancesAggregated);
         const publicByAddressOut = filterPublicByAddress(publicByAddress);
         const privateRailgunOut = filterNonZeroBalanceItems(privateRailgun);
@@ -780,9 +784,13 @@ export function registerBalancesCommand(program: Command): void {
             privacyPoolsNotes: privacyPoolsNotesOut,
           });
         }
+      }
+          },
+          () => "Balances loaded."
+        );
       } catch (e) {
-        loading.stop("Balances failed.", 1);
         cliErrorFromCaught(e);
+        return;
       }
     });
 }

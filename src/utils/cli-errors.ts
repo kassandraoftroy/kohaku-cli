@@ -13,5 +13,15 @@ export function cliError(message: string): void {
 }
 
 export function cliErrorFromCaught(e: unknown): void {
-  cliError(e instanceof Error ? e.message : String(e));
+  if (e instanceof Error) {
+    cliError(e.message);
+  } else if (typeof e === "object" && e !== null) {
+    try {
+      cliError(JSON.stringify(e, null, 2));
+    } catch {
+      cliError(String(e));
+    }
+  } else {
+    cliError(String(e));
+  }
 }
