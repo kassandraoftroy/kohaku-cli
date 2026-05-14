@@ -53,6 +53,70 @@ type UnshieldOpts = {
   dataDir?: string;
 };
 
+type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
+
+function ppNoteAssetLower(n: PpNoteForMax): string {
+  if (typeof n.assetAddress === "bigint") {
+    return `0x${n.assetAddress.toString(16).padStart(40, "0")}`.toLowerCase();
+  }
+  return String(n.assetAddress).toLowerCase();
+}
+
+/**
+ * Upper bound for one `prepareUnshield` call: Privacy Pools uses the largest
+ * single note (protocol cannot merge notes in one proof); Railgun uses summed
+ * balance for the token from `balance()`.
+ */
+async function maxUnshieldAmountHint(
+  protocol: SupportedProtocol,
+  plugin: unknown,
+  tokenMeta: { isEth: boolean; tokenAddress: string; decimals: number }
+): Promise<{ cap: bigint; privacyPoolsLargestNote: boolean }> {
+  const targetAddr = tokenMeta.isEth
+    ? ETH_AS_ERC20.toLowerCase()
+    : tokenMeta.tokenAddress.toLowerCase();
+
+  if (protocol === "privacy-pools") {
+    let largest = 0n;
+    try {
+      const notes = await (
+        plugin as unknown as {
+          notes: (assets?: unknown[], includeSpent?: boolean) => Promise<
+            PpNoteForMax[]
+          >;
+        }
+      ).notes(undefined, false);
+      for (const n of notes) {
+        if (ppNoteAssetLower(n) !== targetAddr || n.balance <= 0n) continue;
+        if (n.balance > largest) largest = n.balance;
+      }
+    } catch {
+      // ignore
+    }
+    return { cap: largest, privacyPoolsLargestNote: true };
+  }
+
+  let sum = 0n;
+  try {
+    const balances: AssetAmount[] = await (
+      plugin as unknown as { balance: (a: unknown) => Promise<AssetAmount[]> }
+    ).balance(undefined);
+    for (const row of balances) {
+      const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
+      if (!asset || asset.__type !== "erc20") continue;
+      let addr: string;
+      if (typeof asset.contract === "string") addr = asset.contract.toLowerCase();
+      else if (typeof asset.contract === "bigint")
+        addr = `0x${asset.contract.toString(16).padStart(40, "0")}`;
+      else continue;
+      if (addr === targetAddr) sum += row.amount;
+    }
+  } catch {
+    // ignore
+  }
+  return { cap: sum, privacyPoolsLargestNote: false };
+}
+
 async function broadcastPreparedPrivateOp(
   protocol: SupportedProtocol,
   host: Host,
@@ -272,31 +336,12 @@ export function registerUnshieldCommand(program: Command): void {
           );
         }
 
-        let shieldedBalance = 0n;
-        try {
-          const balances: AssetAmount[] = await (
-            plugin as unknown as { balance: (a: unknown) => Promise<AssetAmount[]> }
-          ).balance(undefined);
-          const targetAddr = tokenMeta.isEth
-            ? ETH_AS_ERC20.toLowerCase()
-            : tokenMeta.tokenAddress.toLowerCase();
-          for (const row of balances) {
-            const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
-            if (!asset || asset.__type !== "erc20") continue;
-            let addr: string;
-            if (typeof asset.contract === "string") addr = asset.contract.toLowerCase();
-            else if (typeof asset.contract === "bigint")
-              addr = `0x${asset.contract.toString(16).padStart(40, "0")}`;
-            else continue;
-            if (addr === targetAddr) {
-              shieldedBalance += row.amount;
-            }
-          }
-        } catch {
-          // balance query may fail for some protocols; proceed without max hint
-        }
-
-        const maxFormatted = formatUnits(shieldedBalance, tokenMeta.decimals);
+        const { cap: maxAmountHint, privacyPoolsLargestNote } =
+          await maxUnshieldAmountHint(protocol, plugin, tokenMeta);
+        const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
+        const maxPromptLabel = privacyPoolsLargestNote
+          ? "max (largest single note)"
+          : "max";
 
         let amount: bigint | null = null;
         if (opts.amountWei) {
@@ -305,16 +350,33 @@ export function registerUnshieldCommand(program: Command): void {
           amount = parseUnits(opts.amountFormatted, tokenMeta.decimals);
         }
 
+        if (
+          amount !== null &&
+          maxAmountHint > 0n &&
+          amount > maxAmountHint
+        ) {
+          const scope = privacyPoolsLargestNote
+            ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
+            : "shielded balance for this token";
+          cliError(
+            `Amount exceeds ${scope} (${maxFormatted} ${tokenMeta.symbol}).`
+          );
+          return;
+        }
+
         if (amount === null) {
           const amountInput = await input({
-            message: `Amount to unshield (${tokenMeta.symbol}, max: ${maxFormatted}):`,
+            message: `Amount to unshield (${tokenMeta.symbol}, ${maxPromptLabel}: ${maxFormatted}):`,
             validate: (value) => {
               if (!value.trim()) return "Amount is required.";
               try {
                 const parsed = parseUnits(value.trim(), tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
-                if (shieldedBalance > 0n && parsed > shieldedBalance)
-                  return `Exceeds shielded balance (max ${maxFormatted} ${tokenMeta.symbol}).`;
+                if (maxAmountHint > 0n && parsed > maxAmountHint) {
+                  return privacyPoolsLargestNote
+                    ? `Exceeds largest note (${maxFormatted} ${tokenMeta.symbol}); enter that amount or less per withdrawal.`
+                    : `Exceeds shielded balance (max ${maxFormatted} ${tokenMeta.symbol}).`;
+                }
               } catch {
                 return `Invalid ${tokenMeta.symbol} amount format.`;
               }
