@@ -97,23 +97,7 @@ Check balances again — public ETH should drop and **Private — Privacy pools*
 kohaku balances --wallet testWallet
 ```
 
-### 5. Shield ERC-20 via Railgun (optional)
-
-Privacy Pools on your chain may only allow certain tokens; Railgun is the usual path for arbitrary ERC-20 shields. Use a token you funded on your fresh address (Sepolia USDC example):
-
-```bash
-kohaku shield --protocol railgun --wallet testWallet --token 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238
-```
-
-Same interactive flow: amount, then source account. To broadcast a specific amount from account index `0`:
-
-```bash
-kohaku shield --protocol railgun --wallet testWallet --token 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 --from 0 --amount-formatted 5 --broadcast
-```
-
-Railgun shields may require an **approve** tx before the shield tx; the CLI handles both when `--broadcast` is set.
-
-### 6. Unshield to a fresh public address
+### 5. Unshield to a fresh public address
 
 Withdraw private ETH back to public chain via the protocol relayer. Dry run builds the private operation JSON:
 
