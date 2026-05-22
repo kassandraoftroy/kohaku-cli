@@ -66,7 +66,7 @@ export async function createProtocolPlugin(
   chainId: bigint
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
-    return createRailgunPlugin(host, 0);
+    return createRailgunPlugin(host, { poi: false });
   }
 
   const params = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
