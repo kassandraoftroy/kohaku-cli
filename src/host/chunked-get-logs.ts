@@ -129,6 +129,26 @@ async function fetchLogsChunked(
  * in sequential fixed-size chunks. Default span is {@link DEFAULT_MAX_BLOCK_SPAN}
  * blocks; override via env `KOHAKU_GETLOGS_MAX_BLOCK_SPAN`.
  */
+/** Railgun WASM calls `getTransactionCount` via {@link EthereumProviderAdapter}. */
+export function withTransactionCount<T>(
+  provider: EthereumProvider<T>
+): EthereumProvider<T> & {
+  getTransactionCount(address: `0x${string}`, block?: number): Promise<number>;
+} {
+  return {
+    ...provider,
+    async getTransactionCount(address, block) {
+      const blockTag =
+        block !== undefined ? toRpcBlockQuantity(BigInt(block)) : "latest";
+      const count = await provider.request({
+        method: "eth_getTransactionCount",
+        params: [address, blockTag],
+      });
+      return Number(BigInt(count as string));
+    },
+  };
+}
+
 export function withChunkedGetLogs<T>(
   provider: EthereumProvider<T>
 ): EthereumProvider<T> {

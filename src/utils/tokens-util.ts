@@ -44,6 +44,15 @@ export type MergedPublicTokenList = {
  * Merges chain default tokens with `--tokensList` extras. CLI addresses that duplicate
  * a default are skipped; unknown addresses are appended for RPC metadata + balanceOf.
  */
+/** Canonical WETH for a chain (Railgun shields ETH as this ERC-20). */
+export function wethAddressForChain(
+  chainId: string | bigint
+): `0x${string}` | undefined {
+  const id = typeof chainId === "bigint" ? chainId.toString() : chainId;
+  return (DEFAULT_ERC20_BY_CHAIN_ID[id] ?? []).find((t) => t.symbol === "WETH")
+    ?.address;
+}
+
 export function mergeDefaultAndExtraErc20s(
   chainId: string,
   extraFromCli: `0x${string}`[]

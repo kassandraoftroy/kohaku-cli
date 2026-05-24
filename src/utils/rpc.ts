@@ -42,6 +42,11 @@ export function resolveRpcUrl(optsRpcUrl?: string): string {
   return optsRpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
 }
 
+/** Pimlico public ERC-4337 bundler (no API key). */
+export function railgunPimlicoBundlerUrl(chainId: bigint): string {
+  return `https://public.pimlico.io/v2/${chainId.toString()}/rpc`;
+}
+
 /**
  * Fetches the RPC network chain id and ensures it matches the wallet's expected chain
  * (from `.wallet-type`: mainnet `1` vs testnet `11155111`).

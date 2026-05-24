@@ -3,9 +3,9 @@ import {
   PrivacyPoolsV1_0xBow,
   createPPv1Plugin,
 } from "@kohaku-eth/privacy-pools";
-import { createRailgunPlugin } from "@kohaku-eth/railgun";
+import { Bundler, Signer, chainConfig, createRailgunPlugin } from "@kohaku-eth/railgun";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
-
+import { ethers } from "ethers";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
 import ppv1MainnetState from "./ppv1-mainnet-state.json";
@@ -60,13 +60,54 @@ export const PRIVACY_POOLS_TOKEN_WHITELIST: Record<string, Set<string>> = {
 
 export const PRIVACY_POOLS_BROADCASTER_URL = "https://fastrelay.xyz/relayer";
 
+type RailgunUnshieldConfigurable = {
+  setBundler: (bundler?: Bundler) => void;
+  setDelegatingSigner: (signer?: Signer) => void;
+};
+
+/**
+ * Railgun ETH unshield: `native` for unwrap semantics; `contract` is WETH so
+ * SignerPool.drain can match shielded balance (railgun passes `tokens` to drain).
+ */
+export function railgunNativeEthAssetAmount(
+  chainId: bigint,
+  amount: bigint
+): AssetAmount {
+  const chain = chainConfig(chainId);
+  if (!chain) {
+    throw new Error(
+      `Railgun is not supported on chainId ${chainId.toString()}.`
+    );
+  }
+  return {
+    asset: {
+      __type: "native",
+      contract: chain.wrappedBaseToken,
+    } as AssetAmount["asset"],
+    amount,
+  };
+}
+
+/** Railgun unshield: 4337 bundler + recipient EOA as EIP-7702 delegating signer. */
+export function configureRailgunForUnshield(
+  plugin: unknown,
+  recipientPrivateKey: `0x${string}`,
+  bundlerUrl: string
+): void {
+  const rg = plugin as RailgunUnshieldConfigurable;
+  rg.setBundler(Bundler.pimlico(bundlerUrl));
+  console.log("recipientPrivateKey:", recipientPrivateKey);
+  console.log("recipientAddress:", ethers.computeAddress(recipientPrivateKey));
+  rg.setDelegatingSigner(Signer.privateKey(recipientPrivateKey));
+}
+
 export async function createProtocolPlugin(
   protocol: SupportedProtocol,
   host: Host,
   chainId: bigint
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
-    return createRailgunPlugin(host, { poi: false });
+    return createRailgunPlugin(host, { rpcBatchSize: 450 });
   }
 
   const params = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];

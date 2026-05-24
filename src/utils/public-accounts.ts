@@ -39,6 +39,14 @@ export function savePublicAccounts(walletDir: string, password: string, accounts
   saveStore(storePath, JSON.stringify(accounts), password, saltRef);
 }
 
+export function findPublicAccountByAddress(
+  storage: PublicAccountsStorage,
+  address: string
+): PublicAccount | undefined {
+  const lower = ethers.getAddress(address).toLowerCase();
+  return storage.getAccounts().find((a) => a.address.toLowerCase() === lower);
+}
+
 export function makePublicAccountsStorage(walletDir: string, mnemonic: string, password: string): PublicAccountsStorage {
   const storePath = accountsStorePathForWallet(walletDir);
   const { store: initial, salt } = loadStore(storePath, password);

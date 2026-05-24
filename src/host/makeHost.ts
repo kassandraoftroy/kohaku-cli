@@ -2,7 +2,7 @@ import type { Host } from "@kohaku-eth/plugins";
 import { ethers as kohakuEthersProvider } from "@kohaku-eth/provider/ethers";
 import type { JsonRpcProvider } from "ethers";
 
-import { withChunkedGetLogs } from "./chunked-get-logs";
+import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
 import { makeStorage, type PluginId } from "./storage";
 
@@ -30,7 +30,9 @@ function makeNetwork(): Host["network"] {
 export async function makeHost(options: MakeHostOptions): Promise<Host> {
   const { rpc, walletDir, password, mnemonic, pluginId } = options;
 
-  const provider = withChunkedGetLogs(kohakuEthersProvider(rpc));
+  const provider = withChunkedGetLogs(
+    withTransactionCount(kohakuEthersProvider(rpc))
+  );
 
   const keystore = pluginId === "rg" ? makeRailgunKeystore(mnemonic) : makeKeystore(mnemonic);
 

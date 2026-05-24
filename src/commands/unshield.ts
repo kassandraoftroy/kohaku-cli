@@ -18,23 +18,29 @@ import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
   makeEthersProvider,
+  railgunPimlicoBundlerUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { resolveTokenMeta } from "../utils/tokens-util";
+import { resolveTokenMeta, wethAddressForChain } from "../utils/tokens-util";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
 } from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
-import { makePublicAccountsStorage } from "../utils/public-accounts";
+import {
+  findPublicAccountByAddress,
+  makePublicAccountsStorage,
+} from "../utils/public-accounts";
 import {
   ETH_AS_ERC20,
   PRIVACY_POOLS_BROADCASTER_URL,
   assertPpErc20TokenWhitelisted,
+  configureRailgunForUnshield,
   createProtocolPlugin,
   isSupportedProtocol,
   pluginIdForProtocol,
+  railgunNativeEthAssetAmount,
   type SupportedProtocol,
 } from "../utils/plugins";
 
@@ -53,6 +59,10 @@ type UnshieldOpts = {
   dataDir?: string;
 };
 
+function as0xPrivateKey(priv: string): `0x${string}` {
+  return (priv.startsWith("0x") ? priv : `0x${priv}`) as `0x${string}`;
+}
+
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
 
 function ppNoteAssetLower(n: PpNoteForMax): string {
@@ -70,13 +80,13 @@ function ppNoteAssetLower(n: PpNoteForMax): string {
 async function maxUnshieldAmountHint(
   protocol: SupportedProtocol,
   plugin: unknown,
-  tokenMeta: { isEth: boolean; tokenAddress: string; decimals: number }
+  tokenMeta: { isEth: boolean; tokenAddress: string; decimals: number },
+  chainId: bigint
 ): Promise<{ cap: bigint; privacyPoolsLargestNote: boolean }> {
-  const targetAddr = tokenMeta.isEth
-    ? ETH_AS_ERC20.toLowerCase()
-    : tokenMeta.tokenAddress.toLowerCase();
-
   if (protocol === "privacy-pools") {
+    const targetAddr = tokenMeta.isEth
+      ? ETH_AS_ERC20.toLowerCase()
+      : tokenMeta.tokenAddress.toLowerCase();
     let largest = 0n;
     try {
       const notes = await (
@@ -94,6 +104,12 @@ async function maxUnshieldAmountHint(
       // ignore
     }
     return { cap: largest, privacyPoolsLargestNote: true };
+  }
+
+  let targetAddr = tokenMeta.tokenAddress.toLowerCase();
+  if (tokenMeta.isEth) {
+    const weth = wethAddressForChain(chainId);
+    targetAddr = weth ? weth.toLowerCase() : ETH_AS_ERC20.toLowerCase();
   }
 
   let sum = 0n;
@@ -251,9 +267,11 @@ export function registerUnshieldCommand(program: Command): void {
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
 
       let recipient: `0x${string}`;
+      let recipientPriv: `0x${string}` | undefined;
       if (hasNext) {
         const added = publicStorage.addNextAccounts(1);
         recipient = getAddress(added[0]!.address) as `0x${string}`;
+        recipientPriv = as0xPrivateKey(added[0]!.priv);
       } else if (hasTo) {
         const raw = opts.to!.trim();
         if (!isAddress(raw)) {
@@ -261,6 +279,8 @@ export function registerUnshieldCommand(program: Command): void {
           return;
         }
         recipient = getAddress(raw) as `0x${string}`;
+        const acct = findPublicAccountByAddress(publicStorage, recipient);
+        recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
       } else {
         const existingAccounts = publicStorage.getAccounts();
         const NEXT_FRESH = "__next_fresh__";
@@ -271,10 +291,12 @@ export function registerUnshieldCommand(program: Command): void {
           value: NEXT_FRESH,
           name: "Generate next fresh public account (--next)",
         });
-        choices.push({
-          value: CUSTOM_ADDR,
-          name: "Enter a custom address",
-        });
+        if (protocol !== "railgun") {
+          choices.push({
+            value: CUSTOM_ADDR,
+            name: "Enter a custom address",
+          });
+        }
         for (const acct of existingAccounts) {
           choices.push({
             value: acct.address,
@@ -290,6 +312,7 @@ export function registerUnshieldCommand(program: Command): void {
         if (chosen === NEXT_FRESH) {
           const added = publicStorage.addNextAccounts(1);
           recipient = getAddress(added[0]!.address) as `0x${string}`;
+          recipientPriv = as0xPrivateKey(added[0]!.priv);
         } else if (chosen === CUSTOM_ADDR) {
           const addr = await input({
             message: "Enter recipient address (0x...):",
@@ -301,7 +324,16 @@ export function registerUnshieldCommand(program: Command): void {
           recipient = getAddress(addr.trim()) as `0x${string}`;
         } else {
           recipient = getAddress(chosen) as `0x${string}`;
+          const acct = findPublicAccountByAddress(publicStorage, recipient);
+          recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
         }
+      }
+
+      if (protocol === "railgun" && !recipientPriv) {
+        cliError(
+          "Railgun unshield requires a recipient public account from this wallet (use --next or --to with a stored public address)."
+        );
+        return;
       }
 
       if (!opts.nonInteractive) {
@@ -325,6 +357,14 @@ export function registerUnshieldCommand(program: Command): void {
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
+        if (protocol === "railgun") {
+          configureRailgunForUnshield(
+            plugin,
+            recipientPriv!,
+            railgunPimlicoBundlerUrl(chainId)
+          );
+        }
+
         if (protocol === "privacy-pools" && "sync" in plugin && typeof plugin.sync === "function") {
           const sync = (plugin as { sync: () => Promise<void> }).sync;
           await runQuietSpinner(
@@ -336,12 +376,16 @@ export function registerUnshieldCommand(program: Command): void {
           );
         }
 
+        const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
         const { cap: maxAmountHint, privacyPoolsLargestNote } =
-          await maxUnshieldAmountHint(protocol, plugin, tokenMeta);
+          await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
         const maxPromptLabel = privacyPoolsLargestNote
           ? "max (largest single note)"
           : "max";
+        const maxCapLabel = isRailgunEth
+          ? `WETH ${maxPromptLabel}`
+          : maxPromptLabel;
 
         let amount: bigint | null = null;
         if (opts.amountWei) {
@@ -359,23 +403,24 @@ export function registerUnshieldCommand(program: Command): void {
             ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
             : "shielded balance for this token";
           cliError(
-            `Amount exceeds ${scope} (${maxFormatted} ${tokenMeta.symbol}).`
+            `Amount exceeds ${scope} (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`
           );
           return;
         }
 
         if (amount === null) {
           const amountInput = await input({
-            message: `Amount to unshield (${tokenMeta.symbol}, ${maxPromptLabel}: ${maxFormatted}):`,
+            message: `Amount to unshield (${tokenMeta.symbol}, ${maxCapLabel}: ${maxFormatted}):`,
             validate: (value) => {
               if (!value.trim()) return "Amount is required.";
               try {
                 const parsed = parseUnits(value.trim(), tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
                 if (maxAmountHint > 0n && parsed > maxAmountHint) {
+                  const capSymbol = isRailgunEth ? "WETH" : tokenMeta.symbol;
                   return privacyPoolsLargestNote
-                    ? `Exceeds largest note (${maxFormatted} ${tokenMeta.symbol}); enter that amount or less per withdrawal.`
-                    : `Exceeds shielded balance (max ${maxFormatted} ${tokenMeta.symbol}).`;
+                    ? `Exceeds largest note (${maxFormatted} ${capSymbol}); enter that amount or less per withdrawal.`
+                    : `Exceeds shielded balance (max ${maxFormatted} ${capSymbol}).`;
                 }
               } catch {
                 return `Invalid ${tokenMeta.symbol} amount format.`;
@@ -391,13 +436,24 @@ export function registerUnshieldCommand(program: Command): void {
           return;
         }
 
-        const asset: AssetAmount = {
-          asset: {
-            __type: "erc20",
-            contract: tokenMeta.tokenAddress as `0x${string}`,
-          },
-          amount,
-        };
+        let asset: AssetAmount;
+        try {
+          asset =
+            tokenMeta.isEth && protocol === "railgun"
+              ? railgunNativeEthAssetAmount(chainId, amount)
+              : {
+                  asset: {
+                    __type: "erc20",
+                    contract: (tokenMeta.isEth
+                      ? ETH_AS_ERC20
+                      : tokenMeta.tokenAddress) as `0x${string}`,
+                  },
+                  amount,
+                };
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
 
         const prepareLabel =
           protocol === "railgun"
@@ -422,7 +478,7 @@ export function registerUnshieldCommand(program: Command): void {
         const amountLabel = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
         const via =
           protocol === "railgun"
-            ? "Railgun (Waku broadcaster)"
+            ? "Railgun (ERC-4337 bundler)"
             : "Privacy Pools relayer";
 
         if (!opts.broadcast) {
@@ -481,7 +537,7 @@ export function registerUnshieldCommand(program: Command): void {
         const relayResult = await runQuietSpinner(
           quiet,
           spin,
-          { start: "Broadcasting unshield…", failure: "Broadcast failed." },
+          { start: "Broadcasting unshield", failure: "Broadcast failed." },
           () => broadcastPreparedPrivateOp(protocol, host, plugin, privateOp),
           () => "Unshield broadcast complete."
         );
