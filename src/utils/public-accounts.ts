@@ -32,6 +32,9 @@ export type PublicAccountsStorage = {
   getAccounts(): PublicAccount[];
 
   addNextAccounts(n: number): PublicAccount[];
+
+  /** Derive the next n accounts without advancing nextIndex or writing to disk. */
+  peekNextAccounts(n: number): PublicAccount[];
 };
 
 export function savePublicAccounts(walletDir: string, password: string, accounts: PublicAccountsStore, saltRef: { current: Uint8Array | null }): void {
@@ -45,6 +48,21 @@ export function findPublicAccountByAddress(
 ): PublicAccount | undefined {
   const lower = ethers.getAddress(address).toLowerCase();
   return storage.getAccounts().find((a) => a.address.toLowerCase() === lower);
+}
+
+function derivePublicAccountAtIndex(mnemonic: string, index: number): PublicAccount {
+  const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
+  const address = ethers.computeAddress(priv);
+  return {
+    address,
+    index,
+    priv,
+    tags: [],
+    lastUpdated: 0,
+    ethBalance: "0",
+    erc20Balances: {},
+    erc721Holdings: {},
+  };
 }
 
 export function makePublicAccountsStorage(walletDir: string, mnemonic: string, password: string): PublicAccountsStorage {
@@ -77,22 +95,21 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
       const created: PublicAccount[] = [];
       for (let k = 0; k < n; k += 1) {
         const index = store.nextIndex++;
-        const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
-        const address = ethers.computeAddress(priv);
-        const acct: PublicAccount = {
-          address,
-          index,
-          priv,
-          tags: [],
-          lastUpdated: 0,
-          ethBalance: "0",
-          erc20Balances: {},
-          erc721Holdings: {},
-        };
+        const acct = derivePublicAccountAtIndex(mnemonic, index);
         store.accounts[index] = acct;
         created.push(acct);
       }
       savePublicAccounts(walletDir, password, store, { current: salt });
+      return created;
+    },
+    peekNextAccounts: (n: number) => {
+      if (n <= 0) {
+        throw new Error("peekNextAccounts: n must be positive");
+      }
+      const created: PublicAccount[] = [];
+      for (let k = 0; k < n; k += 1) {
+        created.push(derivePublicAccountAtIndex(mnemonic, store.nextIndex + k));
+      }
       return created;
     },
   };

@@ -581,7 +581,7 @@ export function registerShieldCommand(program: Command): void {
             );
             await maybeConfirm(
               !!opts.nonInteractive,
-              `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
+              `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} (from ${senderAddress})?`
             );
             const approveTx = await runQuietSpinner(
               quiet,
@@ -601,7 +601,7 @@ export function registerShieldCommand(program: Command): void {
         const shieldStep = hasApproval ? "2/2" : "1/1";
         await maybeConfirm(
           !!opts.nonInteractive,
-          `Send shield transaction (${shieldStep}): shield ${amountPreview} ${tokenMeta.symbol} (from ${senderAddress})?`
+          `Send shield transaction (${shieldStep}): shield ${amountPreview} (from ${senderAddress})?`
         );
         await simulateTransactionOrThrow(
           rpcForHost,

@@ -63,6 +63,15 @@ function as0xPrivateKey(priv: string): `0x${string}` {
   return (priv.startsWith("0x") ? priv : `0x${priv}`) as `0x${string}`;
 }
 
+/** Persist the next public account only when the unshield will be broadcast. */
+function takeNextFreshPublicAccount(
+  storage: ReturnType<typeof makePublicAccountsStorage>,
+  persist: boolean
+): { address: string; priv: string } {
+  const added = persist ? storage.addNextAccounts(1) : storage.peekNextAccounts(1);
+  return added[0]!;
+}
+
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
 
 function ppNoteAssetLower(n: PpNoteForMax): string {
@@ -159,7 +168,10 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .option("--to <address>", "Public recipient address")
-    .option("--next", "Unshield to the next fresh public account (addNextAccounts(1))")
+    .option(
+      "--next",
+      "Unshield to the next fresh public account (persisted when --broadcast is set)"
+    )
     .option("--token <address|eth>", "Token address (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
@@ -265,13 +277,14 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+      const persistNextAccount = !!opts.broadcast;
 
       let recipient: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
       if (hasNext) {
-        const added = publicStorage.addNextAccounts(1);
-        recipient = getAddress(added[0]!.address) as `0x${string}`;
-        recipientPriv = as0xPrivateKey(added[0]!.priv);
+        const fresh = takeNextFreshPublicAccount(publicStorage, persistNextAccount);
+        recipient = getAddress(fresh.address) as `0x${string}`;
+        recipientPriv = as0xPrivateKey(fresh.priv);
       } else if (hasTo) {
         const raw = opts.to!.trim();
         if (!isAddress(raw)) {
@@ -310,9 +323,9 @@ export function registerUnshieldCommand(program: Command): void {
         });
 
         if (chosen === NEXT_FRESH) {
-          const added = publicStorage.addNextAccounts(1);
-          recipient = getAddress(added[0]!.address) as `0x${string}`;
-          recipientPriv = as0xPrivateKey(added[0]!.priv);
+          const fresh = takeNextFreshPublicAccount(publicStorage, persistNextAccount);
+          recipient = getAddress(fresh.address) as `0x${string}`;
+          recipientPriv = as0xPrivateKey(fresh.priv);
         } else if (chosen === CUSTOM_ADDR) {
           const addr = await input({
             message: "Enter recipient address (0x...):",
