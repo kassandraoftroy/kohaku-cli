@@ -13,7 +13,8 @@
       "strict": true,
     "skipLibCheck": true,
       "resolveJsonModule": true,
-      "esModuleInterop": true
+      "esModuleInterop": true,
+      "jsx": "react-jsx"
     },
     "include": ["src"]
   }

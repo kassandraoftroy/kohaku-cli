@@ -10,6 +10,7 @@ import { registerNextFreshAddressCommand } from "./commands/nextFreshAddress";
 import { registerSeeDecryptedStorageCommand } from "./commands/seeDecryptedStorage";
 import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
+import { registerTuiCommand } from "./commands/tui";
 import { cliErrorFromCaught } from "./utils/cli-errors";
 
 async function main(): Promise<void> {
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
   registerUnshieldCommand(program);
   registerBalancesCommand(program);
   registerSeeDecryptedStorageCommand(program);
+  registerTuiCommand(program);
 
   await program.parseAsync(process.argv);
 }
