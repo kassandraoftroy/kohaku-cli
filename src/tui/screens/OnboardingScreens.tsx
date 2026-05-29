@@ -1,113 +1,124 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
 import { useInput } from "ink";
-import { join } from "node:path";
 
 import PageLayout from "../widgets/PageLayout.js";
-import { SelectList } from "../components/SelectList.js";
 import { TextPrompt } from "../components/TextPrompt.js";
-import {
-  listWalletDirNames,
-  walletNetworkKind,
-} from "../../utils/wallets-util.js";
 import { readSeedKeystore } from "../../utils/mnemonic.js";
-import { resolveWalletDir } from "../../utils/wallets-util.js";
-import { makeEthersProvider } from "../../utils/rpc.js";
+import { makeEthersProvider, resolveRpcUrl } from "../../utils/rpc.js";
+import {
+  assertRpcMatchesWallet,
+  formatWalletRpcMismatchError,
+  isWalletRpcChainMismatch,
+  walletNetworkLabel,
+} from "../rpc-validation.js";
 
 const CREAM = "#f5efe0";
 
-export function WalletPickScreen({
-  dataDir,
-  initialWallet,
-  onDone,
-  onQuit,
-}: {
-  dataDir: string;
-  initialWallet?: string;
-  onDone: (wallet: string) => void;
-  onQuit: () => void;
-}) {
-  const names = listWalletDirNames(dataDir);
-
-  useEffect(() => {
-    if (initialWallet?.trim()) onDone(initialWallet.trim());
-  }, [initialWallet, onDone]);
-
-  if (initialWallet?.trim()) return null;
-
-  if (names.length === 0) {
-    return (
-      <PageLayout title="Kohaku TUI" subtitle="no wallets">
-        <Text color="#c92a2a">No wallets in {dataDir}. Run: kohaku create-wallet</Text>
-      </PageLayout>
-    );
-  }
-  useEffect(() => {
-    if (!initialWallet?.trim() && names.length === 1) onDone(names[0]!);
-  }, [initialWallet, names, onDone]);
-
-  if (!initialWallet?.trim() && names.length === 1) return null;
-
-  const items = names.map((name) => {
-    const kind = walletNetworkKind(join(dataDir, name));
-    return {
-      label: `${name} (${kind})`,
-      value: name,
-    };
-  });
-
-  return (
-    <PageLayout title="Kohaku TUI" subtitle="pick wallet">
-      <SelectList items={items} onSelect={onDone} onCancel={onQuit} />
-    </PageLayout>
-  );
-}
-
 export function RpcScreen({
-  initialRpc,
+  autoApplyRpc,
+  walletDir,
   onDone,
   onBack,
+  onFatal,
 }: {
-  initialRpc?: string;
+  /** When set (from RPC_URL or --rpc-url), skip this screen and use that URL. */
+  autoApplyRpc?: string;
+  /** When set, RPC chain ID must match the wallet's .wallet-type before continuing. */
+  walletDir?: string;
   onDone: (rpc: string) => void;
   onBack: () => void;
+  onFatal?: (message: string) => void;
 }) {
-  const [value, setValue] = useState(initialRpc ?? process.env.RPC_URL?.trim() ?? "");
+  const envOrFlagRpc = resolveRpcUrl();
+  const [value, setValue] = useState(autoApplyRpc?.trim() || envOrFlagRpc || "");
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    const url = autoApplyRpc?.trim();
+    if (!url) return;
+    let cancelled = false;
+    void (async () => {
+      setChecking(true);
+      try {
+        await validateRpcUrl(url);
+        if (!cancelled) onDone(url);
+      } catch (e) {
+        if (!cancelled) {
+          if (walletDir && onFatal && isWalletRpcChainMismatch(e)) {
+            onFatal(formatWalletRpcMismatchError(url, walletDir, e));
+          } else {
+            setError(e instanceof Error ? e.message : String(e));
+            setChecking(false);
+          }
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoApplyRpc, walletDir, onDone, onFatal]);
 
   useInput((_, key) => {
     if (key.escape && !checking) onBack();
   });
 
+  async function validateRpcUrl(url: string): Promise<void> {
+    const rpc = await makeEthersProvider(url);
+    try {
+      await rpc.getNetwork();
+    } finally {
+      rpc.destroy();
+    }
+    if (walletDir) {
+      await assertRpcMatchesWallet(url, walletDir);
+    }
+  }
+
   async function submit() {
     const url = value.trim();
     if (!url) {
-      setError("RPC URL is required (or set RPC_URL).");
+      setError("RPC URL is required (or set RPC_URL in your environment).");
       return;
     }
     setChecking(true);
     setError(null);
     try {
-      const rpc = await makeEthersProvider(url);
-      await rpc.getNetwork();
-      rpc.destroy();
+      await validateRpcUrl(url);
       onDone(url);
     } catch (e) {
+      if (walletDir && onFatal && isWalletRpcChainMismatch(e)) {
+        onFatal(formatWalletRpcMismatchError(url, walletDir, e));
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setChecking(false);
     }
   }
 
-  useEffect(() => {
-    if (initialRpc?.trim()) onDone(initialRpc.trim());
-  }, [initialRpc, onDone]);
-
-  if (initialRpc?.trim()) return null;
+  if (autoApplyRpc?.trim()) {
+    return (
+      <PageLayout title="Kohaku TUI" subtitle="RPC">
+        <Text color={CREAM}>
+          Using RPC from {process.env.RPC_URL ? "RPC_URL" : "--rpc-url"}…
+        </Text>
+        {walletDir ? (
+          <Text dimColor>Checking chain matches {walletNetworkLabel(walletDir)}…</Text>
+        ) : null}
+        {error ? <Text color="#c92a2a">{error}</Text> : null}
+      </PageLayout>
+    );
+  }
 
   return (
     <PageLayout title="Kohaku TUI" subtitle="RPC endpoint">
+      <Text dimColor>
+        {envOrFlagRpc
+          ? "RPC_URL is set — edit below or press Enter to use it."
+          : "No RPC_URL in environment — paste your HTTP RPC URL."}
+      </Text>
       <TextPrompt
         label="RPC URL (HTTP/S):"
         value={value}
@@ -115,8 +126,29 @@ export function RpcScreen({
         onSubmit={() => void submit()}
         placeholder="https://..."
       />
+      {walletDir ? (
+        <Text dimColor>Wallet expects {walletNetworkLabel(walletDir)}.</Text>
+      ) : null}
       {checking ? <Text color={CREAM}>Checking RPC…</Text> : null}
       {error ? <Text color="#c92a2a">{error}</Text> : null}
+    </PageLayout>
+  );
+}
+
+export function FatalErrorScreen({ message }: { message: string }) {
+  useEffect(() => {
+    const lines = message.split("\n");
+    for (const line of lines) {
+      console.error(line);
+    }
+    const t = setTimeout(() => process.exit(1), 100);
+    return () => clearTimeout(t);
+  }, [message]);
+
+  return (
+    <PageLayout title="Kohaku TUI" subtitle="error">
+      <Text color="#c92a2a">{message}</Text>
+      <Text dimColor>Exiting.</Text>
     </PageLayout>
   );
 }
@@ -135,6 +167,17 @@ export function PasswordScreen({
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    const raw = initialPassword?.trim();
+    if (!raw) return;
+    try {
+      readSeedKeystore(raw, walletDir);
+      onDone(raw);
+    } catch {
+      // fall through to prompt
+    }
+  }, [initialPassword, walletDir, onDone]);
+
   useInput((_, key) => {
     if (key.escape) onBack();
   });
@@ -152,17 +195,6 @@ export function PasswordScreen({
       setError(e instanceof Error ? e.message : "Invalid password.");
     }
   }
-
-  useEffect(() => {
-    const raw = initialPassword?.trim();
-    if (!raw) return;
-    try {
-      readSeedKeystore(raw, walletDir);
-      onDone(raw);
-    } catch {
-      // fall through to prompt
-    }
-  }, [initialPassword, walletDir, onDone]);
 
   if (initialPassword?.trim()) {
     try {

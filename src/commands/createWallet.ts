@@ -6,24 +6,19 @@ import type { Command } from "commander";
 
 import { cliOptions } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
-import { makePublicAccountsStorage } from "../utils/public-accounts";
-import { isAddressUsed } from "../utils/address-used";
+import {
+  createWalletOnDisk,
+  generateMnemonic,
+} from "../lib/create-wallet";
 import {
   DEFAULT_DATA_DIR,
-  makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
 import {
   resolvePasswordInputPreferFile,
   resolveWalletDir,
-  writeWalletType,
 } from "../utils/wallets-util";
-import {
-  generateMnemonic,
-  normalizeValidatedMnemonic,
-  peekAddressesFromMnemonic,
-  writeSeedKeystore,
-} from "../utils/mnemonic";
+import { normalizeValidatedMnemonic } from "../utils/mnemonic";
 
 type CreateWalletOpts = {
   import?: boolean;
@@ -34,44 +29,6 @@ type CreateWalletOpts = {
   testnet?: boolean;
   dataDir?: string;
 };
-
-async function findLastTouchedIndex(
-  mnemonic: string,
-  rpcUrl: string,
-): Promise<number> {
-  const provider = await makeEthersProvider(rpcUrl);
-  try {
-    let start = 0;
-    let lastTouched = -1;
-    const WINDOW_SIZE = 10;
-
-    for (;;) {
-      const indexes = Array.from(
-        { length: WINDOW_SIZE },
-        (_, i) => start + i
-      );
-      const addresses: string[] = peekAddressesFromMnemonic(mnemonic, indexes);
-      const touched = await Promise.all(
-        addresses.map(async (address: string) => {
-          return isAddressUsed(address, provider);
-        })
-      );
-
-      for (let i = 0; i < touched.length; i += 1) {
-        if (touched[i]) {
-          lastTouched = indexes[i]!;
-        }
-      }
-
-      if (!touched.some(Boolean)) {
-        return lastTouched;
-      }
-      start += WINDOW_SIZE;
-    }
-  } finally {
-    provider.destroy();
-  }
-}
 
 function printMnemonicBox(mnemonic: string): void {
   const line = mnemonic.trim();
@@ -203,38 +160,15 @@ export function registerCreateWalletCommand(program: Command): void {
         encryptPassword = await promptPasswordEncryptWallet();
       }
 
-      const chainIdString = opts.testnet ? "11155111" : "1";
-      const expectedChainId = opts.testnet ? 11155111n : 1n;
-
-      let lastTouchedIndex = -1;
-      if (opts.import && rpcUrl) {
-        const provider = await makeEthersProvider(rpcUrl);
-        try {
-          const network = await provider.getNetwork();
-          if (network.chainId !== expectedChainId) {
-            cliError(
-              `RPC chain ID ${network.chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
-            );
-            return;
-          }
-        } finally {
-          provider.destroy();
-        }
-        lastTouchedIndex = await findLastTouchedIndex(mnemonicPhrase, rpcUrl);
-      }
-
       try {
-        writeSeedKeystore(mnemonicPhrase, encryptPassword, walletDir);
-        const walletType = opts.testnet ? "testnet" : "mainnet";
-        writeWalletType(walletType, walletDir);
-        if (opts.import && lastTouchedIndex >= 0) {
-          const publicAccountsStorage = makePublicAccountsStorage(
-            walletDir,
-            mnemonicPhrase,
-            encryptPassword
-          );
-          publicAccountsStorage.addNextAccounts(lastTouchedIndex + 1);
-        }
+        await createWalletOnDisk({
+          dataDir,
+          walletName: name,
+          mnemonic: mnemonicPhrase,
+          password: encryptPassword,
+          testnet: !!opts.testnet,
+          rpcUrl: opts.import ? rpcUrl : undefined,
+        });
       } catch (e) {
         cliErrorFromCaught(e);
         return;

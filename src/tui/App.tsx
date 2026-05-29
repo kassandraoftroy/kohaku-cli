@@ -5,10 +5,22 @@ import { resolveWalletDir } from "../utils/wallets-util.js";
 import { resolveRpcUrl, DEFAULT_DATA_DIR } from "../utils/rpc.js";
 import {
   BootScreen,
+  FatalErrorScreen,
   PasswordScreen,
   RpcScreen,
-  WalletPickScreen,
 } from "./screens/OnboardingScreens.js";
+import {
+  formatWalletRpcMismatchError,
+  isWalletRpcChainMismatch,
+} from "./rpc-validation.js";
+import {
+  WalletStartScreen,
+  type WalletStartChoice,
+} from "./screens/WalletStartScreen.js";
+import {
+  CreateWalletWizard,
+  type CreateWalletResult,
+} from "./screens/CreateWalletScreens.js";
 import { MainMenuScreen, type MainMenuAction } from "./screens/MainMenuScreen.js";
 import { BalancesScreen } from "./screens/BalancesScreen.js";
 import { ShieldScreen } from "./screens/ShieldScreen.js";
@@ -23,9 +35,11 @@ export type TuiLaunchOptions = {
 
 type Route =
   | { name: "wallet" }
-  | { name: "rpc" }
+  | { name: "create"; mode: "generate" | "import" }
+  | { name: "rpc"; afterCreate?: boolean; walletName?: string }
   | { name: "password"; walletName: string }
   | { name: "boot" }
+  | { name: "fatal"; message: string }
   | { name: "main"; session: TuiSession }
   | { name: "balances"; session: TuiSession; verbose: boolean }
   | { name: "shield"; session: TuiSession }
@@ -35,19 +49,22 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
   const dataDir = options.dataDir ?? DEFAULT_DATA_DIR;
   const presetWallet = options.wallet?.trim();
   const presetPassword = options.password?.trim();
-  const presetRpc = resolveRpcUrl(options.rpcUrl) || undefined;
+  const envRpc = resolveRpcUrl(options.rpcUrl) || undefined;
 
   const [route, setRoute] = useState<Route>(() => {
     if (!presetWallet) return { name: "wallet" };
-    if (!presetRpc) return { name: "rpc" };
-    if (!presetPassword) return { name: "password", walletName: presetWallet };
+    if (!envRpc) return { name: "rpc", walletName: presetWallet };
+    if (!presetPassword) return { name: "rpc", walletName: presetWallet };
     return { name: "boot" };
   });
 
   const [walletName, setWalletName] = useState(presetWallet ?? "");
-  const [rpcUrl, setRpcUrl] = useState(presetRpc ?? "");
+  const [rpcUrl, setRpcUrl] = useState(envRpc ?? "");
   const [password, setPassword] = useState(presetPassword ?? "");
   const [bootError, setBootError] = useState<string | null>(null);
+  const [pendingImport, setPendingImport] = useState(false);
+
+  const goFatal = (message: string) => setRoute({ name: "fatal", message });
 
   useEffect(() => {
     if (route.name !== "boot") return;
@@ -62,13 +79,14 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
         });
         if (!cancelled) setRoute({ name: "main", session });
       } catch (e) {
-        if (!cancelled) {
-          setBootError(e instanceof Error ? e.message : String(e));
-          setRoute({
-            name: "password",
-            walletName,
-          });
+        if (cancelled) return;
+        const walletDir = resolveWalletDir(dataDir, walletName);
+        if (isWalletRpcChainMismatch(e)) {
+          goFatal(formatWalletRpcMismatchError(rpcUrl, walletDir, e));
+          return;
         }
+        setBootError(e instanceof Error ? e.message : String(e));
+        setRoute({ name: "password", walletName });
       }
     })();
     return () => {
@@ -76,38 +94,103 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
     };
   }, [route.name, dataDir, walletName, password, rpcUrl]);
 
+  function rpcWalletDir(name?: string): string | undefined {
+    const n = (name ?? walletName).trim();
+    if (!n) return undefined;
+    try {
+      return resolveWalletDir(dataDir, n);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function afterWalletCreated(result: CreateWalletResult) {
+    setWalletName(result.walletName);
+    setPassword(result.password);
+    setBootError(null);
+    setRoute({ name: "rpc", walletName: result.walletName, afterCreate: true });
+  }
+
+  function handleWalletChoice(choice: WalletStartChoice) {
+    if (choice.kind === "unlock") {
+      setWalletName(choice.walletName);
+      setPassword("");
+      setRoute({ name: "rpc", walletName: choice.walletName });
+      return;
+    }
+    if (choice.kind === "generate") {
+      setPendingImport(false);
+      setRoute({ name: "create", mode: "generate" });
+      return;
+    }
+    setPendingImport(true);
+    if (!envRpc && !rpcUrl.trim()) {
+      setRoute({ name: "rpc" });
+    } else {
+      setRoute({ name: "create", mode: "import" });
+    }
+  }
+
+  if (route.name === "fatal") {
+    return <FatalErrorScreen message={route.message} />;
+  }
+
   if (route.name === "wallet") {
     return (
-      <WalletPickScreen
+      <WalletStartScreen
         dataDir={dataDir}
         initialWallet={presetWallet}
-        onDone={(w) => {
-          setWalletName(w);
-          if (presetRpc) {
-            setRpcUrl(presetRpc);
-            if (presetPassword) {
-              setRoute({ name: "boot" });
-            } else {
-              setRoute({ name: "password", walletName: w });
-            }
-          } else {
-            setRoute({ name: "rpc" });
-          }
-        }}
+        onChoose={handleWalletChoice}
         onQuit={() => process.exit(0)}
       />
     );
   }
 
+  if (route.name === "create") {
+    return (
+      <CreateWalletWizard
+        dataDir={dataDir}
+        mode={route.mode}
+        rpcUrl={rpcUrl || envRpc}
+        onDone={afterWalletCreated}
+        onBack={() => {
+          setPendingImport(false);
+          setRoute({ name: "wallet" });
+        }}
+      />
+    );
+  }
+
   if (route.name === "rpc") {
+    const activeWallet = route.walletName ?? walletName;
+
     return (
       <RpcScreen
-        initialRpc={presetRpc}
+        autoApplyRpc={envRpc}
+        walletDir={rpcWalletDir(activeWallet)}
         onDone={(url) => {
           setRpcUrl(url);
-          setRoute({ name: "password", walletName });
+          if (pendingImport) {
+            setRoute({ name: "create", mode: "import" });
+            return;
+          }
+          if (route.afterCreate) {
+            setRoute({ name: "boot" });
+            return;
+          }
+          const havePassword = !!password.trim() || !!presetPassword;
+          if (havePassword) {
+            if (presetPassword && !password) setPassword(presetPassword);
+            setRoute({ name: "boot" });
+          } else {
+            setRoute({ name: "password", walletName: activeWallet });
+          }
         }}
-        onBack={() => setRoute({ name: "wallet" })}
+        onBack={() => {
+          setPendingImport(false);
+          setRoute({ name: "wallet" });
+        }}
+        onFatal={goFatal}
       />
     );
   }
@@ -124,8 +207,7 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
           setRoute({ name: "boot" });
         }}
         onBack={() => {
-          if (presetRpc) setRoute({ name: "wallet" });
-          else setRoute({ name: "rpc" });
+          setRoute({ name: "rpc", walletName: route.walletName });
         }}
       />
     );
