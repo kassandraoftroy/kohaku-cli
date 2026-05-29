@@ -10,14 +10,12 @@ import {
 } from "ethers";
 import { Mnemonic } from "derive-railgun-keys";
 
-import { makeHost } from "../host/makeHost";
 import { makeEthersProvider } from "../utils/rpc";
+import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
 import {
-  createProtocolPlugin,
   ETH_AS_ERC20,
-  pluginIdForProtocol,
   type SupportedProtocol,
 } from "../utils/plugins";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
@@ -215,62 +213,65 @@ export async function prepareShieldPlan(opts: {
     allowDeriveFromMnemonic,
   });
 
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
-      walletDir,
-      password,
-      mnemonic,
-      pluginId: pluginIdForProtocol(protocol),
-    });
-    const plugin = await createProtocolPlugin(protocol, host, chainId);
+  return withProtocolRuntime(
+    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+    async (_host, plugin) => {
+      const { rpc, dispose } = await rpcForWalletOps({
+        protocol,
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId,
+      });
+      try {
+        const asset =
+          tokenMeta.isEth && protocol === "railgun"
+            ? { asset: { __type: "native" as const }, amount }
+            : {
+                asset: {
+                  __type: "erc20" as const,
+                  contract: (tokenMeta.isEth
+                    ? ETH_AS_ERC20
+                    : tokenMeta.tokenAddress) as `0x${string}`,
+                },
+                amount,
+              };
 
-    const asset =
-      tokenMeta.isEth && protocol === "railgun"
-        ? { asset: { __type: "native" as const }, amount }
-        : {
-            asset: {
-              __type: "erc20" as const,
-              contract: (tokenMeta.isEth
-                ? ETH_AS_ERC20
-                : tokenMeta.tokenAddress) as `0x${string}`,
-            },
-            amount,
-          };
+        const op = await plugin.prepareShield(asset as AssetAmount);
+        const shieldTx = toShieldTxs(op)[0]!;
 
-    const op = await plugin.prepareShield(asset as AssetAmount);
-    const shieldTx = toShieldTxs(op)[0]!;
+        let approve: { to: string; data: string; value: bigint } | null = null;
+        if (!tokenMeta.isEth) {
+          const erc20Read = new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc);
+          const allowance: bigint = await erc20Read.allowance(senderAddress, shieldTx.to);
+          if (allowance < amount) {
+            approve = encodeErc20ApproveTx(tokenMeta.tokenAddress, shieldTx.to, amount);
+          }
+        }
 
-    let approve: { to: string; data: string; value: bigint } | null = null;
-    if (!tokenMeta.isEth) {
-      const erc20Read = new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc);
-      const allowance: bigint = await erc20Read.allowance(senderAddress, shieldTx.to);
-      if (allowance < amount) {
-        approve = encodeErc20ApproveTx(tokenMeta.tokenAddress, shieldTx.to, amount);
+        const transactions: ShieldTxPayload[] = [];
+        if (approve) {
+          transactions.push({
+            data: approve.data,
+            to: approve.to,
+            from: senderAddress,
+            value: approve.value.toString(),
+          });
+        }
+        transactions.push({
+          data: shieldTx.data,
+          to: shieldTx.to,
+          from: senderAddress,
+          value: shieldTx.value.toString(),
+        });
+
+        return { senderAddress, approve, shieldTx, transactions };
+      } finally {
+        dispose();
       }
     }
-
-    const transactions: ShieldTxPayload[] = [];
-    if (approve) {
-      transactions.push({
-        data: approve.data,
-        to: approve.to,
-        from: senderAddress,
-        value: approve.value.toString(),
-      });
-    }
-    transactions.push({
-      data: shieldTx.data,
-      to: shieldTx.to,
-      from: senderAddress,
-      value: shieldTx.value.toString(),
-    });
-
-    return { senderAddress, approve, shieldTx, transactions };
-  } finally {
-    rpc.destroy();
-  }
+  );
 }
 
 export type BroadcastShieldResult = {
@@ -307,7 +308,15 @@ export async function broadcastShield(opts: {
     );
   }
 
-  const rpc = await makeEthersProvider(opts.rpcUrl);
+  const ctx = {
+    protocol: opts.protocol,
+    rpcUrl: opts.rpcUrl,
+    walletDir: opts.walletDir,
+    password: opts.password,
+    mnemonic: opts.mnemonic,
+    chainId: opts.chainId,
+  };
+  const { rpc, dispose } = await rpcForWalletOps(ctx);
   const results: BroadcastShieldResult = [];
   try {
     const signer = new Wallet(sender.senderPrivateKey, rpc);
@@ -350,7 +359,7 @@ export async function broadcastShield(opts: {
     results.push({ type: "shield", hash: s.hash });
     return results;
   } finally {
-    rpc.destroy();
+    dispose();
   }
 }
 

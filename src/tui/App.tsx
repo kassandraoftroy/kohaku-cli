@@ -254,8 +254,10 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
   }
 
   if (route.name === "main") {
+    // Fresh key so Ink fully replaces boot/onboarding output (avoids header ghosting).
     return (
       <MainMenuScreen
+        key="main-menu"
         session={route.session}
         onAction={(action: MainMenuAction) => {
           if (action === "quit") process.exit(0);

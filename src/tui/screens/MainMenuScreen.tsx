@@ -12,6 +12,13 @@ export type MainMenuAction =
   | "unshield"
   | "quit";
 
+function shortenRpc(url: string, max = 52): string {
+  if (url.length <= max) return url;
+  const head = Math.floor((max - 1) * 0.55);
+  const tail = max - 1 - head;
+  return `${url.slice(0, head)}…${url.slice(-tail)}`;
+}
+
 export function MainMenuScreen({
   session,
   onAction,
@@ -19,23 +26,25 @@ export function MainMenuScreen({
   session: TuiSession;
   onAction: (action: MainMenuAction) => void;
 }) {
+  const network =
+    session.chainId === 11155111n ? "Sepolia" : session.chainId === 1n ? "mainnet" : `chain ${session.chainId}`;
+
   const items = [
-    { label: "Balances (summary)", value: "balances" as const },
-    { label: "Balances (verbose — per address + notes)", value: "balances-verbose" as const },
-    { label: "Shield (public → private)", value: "shield" as const },
-    { label: "Unshield (private → public)", value: "unshield" as const },
+    { label: "Balances", value: "balances" as const },
+    { label: "Balances (verbose)", value: "balances-verbose" as const },
+    { label: "Shield", value: "shield" as const },
+    { label: "Unshield", value: "unshield" as const },
     { label: "Quit", value: "quit" as const },
   ];
 
   return (
     <PageLayout
       title="Kohaku"
-      subtitle={`${session.walletName} · chain ${session.chainId.toString()}`}
-      koiSize="compact"
+      subtitle={`${session.walletName} · ${network}`}
+      koiSize="tiny"
+      animateKoi={false}
     >
-      <Text dimColor>
-        RPC {session.rpcUrl.length > 48 ? `${session.rpcUrl.slice(0, 44)}…` : session.rpcUrl}
-      </Text>
+      <Text dimColor>RPC {shortenRpc(session.rpcUrl)}</Text>
       <SelectList
         items={items}
         onSelect={(v) => onAction(v)}

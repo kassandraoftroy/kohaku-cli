@@ -2,22 +2,17 @@ import { createPPv1Broadcaster } from "@kohaku-eth/privacy-pools";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import { formatUnits, getAddress, parseUnits } from "ethers";
 
-import { makeHost } from "../host/makeHost";
-import {
-  makeEthersProvider,
-  railgunPimlicoBundlerUrl,
-} from "../utils/rpc";
-import type { ResolvedTokenMeta } from "../utils/tokens-util";
-import { wethAddressForChain } from "../utils/tokens-util";
+import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
+import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
+import { wethAddressForChain } from "../utils/tokens-util.js";
 import {
   ETH_AS_ERC20,
   PRIVACY_POOLS_BROADCASTER_URL,
   configureRailgunForUnshield,
-  createProtocolPlugin,
-  pluginIdForProtocol,
   railgunNativeEthAssetAmount,
   type SupportedProtocol,
-} from "../utils/plugins";
+} from "../utils/plugins.js";
+import { withProtocolRuntime } from "./protocol-runtime.js";
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
 
@@ -104,7 +99,7 @@ export type UnshieldPrepared = {
   recipient: `0x${string}`;
 };
 
-export async function prepareUnshieldOperation(opts: {
+type UnshieldRuntimeOpts = {
   protocol: SupportedProtocol;
   rpcUrl: string;
   walletDir: string;
@@ -116,78 +111,107 @@ export async function prepareUnshieldOperation(opts: {
   recipient: `0x${string}`;
   recipientPriv?: `0x${string}`;
   onStatus?: (message: string) => void;
-}): Promise<UnshieldPrepared> {
-  const rpc = await makeEthersProvider(opts.rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
-      walletDir: opts.walletDir,
-      password: opts.password,
-      mnemonic: opts.mnemonic,
-      pluginId: pluginIdForProtocol(opts.protocol),
-    });
-    const plugin = await createProtocolPlugin(opts.protocol, host, opts.chainId);
+};
 
-    if (opts.protocol === "railgun") {
-      if (!opts.recipientPriv) {
-        throw new Error(
-          "Railgun unshield requires a recipient public account from this wallet."
-        );
-      }
-      configureRailgunForUnshield(
-        plugin,
-        opts.recipientPriv,
-        railgunPimlicoBundlerUrl(opts.chainId)
+async function runUnshieldWithPlugin(
+  opts: UnshieldRuntimeOpts,
+  host: Host,
+  plugin: unknown,
+  mode: "prepare" | "broadcast"
+): Promise<UnshieldPrepared | unknown> {
+  if (opts.protocol === "railgun") {
+    if (!opts.recipientPriv) {
+      throw new Error(
+        "Railgun unshield requires a recipient public account from this wallet."
       );
     }
+    configureRailgunForUnshield(
+      plugin,
+      opts.recipientPriv,
+      railgunPimlicoBundlerUrl(opts.chainId)
+    );
+  }
 
-    if (
-      opts.protocol === "privacy-pools" &&
-      "sync" in plugin &&
-      typeof plugin.sync === "function"
-    ) {
-      opts.onStatus?.("Syncing private state…");
-      await (plugin as { sync: () => Promise<void> }).sync.call(plugin);
+  const maybeSync = plugin as { sync?: () => Promise<void> };
+  if (opts.protocol === "privacy-pools" && typeof maybeSync.sync === "function") {
+    opts.onStatus?.("Syncing private state…");
+    await maybeSync.sync.call(plugin);
+  }
+
+  const isRailgunEth = opts.protocol === "railgun" && opts.tokenMeta.isEth;
+  const asset =
+    isRailgunEth
+      ? railgunNativeEthAssetAmount(opts.chainId, opts.amount)
+      : {
+          asset: {
+            __type: "erc20" as const,
+            contract: (opts.tokenMeta.isEth
+              ? ETH_AS_ERC20
+              : opts.tokenMeta.tokenAddress) as `0x${string}`,
+          },
+          amount: opts.amount,
+        };
+
+  const prepareUnshield = (
+    plugin as unknown as {
+      prepareUnshield: (a: AssetAmount, t: `0x${string}`) => Promise<unknown>;
     }
+  ).prepareUnshield.bind(plugin);
 
-    const isRailgunEth = opts.protocol === "railgun" && opts.tokenMeta.isEth;
-    const asset =
-      isRailgunEth
-        ? railgunNativeEthAssetAmount(opts.chainId, opts.amount)
-        : {
-            asset: {
-              __type: "erc20" as const,
-              contract: (opts.tokenMeta.isEth
-                ? ETH_AS_ERC20
-                : opts.tokenMeta.tokenAddress) as `0x${string}`,
-            },
-            amount: opts.amount,
-          };
-
-    opts.onStatus?.(
-      opts.protocol === "railgun"
+  opts.onStatus?.(
+    mode === "broadcast"
+      ? "Preparing unshield…"
+      : opts.protocol === "railgun"
         ? "Building Railgun unshield…"
         : "Building Privacy Pools unshield…"
-    );
+  );
 
-    const prepareUnshield = (
-      plugin as unknown as {
-        prepareUnshield: (a: AssetAmount, t: `0x${string}`) => Promise<unknown>;
-      }
-    ).prepareUnshield.bind(plugin);
+  const privateOp = await prepareUnshield(asset as AssetAmount, opts.recipient);
 
-    const privateOp = await prepareUnshield(asset as AssetAmount, opts.recipient);
+  if (mode === "prepare") {
     return {
       privateOp,
       amount: opts.amount,
       recipient: getAddress(opts.recipient) as `0x${string}`,
     };
-  } finally {
-    rpc.destroy();
   }
+
+  opts.onStatus?.("Broadcasting unshield…");
+  return await broadcastPreparedPrivateOp(opts.protocol, host, plugin, privateOp);
 }
 
-export async function broadcastUnshield(opts: {
+export async function prepareUnshieldOperation(
+  opts: UnshieldRuntimeOpts
+): Promise<UnshieldPrepared> {
+  return (await withProtocolRuntime(
+    {
+      protocol: opts.protocol,
+      rpcUrl: opts.rpcUrl,
+      walletDir: opts.walletDir,
+      password: opts.password,
+      mnemonic: opts.mnemonic,
+      chainId: opts.chainId,
+    },
+    (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "prepare")
+  )) as UnshieldPrepared;
+}
+
+export async function broadcastUnshield(opts: UnshieldRuntimeOpts): Promise<unknown> {
+  return withProtocolRuntime(
+    {
+      protocol: opts.protocol,
+      rpcUrl: opts.rpcUrl,
+      walletDir: opts.walletDir,
+      password: opts.password,
+      mnemonic: opts.mnemonic,
+      chainId: opts.chainId,
+    },
+    (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "broadcast")
+  );
+}
+
+/** Max unshield amount using the shared protocol runtime (safe to call repeatedly for Railgun). */
+export async function maxUnshieldAmountHintForWallet(opts: {
   protocol: SupportedProtocol;
   rpcUrl: string;
   walletDir: string;
@@ -195,72 +219,19 @@ export async function broadcastUnshield(opts: {
   mnemonic: string;
   chainId: bigint;
   tokenMeta: ResolvedTokenMeta;
-  amount: bigint;
-  recipient: `0x${string}`;
-  recipientPriv?: `0x${string}`;
-  onStatus?: (message: string) => void;
-}): Promise<unknown> {
-  const rpc = await makeEthersProvider(opts.rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
+}): Promise<{ cap: bigint; privacyPoolsLargestNote: boolean }> {
+  return withProtocolRuntime(
+    {
+      protocol: opts.protocol,
+      rpcUrl: opts.rpcUrl,
       walletDir: opts.walletDir,
       password: opts.password,
       mnemonic: opts.mnemonic,
-      pluginId: pluginIdForProtocol(opts.protocol),
-    });
-    const plugin = await createProtocolPlugin(opts.protocol, host, opts.chainId);
-
-    if (opts.protocol === "railgun") {
-      if (!opts.recipientPriv) {
-        throw new Error(
-          "Railgun unshield requires a recipient public account from this wallet."
-        );
-      }
-      configureRailgunForUnshield(
-        plugin,
-        opts.recipientPriv,
-        railgunPimlicoBundlerUrl(opts.chainId)
-      );
-    }
-
-    if (
-      opts.protocol === "privacy-pools" &&
-      "sync" in plugin &&
-      typeof plugin.sync === "function"
-    ) {
-      opts.onStatus?.("Syncing private state…");
-      await (plugin as { sync: () => Promise<void> }).sync.call(plugin);
-    }
-
-    const isRailgunEth = opts.protocol === "railgun" && opts.tokenMeta.isEth;
-    const asset =
-      isRailgunEth
-        ? railgunNativeEthAssetAmount(opts.chainId, opts.amount)
-        : {
-            asset: {
-              __type: "erc20" as const,
-              contract: (opts.tokenMeta.isEth
-                ? ETH_AS_ERC20
-                : opts.tokenMeta.tokenAddress) as `0x${string}`,
-            },
-            amount: opts.amount,
-          };
-
-    const prepareUnshield = (
-      plugin as unknown as {
-        prepareUnshield: (a: AssetAmount, t: `0x${string}`) => Promise<unknown>;
-      }
-    ).prepareUnshield.bind(plugin);
-
-    opts.onStatus?.("Preparing unshield…");
-    const privateOp = await prepareUnshield(asset as AssetAmount, opts.recipient);
-
-    opts.onStatus?.("Broadcasting unshield…");
-    return await broadcastPreparedPrivateOp(opts.protocol, host, plugin, privateOp);
-  } finally {
-    rpc.destroy();
-  }
+      chainId: opts.chainId,
+    },
+    async (_host, plugin) =>
+      maxUnshieldAmountHint(opts.protocol, plugin, opts.tokenMeta, opts.chainId)
+  );
 }
 
 export function parseUnshieldAmount(

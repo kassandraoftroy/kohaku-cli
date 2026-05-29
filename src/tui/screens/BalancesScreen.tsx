@@ -155,7 +155,7 @@ export function BalancesScreen({
   }
 
   return (
-    <PageLayout title="Balances" subtitle={verbose ? "verbose" : "summary"} koiSize="compact">
+    <PageLayout title="Balances" subtitle={verbose ? "verbose" : "summary"} animateKoi={false}>
       {warnings.map((w, i) => (
         <Text key={i} color="#ffb000">
           ⚠ {w}

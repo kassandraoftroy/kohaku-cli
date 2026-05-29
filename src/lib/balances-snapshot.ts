@@ -3,6 +3,7 @@ import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
 import { makeHost } from "../host/makeHost";
 import { makeEthersProvider } from "../utils/rpc";
+import { withProtocolRuntime } from "./protocol-runtime";
 import { ERC20_ABI, mergeDefaultAndExtraErc20s } from "../utils/tokens-util";
 import {
   createProtocolPlugin,
@@ -151,20 +152,10 @@ async function loadPrivateBalancesForProtocol(
   mnemonic: string,
   chainId: bigint
 ): Promise<AssetAmount[]> {
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
-      walletDir,
-      password,
-      mnemonic,
-      pluginId: pluginIdForProtocol(protocol),
-    });
-    const plugin = await createProtocolPlugin(protocol, host, chainId);
-    return await plugin.balance(undefined);
-  } finally {
-    rpc.destroy();
-  }
+  return withProtocolRuntime(
+    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+    async (_host, plugin) => plugin.balance(undefined)
+  );
 }
 
 type PpNotesPlugin = {

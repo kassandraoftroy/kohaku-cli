@@ -2,14 +2,11 @@ import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
 import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
-import { makeHost } from "../../host/makeHost.js";
-import { makeEthersProvider } from "../../utils/rpc.js";
 import {
   assertPpErc20TokenWhitelisted,
-  createProtocolPlugin,
-  pluginIdForProtocol,
   type SupportedProtocol,
 } from "../../utils/plugins.js";
+import { maxUnshieldAmountHintForWallet } from "../../lib/unshield-flow.js";
 import { resolveTokenMeta } from "../../utils/tokens-util.js";
 import {
   findPublicAccountByAddress,
@@ -82,22 +79,19 @@ export function UnshieldScreen({
     if (step !== "amount" || !protocol || !tokenMeta) return;
     let cancelled = false;
     void (async () => {
-      const rpc = await makeEthersProvider(session.rpcUrl);
       try {
-        const host = await makeHost({
-          rpc,
+        const hint = await maxUnshieldAmountHintForWallet({
+          protocol,
+          rpcUrl: session.rpcUrl,
           walletDir: session.walletDir,
           password: session.password,
           mnemonic: session.mnemonic,
-          pluginId: pluginIdForProtocol(protocol),
+          chainId: session.chainId,
+          tokenMeta,
         });
-        const plugin = await createProtocolPlugin(protocol, host, session.chainId);
-        const hint = await maxUnshieldAmountHint(protocol, plugin, tokenMeta, session.chainId);
         if (!cancelled) setMaxHint(hint.cap);
       } catch {
         if (!cancelled) setMaxHint(0n);
-      } finally {
-        rpc.destroy();
       }
     })();
     return () => {
