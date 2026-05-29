@@ -13,6 +13,11 @@ import {
 import { normalizeValidatedMnemonic } from "../../utils/mnemonic.js";
 import { resolveWalletDir } from "../../utils/wallets-util.js";
 import { makeEthersProvider } from "../../utils/rpc.js";
+import {
+  formatWalletRpcMismatchBrief,
+  isWalletRpcChainMismatch,
+  walletNetworkLabel,
+} from "../rpc-validation.js";
 
 const CREAM = "#f5efe0";
 const WARN = "#ffb000";
@@ -31,6 +36,7 @@ type Step =
   | "mnemonic-import"
   | "password"
   | "password-confirm"
+  | "fix-rpc"
   | "creating"
   | "done"
   | "error";
@@ -39,12 +45,14 @@ export function CreateWalletWizard({
   dataDir,
   mode,
   rpcUrl,
+  onRpcUrlChange,
   onDone,
   onBack,
 }: {
   dataDir: string;
   mode: Mode;
   rpcUrl?: string;
+  onRpcUrlChange?: (url: string) => void;
   onDone: (result: CreateWalletResult) => void;
   onBack: () => void;
 }) {
@@ -56,11 +64,19 @@ export function CreateWalletWizard({
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [nameInput, setNameInput] = useState("");
   const [mnemonicInput, setMnemonicInput] = useState("");
+  const [importRpc, setImportRpc] = useState(rpcUrl?.trim() ?? "");
+  const [rpcAlert, setRpcAlert] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const activeImportRpc = importRpc.trim() || rpcUrl?.trim() || "";
 
   useInput((_, key) => {
     if (key.escape && step !== "creating") onBack();
   });
+
+  function walletDirForName(name: string): string {
+    return resolveWalletDir(dataDir, name);
+  }
 
   function submitName() {
     const name = nameInput.trim();
@@ -69,7 +85,7 @@ export function CreateWalletWizard({
       return;
     }
     try {
-      const dir = resolveWalletDir(dataDir, name);
+      const dir = walletDirForName(name);
       if (existsSync(dir)) {
         setError(`Wallet "${name}" already exists.`);
         return;
@@ -99,7 +115,7 @@ export function CreateWalletWizard({
       const phrase = normalizeValidatedMnemonic(mnemonicInput);
       setMnemonic(phrase);
       setError(null);
-      if (!rpcUrl?.trim()) {
+      if (!activeImportRpc) {
         setError("RPC URL is required when importing (set RPC_URL or enter RPC first).");
         return;
       }
@@ -129,14 +145,27 @@ export function CreateWalletWizard({
     void createWallet();
   }
 
+  function submitFixRpc() {
+    const url = importRpc.trim();
+    if (!url) {
+      setError("RPC URL is required.");
+      return;
+    }
+    setError(null);
+    setRpcAlert(null);
+    onRpcUrlChange?.(url);
+    void createWallet();
+  }
+
   async function createWallet() {
     setStep("creating");
+    const rpcForImport = activeImportRpc;
     try {
       if (mode === "import") {
-        if (!rpcUrl?.trim()) {
+        if (!rpcForImport) {
           throw new Error("RPC URL is required when importing a wallet.");
         }
-        const rpc = await makeEthersProvider(rpcUrl);
+        const rpc = await makeEthersProvider(rpcForImport);
         await rpc.getNetwork();
         rpc.destroy();
       }
@@ -146,11 +175,18 @@ export function CreateWalletWizard({
         mnemonic,
         password,
         testnet,
-        rpcUrl: mode === "import" ? rpcUrl : undefined,
+        rpcUrl: mode === "import" ? rpcForImport : undefined,
       });
       setStep("done");
       onDone({ walletName, password });
     } catch (e) {
+      if (mode === "import" && walletName && isWalletRpcChainMismatch(e)) {
+        const dir = walletDirForName(walletName);
+        setRpcAlert(formatWalletRpcMismatchBrief(dir, e));
+        setImportRpc(rpcForImport);
+        setStep("fix-rpc");
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
       setStep("error");
     }
@@ -211,7 +247,7 @@ export function CreateWalletWizard({
     return (
       <PageLayout title="Import wallet" subtitle="mnemonic">
         <Text dimColor>Paste your 12 or 24-word phrase (masked).</Text>
-        {!rpcUrl?.trim() ? (
+        {!activeImportRpc ? (
           <Text color={WARN}>
             Set RPC_URL or complete RPC setup before importing (needed to scan used addresses).
           </Text>
@@ -222,6 +258,33 @@ export function CreateWalletWizard({
           onChange={setMnemonicInput}
           onSubmit={submitMnemonicImport}
           mask="*"
+        />
+        {error ? <Text color="#c92a2a">{error}</Text> : null}
+      </PageLayout>
+    );
+  }
+
+  if (step === "fix-rpc") {
+    const dir = walletName ? walletDirForName(walletName) : undefined;
+    return (
+      <PageLayout title="Import wallet" subtitle="RPC">
+        {rpcAlert ? (
+          <Box marginBottom={1} flexDirection="column">
+            <Text color={WARN} bold>
+              Wrong network for this wallet
+            </Text>
+            <Text color={WARN}>{rpcAlert}</Text>
+          </Box>
+        ) : null}
+        {dir ? (
+          <Text dimColor>Required: {walletNetworkLabel(dir)}</Text>
+        ) : null}
+        <TextPrompt
+          label="RPC URL (HTTP/S):"
+          value={importRpc}
+          onChange={setImportRpc}
+          onSubmit={submitFixRpc}
+          placeholder="https://..."
         />
         {error ? <Text color="#c92a2a">{error}</Text> : null}
       </PageLayout>

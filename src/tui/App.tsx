@@ -3,14 +3,9 @@ import React, { useEffect, useState } from "react";
 import { buildTuiSession, type TuiSession } from "./session.js";
 import { resolveWalletDir } from "../utils/wallets-util.js";
 import { resolveRpcUrl, DEFAULT_DATA_DIR } from "../utils/rpc.js";
+import { BootScreen, PasswordScreen, RpcScreen } from "./screens/OnboardingScreens.js";
 import {
-  BootScreen,
-  FatalErrorScreen,
-  PasswordScreen,
-  RpcScreen,
-} from "./screens/OnboardingScreens.js";
-import {
-  formatWalletRpcMismatchError,
+  formatWalletRpcMismatchBrief,
   isWalletRpcChainMismatch,
 } from "./rpc-validation.js";
 import {
@@ -36,10 +31,9 @@ export type TuiLaunchOptions = {
 type Route =
   | { name: "wallet" }
   | { name: "create"; mode: "generate" | "import" }
-  | { name: "rpc"; afterCreate?: boolean; walletName?: string }
+  | { name: "rpc"; afterCreate?: boolean; walletName?: string; rpcAlert?: string }
   | { name: "password"; walletName: string }
   | { name: "boot" }
-  | { name: "fatal"; message: string }
   | { name: "main"; session: TuiSession }
   | { name: "balances"; session: TuiSession; verbose: boolean }
   | { name: "shield"; session: TuiSession }
@@ -64,7 +58,18 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
   const [bootError, setBootError] = useState<string | null>(null);
   const [pendingImport, setPendingImport] = useState(false);
 
-  const goFatal = (message: string) => setRoute({ name: "fatal", message });
+  function goToRpcScreen(opts: {
+    walletName?: string;
+    afterCreate?: boolean;
+    rpcAlert?: string;
+  }) {
+    setRoute({
+      name: "rpc",
+      walletName: opts.walletName ?? walletName,
+      afterCreate: opts.afterCreate,
+      rpcAlert: opts.rpcAlert,
+    });
+  }
 
   useEffect(() => {
     if (route.name !== "boot") return;
@@ -82,7 +87,10 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
         if (cancelled) return;
         const walletDir = resolveWalletDir(dataDir, walletName);
         if (isWalletRpcChainMismatch(e)) {
-          goFatal(formatWalletRpcMismatchError(rpcUrl, walletDir, e));
+          goToRpcScreen({
+            walletName,
+            rpcAlert: formatWalletRpcMismatchBrief(walletDir, e),
+          });
           return;
         }
         setBootError(e instanceof Error ? e.message : String(e));
@@ -131,10 +139,6 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
     }
   }
 
-  if (route.name === "fatal") {
-    return <FatalErrorScreen message={route.message} />;
-  }
-
   if (route.name === "wallet") {
     return (
       <WalletStartScreen
@@ -152,6 +156,7 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
         dataDir={dataDir}
         mode={route.mode}
         rpcUrl={rpcUrl || envRpc}
+        onRpcUrlChange={setRpcUrl}
         onDone={afterWalletCreated}
         onBack={() => {
           setPendingImport(false);
@@ -166,7 +171,8 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
 
     return (
       <RpcScreen
-        autoApplyRpc={envRpc}
+        autoApplyRpc={route.rpcAlert ? undefined : envRpc}
+        initialAlert={route.rpcAlert}
         walletDir={rpcWalletDir(activeWallet)}
         onDone={(url) => {
           setRpcUrl(url);
@@ -190,7 +196,6 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
           setPendingImport(false);
           setRoute({ name: "wallet" });
         }}
-        onFatal={goFatal}
       />
     );
   }
@@ -207,7 +212,7 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
           setRoute({ name: "boot" });
         }}
         onBack={() => {
-          setRoute({ name: "rpc", walletName: route.walletName });
+          goToRpcScreen({ walletName: route.walletName });
         }}
       />
     );

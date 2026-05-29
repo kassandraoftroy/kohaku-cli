@@ -8,57 +8,72 @@ import { readSeedKeystore } from "../../utils/mnemonic.js";
 import { makeEthersProvider, resolveRpcUrl } from "../../utils/rpc.js";
 import {
   assertRpcMatchesWallet,
-  formatWalletRpcMismatchError,
+  formatWalletRpcMismatchBrief,
   isWalletRpcChainMismatch,
   walletNetworkLabel,
 } from "../rpc-validation.js";
 
 const CREAM = "#f5efe0";
+const WARN = "#ffb000";
 
 export function RpcScreen({
   autoApplyRpc,
   walletDir,
+  initialAlert,
   onDone,
   onBack,
-  onFatal,
 }: {
-  /** When set (from RPC_URL or --rpc-url), skip this screen and use that URL. */
+  /** When set (from RPC_URL or --rpc-url), try once without prompting. */
   autoApplyRpc?: string;
   /** When set, RPC chain ID must match the wallet's .wallet-type before continuing. */
   walletDir?: string;
+  /** Shown when returning after a wrong-network RPC (user can enter a new URL). */
+  initialAlert?: string;
   onDone: (rpc: string) => void;
   onBack: () => void;
-  onFatal?: (message: string) => void;
 }) {
   const envOrFlagRpc = resolveRpcUrl();
-  const [value, setValue] = useState(autoApplyRpc?.trim() || envOrFlagRpc || "");
+  const [manualEntry, setManualEntry] = useState(
+    () => !!initialAlert || !autoApplyRpc?.trim()
+  );
+  const [value, setValue] = useState(
+    () => autoApplyRpc?.trim() || envOrFlagRpc || ""
+  );
+  const [alert, setAlert] = useState<string | null>(initialAlert ?? null);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     const url = autoApplyRpc?.trim();
-    if (!url) return;
+    if (!url || manualEntry) return;
+
     let cancelled = false;
     void (async () => {
       setChecking(true);
+      setAlert(null);
+      setError(null);
       try {
         await validateRpcUrl(url);
         if (!cancelled) onDone(url);
       } catch (e) {
-        if (!cancelled) {
-          if (walletDir && onFatal && isWalletRpcChainMismatch(e)) {
-            onFatal(formatWalletRpcMismatchError(url, walletDir, e));
-          } else {
-            setError(e instanceof Error ? e.message : String(e));
-            setChecking(false);
-          }
+        if (cancelled) return;
+        if (walletDir && isWalletRpcChainMismatch(e)) {
+          setManualEntry(true);
+          setValue(url);
+          setAlert(formatWalletRpcMismatchBrief(walletDir, e));
+          setChecking(false);
+          return;
         }
+        setManualEntry(true);
+        setValue(url);
+        setError(e instanceof Error ? e.message : String(e));
+        setChecking(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [autoApplyRpc, walletDir, onDone, onFatal]);
+  }, [autoApplyRpc, manualEntry, walletDir, onDone]);
 
   useInput((_, key) => {
     if (key.escape && !checking) onBack();
@@ -83,22 +98,24 @@ export function RpcScreen({
       return;
     }
     setChecking(true);
+    setAlert(null);
     setError(null);
     try {
       await validateRpcUrl(url);
       onDone(url);
     } catch (e) {
-      if (walletDir && onFatal && isWalletRpcChainMismatch(e)) {
-        onFatal(formatWalletRpcMismatchError(url, walletDir, e));
-        return;
+      if (walletDir && isWalletRpcChainMismatch(e)) {
+        setAlert(formatWalletRpcMismatchBrief(walletDir, e));
+        setError(null);
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
       }
-      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setChecking(false);
     }
   }
 
-  if (autoApplyRpc?.trim()) {
+  if (!manualEntry && autoApplyRpc?.trim()) {
     return (
       <PageLayout title="Kohaku TUI" subtitle="RPC">
         <Text color={CREAM}>
@@ -107,17 +124,25 @@ export function RpcScreen({
         {walletDir ? (
           <Text dimColor>Checking chain matches {walletNetworkLabel(walletDir)}…</Text>
         ) : null}
-        {error ? <Text color="#c92a2a">{error}</Text> : null}
+        {checking ? <Text color={CREAM}>Checking RPC…</Text> : null}
       </PageLayout>
     );
   }
 
   return (
     <PageLayout title="Kohaku TUI" subtitle="RPC endpoint">
+      {alert ? (
+        <Box marginBottom={1} flexDirection="column">
+          <Text color={WARN} bold>
+            Wrong network for this wallet
+          </Text>
+          <Text color={WARN}>{alert}</Text>
+        </Box>
+      ) : null}
       <Text dimColor>
-        {envOrFlagRpc
+        {envOrFlagRpc && !alert
           ? "RPC_URL is set — edit below or press Enter to use it."
-          : "No RPC_URL in environment — paste your HTTP RPC URL."}
+          : "Paste an HTTP RPC URL for your wallet's network."}
       </Text>
       <TextPrompt
         label="RPC URL (HTTP/S):"
@@ -127,28 +152,10 @@ export function RpcScreen({
         placeholder="https://..."
       />
       {walletDir ? (
-        <Text dimColor>Wallet expects {walletNetworkLabel(walletDir)}.</Text>
+        <Text dimColor>Required: {walletNetworkLabel(walletDir)}</Text>
       ) : null}
       {checking ? <Text color={CREAM}>Checking RPC…</Text> : null}
       {error ? <Text color="#c92a2a">{error}</Text> : null}
-    </PageLayout>
-  );
-}
-
-export function FatalErrorScreen({ message }: { message: string }) {
-  useEffect(() => {
-    const lines = message.split("\n");
-    for (const line of lines) {
-      console.error(line);
-    }
-    const t = setTimeout(() => process.exit(1), 100);
-    return () => clearTimeout(t);
-  }, [message]);
-
-  return (
-    <PageLayout title="Kohaku TUI" subtitle="error">
-      <Text color="#c92a2a">{message}</Text>
-      <Text dimColor>Exiting.</Text>
     </PageLayout>
   );
 }

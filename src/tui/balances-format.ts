@@ -1,0 +1,94 @@
+import type { BalancesSnapshot } from "../lib/balances-snapshot.js";
+import type { ScrollLine } from "./components/ScrollableLines.js";
+
+function shortenAddr(addr: string): string {
+  if (addr.length < 14) return addr;
+  return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
+}
+
+function section(title: string): ScrollLine {
+  return { text: title, color: "#c92a2a", bold: true };
+}
+
+function row(symbol: string, amount: string): ScrollLine {
+  return { text: `  ${symbol.padEnd(10)} ${amount}`, color: "#f5efe0" };
+}
+
+function noneLine(): ScrollLine {
+  return { text: "  (none)", dim: true };
+}
+
+export function formatBalancesLines(
+  snap: BalancesSnapshot,
+  verbose: boolean,
+  warnings: string[]
+): ScrollLine[] {
+  const lines: ScrollLine[] = [];
+
+  for (const w of warnings) {
+    lines.push({ text: `⚠ ${w}`, color: "#ffb000" });
+  }
+
+  lines.push(section("Public (aggregated)"));
+  if (snap.publicAggregated.length === 0) {
+    lines.push(noneLine());
+  } else {
+    for (const r of snap.publicAggregated) {
+      lines.push(row(r.symbol, r.formatted_token_holdings));
+    }
+  }
+
+  lines.push(section("Private — Railgun"));
+  if (snap.privateRailgun.length === 0) {
+    lines.push(noneLine());
+  } else {
+    for (const r of snap.privateRailgun) {
+      lines.push(row(r.symbol, r.formatted_token_holdings));
+    }
+  }
+
+  lines.push(section("Private — Privacy pools"));
+  if (snap.privatePrivacyPools.length === 0) {
+    lines.push(noneLine());
+  } else {
+    for (const r of snap.privatePrivacyPools) {
+      lines.push(row(r.symbol, r.formatted_token_holdings));
+    }
+  }
+
+  if (verbose) {
+    lines.push(section("Public by address"));
+    const addrs = Object.keys(snap.publicByAddress);
+    if (addrs.length === 0) {
+      lines.push(noneLine());
+    } else {
+      for (const addr of addrs) {
+        const idx = snap.publicAccountIndexByAddress[addr];
+        lines.push({
+          text: `  ${idx !== undefined ? `[${idx}] ` : ""}${addr}`,
+          color: "#f5efe0",
+        });
+        const rows = snap.publicByAddress[addr] ?? [];
+        if (rows.length === 0) {
+          lines.push(noneLine());
+        } else {
+          for (const r of rows) {
+            lines.push(row(r.symbol, r.formatted_token_holdings));
+          }
+        }
+      }
+    }
+
+    if (snap.privacyPoolsNotes && snap.privacyPoolsNotes.length > 0) {
+      lines.push(section("Privacy pool notes"));
+      for (const n of snap.privacyPoolsNotes) {
+        lines.push({
+          text: `  label ${n.label} · ${n.balance_formatted} · ${shortenAddr(n.asset_address)} · ${n.approved ? "approved" : "pending"}`,
+          dim: true,
+        });
+      }
+    }
+  }
+
+  return lines;
+}

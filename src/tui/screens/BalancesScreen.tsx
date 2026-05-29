@@ -1,91 +1,14 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text } from "ink";
 
 import { loadBalancesSnapshot, type BalancesSnapshot } from "../../lib/balances-snapshot.js";
+import { formatBalancesLines } from "../balances-format.js";
+import { ScrollableLines } from "../components/ScrollableLines.js";
 import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import type { TuiSession } from "../session.js";
 
 const CREAM = "#f5efe0";
-
-function shortenAddr(addr: string): string {
-  if (addr.length < 14) return addr;
-  return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
-}
-
-function BalanceRows({ rows }: { rows: { symbol: string; formatted_token_holdings: string }[] }) {
-  if (rows.length === 0) {
-    return <Text dimColor>(none)</Text>;
-  }
-  return (
-    <>
-      {rows.map((r, i) => (
-        <Text key={i}>
-          <Text color={CREAM}>{r.symbol.padEnd(10)}</Text>
-          <Text> {r.formatted_token_holdings}</Text>
-        </Text>
-      ))}
-    </>
-  );
-}
-
-function BalancesView({ snap, verbose }: { snap: BalancesSnapshot; verbose: boolean }) {
-  return (
-    <Box flexDirection="column">
-      <Text bold color="#c92a2a">
-        Public (aggregated)
-      </Text>
-      <BalanceRows rows={snap.publicAggregated} />
-
-      <Text bold color="#c92a2a">
-        {" "}
-        Private — Railgun
-      </Text>
-      <BalanceRows rows={snap.privateRailgun} />
-
-      <Text bold color="#c92a2a">
-        {" "}
-        Private — Privacy pools
-      </Text>
-      <BalanceRows rows={snap.privatePrivacyPools} />
-
-      {verbose ? (
-        <>
-          <Text bold color="#c92a2a">
-            {" "}
-            Public by address
-          </Text>
-          {Object.entries(snap.publicByAddress).map(([addr, rows]) => {
-            const idx = snap.publicAccountIndexByAddress[addr];
-            return (
-              <Box key={addr} flexDirection="column" marginBottom={1}>
-                <Text color={CREAM}>
-                  {idx !== undefined ? `[${idx}] ` : ""}
-                  {addr}
-                </Text>
-                <BalanceRows rows={rows} />
-              </Box>
-            );
-          })}
-          {snap.privacyPoolsNotes && snap.privacyPoolsNotes.length > 0 ? (
-            <>
-              <Text bold color="#c92a2a">
-                {" "}
-                Privacy pool notes
-              </Text>
-              {snap.privacyPoolsNotes.map((n) => (
-                <Text key={n.label}>
-                  label {n.label} · {n.balance_formatted} · {shortenAddr(n.asset_address)}{" "}
-                  {n.approved ? "approved" : "pending"}
-                </Text>
-              ))}
-            </>
-          ) : null}
-        </>
-      ) : null}
-    </Box>
-  );
-}
 
 export function BalancesScreen({
   session,
@@ -133,9 +56,14 @@ export function BalancesScreen({
     };
   }, [session, verbose, refreshTick]);
 
+  const balanceLines = useMemo(
+    () => (snap ? formatBalancesLines(snap, verbose, warnings) : []),
+    [snap, verbose, warnings]
+  );
+
   if (phase === "loading") {
     return (
-      <PageLayout title="Balances" subtitle="loading…">
+      <PageLayout title="Balances" subtitle="loading…" showKoi={false}>
         <Text color={CREAM}>Fetching public and private balances…</Text>
       </PageLayout>
     );
@@ -143,7 +71,7 @@ export function BalancesScreen({
 
   if (phase === "error" || !snap) {
     return (
-      <PageLayout title="Balances" subtitle="error">
+      <PageLayout title="Balances" subtitle="error" showKoi={false}>
         <Text color="#c92a2a">{error ?? "Unknown error"}</Text>
         <SelectList
           items={[{ label: "Back to menu", value: "back" }]}
@@ -155,14 +83,15 @@ export function BalancesScreen({
   }
 
   return (
-    <PageLayout title="Balances" subtitle={verbose ? "verbose" : "summary"} animateKoi={false}>
-      {warnings.map((w, i) => (
-        <Text key={i} color="#ffb000">
-          ⚠ {w}
-        </Text>
-      ))}
-      <BalancesView snap={snap} verbose={verbose} />
-      <Box marginTop={1}>
+    <PageLayout
+      title="Balances"
+      subtitle={verbose ? "verbose" : "summary"}
+      showKoi={false}
+      animateKoi={false}
+      footerHint="j/k PgUp/PgDn scroll balances · ↑↓ actions · Esc back"
+    >
+      <ScrollableLines lines={balanceLines} reservedRows={7} />
+      <Box marginTop={1} flexShrink={0}>
         <SelectList
           items={[
             { label: "Refresh", value: "refresh" },

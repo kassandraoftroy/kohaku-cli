@@ -15,6 +15,7 @@ type PageLayoutProps = {
   animateKoi?: boolean;
   showKoi?: boolean;
   showFooter?: boolean;
+  footerHint?: string;
 };
 
 export default function PageLayout({
@@ -25,6 +26,7 @@ export default function PageLayout({
   animateKoi = true,
   showKoi = true,
   showFooter = true,
+  footerHint = "↑↓ move · Enter select · Esc back · q quit",
 }: PageLayoutProps) {
   const Koi = animateKoi ? AnimatedKoi : KohakuKoi;
 
@@ -50,7 +52,7 @@ export default function PageLayout({
 
       {showFooter ? (
         <Box marginTop={1} flexShrink={0}>
-          <Text dimColor>↑↓ move · Enter select · Esc back · q quit</Text>
+          <Text dimColor>{footerHint}</Text>
         </Box>
       ) : null}
     </Box>

@@ -44,3 +44,17 @@ export function isWalletRpcChainMismatch(cause: unknown): boolean {
   const msg = cause instanceof Error ? cause.message : String(cause);
   return msg.includes("does not match wallet chainId");
 }
+
+/** Short copy for inline TUI alerts (not a fatal exit). */
+export function formatWalletRpcMismatchBrief(
+  walletDir: string,
+  cause?: unknown
+): string {
+  const expected = expectedChainIdStringFromWalletDir(walletDir);
+  const label = walletNetworkLabel(walletDir);
+  const detail = cause instanceof Error ? cause.message : "";
+  const chainHint = detail.includes("chainId")
+    ? detail
+    : `expected chain ID ${expected}`;
+  return `That RPC is the wrong network. This wallet uses ${label} (${chainHint}). Enter an RPC URL for ${label}.`;
+}
