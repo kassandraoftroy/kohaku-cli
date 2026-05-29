@@ -35,7 +35,7 @@ type Route =
   | { name: "password"; walletName: string }
   | { name: "boot" }
   | { name: "main"; session: TuiSession }
-  | { name: "balances"; session: TuiSession; verbose: boolean }
+  | { name: "balances"; session: TuiSession }
   | { name: "shield"; session: TuiSession }
   | { name: "unshield"; session: TuiSession };
 
@@ -234,7 +234,6 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
     return (
       <BalancesScreen
         session={route.session}
-        verbose={route.verbose}
         onBack={() => setRoute({ name: "main", session: route.session })}
       />
     );
@@ -267,9 +266,7 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
         onAction={(action: MainMenuAction) => {
           if (action === "quit") process.exit(0);
           if (action === "balances") {
-            setRoute({ name: "balances", session: route.session, verbose: false });
-          } else if (action === "balances-verbose") {
-            setRoute({ name: "balances", session: route.session, verbose: true });
+            setRoute({ name: "balances", session: route.session });
           } else if (action === "shield") {
             setRoute({ name: "shield", session: route.session });
           } else if (action === "unshield") {

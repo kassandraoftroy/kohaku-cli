@@ -12,13 +12,12 @@ const CREAM = "#f5efe0";
 
 export function BalancesScreen({
   session,
-  verbose,
   onBack,
 }: {
   session: TuiSession;
-  verbose: boolean;
   onBack: () => void;
 }) {
+  const [verbose, setVerbose] = useState(false);
   const [phase, setPhase] = useState<"loading" | "view" | "error">("loading");
   const [snap, setSnap] = useState<BalancesSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +34,7 @@ export function BalancesScreen({
           password: session.password,
           mnemonic: session.mnemonic,
           chainId: session.chainId,
-          verbose,
+          verbose: true,
           onWarning: (msg) => {
             if (!cancelled) setWarnings((w) => [...w, msg]);
           },
@@ -54,12 +53,21 @@ export function BalancesScreen({
     return () => {
       cancelled = true;
     };
-  }, [session, verbose, refreshTick]);
+  }, [session, refreshTick]);
 
   const balanceLines = useMemo(
     () => (snap ? formatBalancesLines(snap, verbose, warnings) : []),
     [snap, verbose, warnings]
   );
+
+  const actionItems = [
+    { label: "Refresh", value: "refresh" as const },
+    {
+      label: verbose ? "See concise" : "See verbose",
+      value: "toggle-view" as const,
+    },
+    { label: "Back to menu", value: "back" as const },
+  ];
 
   if (phase === "loading") {
     return (
@@ -85,20 +93,18 @@ export function BalancesScreen({
   return (
     <PageLayout
       title="Balances"
-      subtitle={verbose ? "verbose" : "summary"}
+      subtitle={verbose ? "verbose" : "concise"}
       showKoi={false}
       animateKoi={false}
       footerHint="j/k PgUp/PgDn scroll balances · ↑↓ actions · Esc back"
     >
-      <ScrollableLines lines={balanceLines} reservedRows={7} />
+      <ScrollableLines lines={balanceLines} reservedRows={8} />
       <Box marginTop={1} flexShrink={0}>
         <SelectList
-          items={[
-            { label: "Refresh", value: "refresh" },
-            { label: "Back to menu", value: "back" },
-          ]}
+          items={actionItems}
           onSelect={(v) => {
             if (v === "back") onBack();
+            else if (v === "toggle-view") setVerbose((v) => !v);
             else {
               setPhase("loading");
               setSnap(null);

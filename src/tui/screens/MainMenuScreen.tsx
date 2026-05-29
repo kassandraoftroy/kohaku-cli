@@ -5,12 +5,7 @@ import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import type { TuiSession } from "../session.js";
 
-export type MainMenuAction =
-  | "balances"
-  | "balances-verbose"
-  | "shield"
-  | "unshield"
-  | "quit";
+export type MainMenuAction = "balances" | "shield" | "unshield" | "quit";
 
 function shortenRpc(url: string, max = 52): string {
   if (url.length <= max) return url;
@@ -31,7 +26,6 @@ export function MainMenuScreen({
 
   const items = [
     { label: "Balances", value: "balances" as const },
-    { label: "Balances (verbose)", value: "balances-verbose" as const },
     { label: "Shield", value: "shield" as const },
     { label: "Unshield", value: "unshield" as const },
     { label: "Quit", value: "quit" as const },
