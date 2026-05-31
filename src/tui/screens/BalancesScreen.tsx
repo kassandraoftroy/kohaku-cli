@@ -7,6 +7,7 @@ import { ScrollableLines } from "../components/ScrollableLines.js";
 import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import type { TuiSession } from "../session.js";
+import { useEscBack } from "../hooks/useEscBack.js";
 
 const CREAM = "#f5efe0";
 
@@ -23,6 +24,8 @@ export function BalancesScreen({
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [refreshTick, setRefreshTick] = useState(0);
+
+  useEscBack(onBack);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,7 +99,7 @@ export function BalancesScreen({
       subtitle={verbose ? "verbose" : "concise"}
       showKoi={false}
       animateKoi={false}
-      footerHint="j/k PgUp/PgDn scroll balances · ↑↓ actions · Esc back"
+      footerHint="j/k PgUp/PgDn scroll · ↑↓ actions · Esc menu"
     >
       <ScrollableLines lines={balanceLines} reservedRows={8} />
       <Box marginTop={1} flexShrink={0}>

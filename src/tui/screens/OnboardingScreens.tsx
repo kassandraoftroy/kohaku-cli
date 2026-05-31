@@ -149,6 +149,9 @@ export function RpcScreen({
         value={value}
         onChange={setValue}
         onSubmit={() => void submit()}
+        onCancel={() => {
+          if (!checking) onBack();
+        }}
         placeholder="https://..."
       />
       {walletDir ? (
@@ -219,6 +222,7 @@ export function PasswordScreen({
         value={value}
         onChange={setValue}
         onSubmit={submit}
+        onCancel={onBack}
         mask="*"
       />
       {error ? <Text color="#c92a2a">{error}</Text> : null}

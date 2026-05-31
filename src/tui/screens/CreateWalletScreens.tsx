@@ -200,6 +200,7 @@ export function CreateWalletWizard({
           value={nameInput}
           onChange={setNameInput}
           onSubmit={submitName}
+          onCancel={onBack}
           placeholder="my-wallet"
         />
         {error ? <Text color="#c92a2a">{error}</Text> : null}
@@ -257,6 +258,7 @@ export function CreateWalletWizard({
           value={mnemonicInput}
           onChange={setMnemonicInput}
           onSubmit={submitMnemonicImport}
+          onCancel={onBack}
           mask="*"
         />
         {error ? <Text color="#c92a2a">{error}</Text> : null}
@@ -284,6 +286,7 @@ export function CreateWalletWizard({
           value={importRpc}
           onChange={setImportRpc}
           onSubmit={submitFixRpc}
+          onCancel={onBack}
           placeholder="https://..."
         />
         {error ? <Text color="#c92a2a">{error}</Text> : null}
@@ -299,6 +302,7 @@ export function CreateWalletWizard({
           value={password}
           onChange={setPassword}
           onSubmit={submitPassword}
+          onCancel={onBack}
           mask="*"
         />
         {error ? <Text color="#c92a2a">{error}</Text> : null}
@@ -314,6 +318,7 @@ export function CreateWalletWizard({
           value={passwordConfirm}
           onChange={setPasswordConfirm}
           onSubmit={submitPasswordConfirm}
+          onCancel={onBack}
           mask="*"
         />
         {error ? <Text color="#c92a2a">{error}</Text> : null}

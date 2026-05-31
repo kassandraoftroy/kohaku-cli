@@ -5,6 +5,7 @@ import { formatUnits, parseUnits } from "ethers";
 import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import { TextPrompt } from "../components/TextPrompt.js";
+import { shortenAddr, useEscBack } from "../hooks/useEscBack.js";
 import type { TuiSession } from "../session.js";
 import {
   assertPpErc20TokenWhitelisted,
@@ -44,6 +45,7 @@ export function ShieldScreen({
     ReturnType<typeof resolveTokenMeta>
   > | null>(null);
   const [accounts, setAccounts] = useState<PublicAccountWithBalance[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
   const [fromAddress, setFromAddress] = useState<string | null>(null);
   const [amountInput, setAmountInput] = useState("");
   const [amount, setAmount] = useState<bigint | null>(null);
@@ -52,9 +54,13 @@ export function ShieldScreen({
   const [result, setResult] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  useEscBack(onBack, step === "running");
+
   useEffect(() => {
     if (step !== "accounts" || !tokenMeta) return;
     let cancelled = false;
+    setAccountsLoading(true);
+    setAccounts([]);
     void (async () => {
       try {
         const list = await listPublicAccountsWithBalance(
@@ -64,9 +70,13 @@ export function ShieldScreen({
           session.password,
           tokenMeta
         );
-        if (!cancelled) setAccounts(list);
+        if (!cancelled) {
+          setAccounts(list);
+          setAccountsLoading(false);
+        }
       } catch (e) {
         if (!cancelled) {
+          setAccountsLoading(false);
           setError(e instanceof Error ? e.message : String(e));
           setStep("error");
         }
@@ -128,12 +138,21 @@ export function ShieldScreen({
             setError(e instanceof Error ? e.message : String(e));
             setStep("error");
           })}
+          onCancel={onBack}
         />
       </PageLayout>
     );
   }
 
   if (step === "accounts" && tokenMeta) {
+    if (accountsLoading) {
+      return (
+        <PageLayout title="Shield" subtitle="accounts">
+          <Text color={CREAM}>Working… loading public accounts and balances</Text>
+        </PageLayout>
+      );
+    }
+
     if (accounts.length === 0) {
       return (
         <PageLayout title="Shield" subtitle="accounts">
@@ -146,19 +165,19 @@ export function ShieldScreen({
     if (amount === null) {
       return (
         <PageLayout title="Shield" subtitle={`amount (${tokenMeta.symbol})`}>
-          <Text dimColor>
-            Max per account shown below after amount entry.
-          </Text>
+          <Text dimColor>Balances per public account ({tokenMeta.symbol}):</Text>
           <TextPrompt
             label={`Amount (${tokenMeta.symbol}):`}
             value={amountInput}
             onChange={setAmountInput}
             onSubmit={pickAmountAndContinue}
+            onCancel={onBack}
           />
-          <Box marginTop={1}>
+          <Box marginTop={1} flexDirection="column">
             {accounts.map((a) => (
               <Text key={a.address} dimColor>
-                [{a.index}] {formatUnits(a.balance, tokenMeta.decimals)} {tokenMeta.symbol}
+                [{a.index}] {shortenAddr(a.address)}  {formatUnits(a.balance, tokenMeta.decimals)}{" "}
+                {tokenMeta.symbol}
               </Text>
             ))}
           </Box>
@@ -284,7 +303,7 @@ export function ShieldScreen({
   if (step === "done") {
     return (
       <PageLayout title="Shield" subtitle="complete">
-        <Text color="#c92a2a">✓ {broadcast ? "Broadcast" : "Dry run"} complete</Text>
+        <Text color="#3ecf8e">✓ {broadcast ? "Broadcast" : "Dry run"} complete</Text>
         {result.map((line, i) => (
           <Text key={i} dimColor>
             {line}

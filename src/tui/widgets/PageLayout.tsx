@@ -26,7 +26,7 @@ export default function PageLayout({
   animateKoi = true,
   showKoi = true,
   showFooter = true,
-  footerHint = "↑↓ move · Enter select · Esc back · q quit",
+  footerHint = "↑↓ move · Enter select · Esc menu · q quit",
 }: PageLayoutProps) {
   const Koi = animateKoi ? AnimatedKoi : KohakuKoi;
 

@@ -20,6 +20,7 @@ import {
 import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import { TextPrompt } from "../components/TextPrompt.js";
+import { useEscBack } from "../hooks/useEscBack.js";
 import type { TuiSession } from "../session.js";
 
 const NEXT_FRESH = "__next_fresh__";
@@ -65,6 +66,8 @@ export function UnshieldScreen({
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [persistNextAccount, setPersistNextAccount] = useState(false);
+
+  useEscBack(onBack, step === "running");
 
   async function resolveToken(): Promise<void> {
     const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
@@ -128,6 +131,7 @@ export function UnshieldScreen({
             setError(e instanceof Error ? e.message : String(e));
             setStep("error");
           })}
+          onCancel={onBack}
         />
       </PageLayout>
     );
@@ -202,6 +206,7 @@ export function UnshieldScreen({
             setRecipientPriv(undefined);
             setStep("amount");
           }}
+          onCancel={onBack}
         />
       </PageLayout>
     );
@@ -232,6 +237,7 @@ export function UnshieldScreen({
               setStep("error");
             }
           }}
+          onCancel={onBack}
         />
       </PageLayout>
     );
@@ -329,7 +335,7 @@ export function UnshieldScreen({
   if (step === "done") {
     return (
       <PageLayout title="Unshield" subtitle="complete">
-        <Text color="#c92a2a">✓ {broadcast ? "Broadcast" : "Prepared"} complete</Text>
+        <Text color="#3ecf8e">✓ {broadcast ? "Broadcast" : "Prepared"} complete</Text>
         <SelectList items={[{ label: "Back to menu", value: "b" }]} onSelect={onBack} onCancel={onBack} />
       </PageLayout>
     );
