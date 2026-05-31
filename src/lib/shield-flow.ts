@@ -25,7 +25,20 @@ export type PublicAccountWithBalance = {
   address: string;
   priv: string;
   balance: bigint;
+  ethBalance: bigint;
 };
+
+export function formatPublicAccountBalanceLabel(
+  acct: PublicAccountWithBalance,
+  tokenMeta: ResolvedTokenMeta
+): string {
+  const tokenBal = formatUnits(acct.balance, tokenMeta.decimals);
+  if (tokenMeta.isEth) {
+    return `${tokenBal} ${tokenMeta.symbol}`;
+  }
+  const ethBal = formatUnits(acct.ethBalance, 18);
+  return `${tokenBal} ${tokenMeta.symbol} (${ethBal} ETH)`;
+}
 
 export type ShieldTxPayload = {
   data: string;
@@ -61,8 +74,9 @@ export async function listPublicAccountsWithBalance(
   try {
     const withBalances: PublicAccountWithBalance[] = [];
     for (const acct of allPublicAccounts) {
+      const ethBalance = await rpc.getBalance(acct.address);
       const bal = tokenMeta.isEth
-        ? await rpc.getBalance(acct.address)
+        ? ethBalance
         : await new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc).balanceOf(
             acct.address
           );
@@ -71,6 +85,7 @@ export async function listPublicAccountsWithBalance(
         address: acct.address,
         priv: acct.priv,
         balance: bal,
+        ethBalance,
       });
     }
     return withBalances;

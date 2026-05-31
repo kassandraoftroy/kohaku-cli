@@ -15,6 +15,10 @@ import {
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
+import {
+  formatPublicAccountBalanceLabel,
+  listPublicAccountsWithBalance,
+} from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -62,13 +66,6 @@ type ShieldOpts = {
 type FeeOverrides = {
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
-};
-
-type PublicAccountWithBalance = {
-  index: number;
-  address: string;
-  priv: string;
-  balance: bigint;
 };
 
 function parseFromIndex(fromValue: string): number | null {
@@ -339,27 +336,16 @@ export function registerShieldCommand(program: Command): void {
       }
 
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
-      const allPublicAccounts = publicStorage.getAccounts();
 
-      const rpcForSelection = await makeEthersProvider(rpcUrl);
+      const withBalances = await listPublicAccountsWithBalance(
+        rpcUrl,
+        walletDir,
+        mnemonic,
+        password,
+        tokenMeta
+      );
+
       try {
-        const withBalances: PublicAccountWithBalance[] = [];
-        for (const acct of allPublicAccounts) {
-          const bal = tokenMeta.isEth
-            ? await rpcForSelection.getBalance(acct.address)
-            : await new Contract(
-                tokenMeta.tokenAddress,
-                ERC20_ABI,
-                rpcForSelection
-              ).balanceOf(acct.address);
-          withBalances.push({
-            index: acct.index,
-            address: acct.address,
-            priv: acct.priv,
-            balance: bal,
-          });
-        }
-
         if (amount === null) {
           if (opts.nonInteractive) {
             cliError(
@@ -381,7 +367,7 @@ export function registerShieldCommand(program: Command): void {
           );
           for (const acct of withBalances) {
             console.log(
-              `  [${acct.index}] ${acct.address}  ${formatUnits(acct.balance, tokenMeta.decimals)} ${tokenMeta.symbol}`
+              `  [${acct.index}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
             );
           }
 
@@ -424,13 +410,14 @@ export function registerShieldCommand(program: Command): void {
             message: `Pick source account (${tokenMeta.symbol})`,
             choices: candidates.map((acct) => ({
               value: acct.address,
-              name: `[${acct.index}] ${acct.address}  (${formatUnits(acct.balance, tokenMeta.decimals)} ${tokenMeta.symbol}, need ${formatUnits(amount!, tokenMeta.decimals)})`,
+              name: `[${acct.index}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)}, need ${formatUnits(amount!, tokenMeta.decimals)} ${tokenMeta.symbol})`,
             })),
           });
           fromValue = chosen;
         }
-      } finally {
-        rpcForSelection.destroy();
+      } catch (e) {
+        cliErrorFromCaught(e);
+        return;
       }
 
       const fromIndex = parseFromIndex(fromValue);

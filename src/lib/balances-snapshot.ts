@@ -250,19 +250,22 @@ export type LoadBalancesSnapshotOptions = {
   onWarning?: (message: string) => void;
 };
 
-export async function loadBalancesSnapshot(
-  opts: LoadBalancesSnapshotOptions
-): Promise<BalancesSnapshot> {
-  const {
-    rpcUrl,
-    walletDir,
-    password,
-    mnemonic,
-    chainId,
-    extraTokenAddresses = [],
-    verbose = false,
-    onWarning,
-  } = opts;
+export type PrivateBalancesSnapshot = {
+  privateRailgun: BalanceItem[];
+  privatePrivacyPools: BalanceItem[];
+};
+
+type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
+  erc20FromPrivate: `0x${string}`[];
+};
+
+async function resolvePrivateBalanceItems(
+  opts: Pick<
+    LoadBalancesSnapshotOptions,
+    "rpcUrl" | "walletDir" | "password" | "mnemonic" | "chainId" | "onWarning"
+  >
+): Promise<ResolvedPrivateBalances> {
+  const { rpcUrl, walletDir, password, mnemonic, chainId, onWarning } = opts;
   const chainIdString = chainId.toString();
 
   let rgRows: AssetAmount[] = [];
@@ -300,6 +303,71 @@ export async function loadBalancesSnapshot(
   ];
 
   const { erc20Addresses: tokenAddresses, knownMetaByLower } =
+    mergeDefaultAndExtraErc20s(chainIdString, erc20FromPrivate);
+
+  const rpc = await makeEthersProvider(rpcUrl);
+  const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
+  try {
+    for (const token of tokenAddresses) {
+      const key = token.toLowerCase();
+      const known = knownMetaByLower.get(key);
+      if (known) {
+        tokenMeta.set(key, known);
+      } else {
+        tokenMeta.set(key, await loadErc20Meta(rpc, token));
+      }
+    }
+
+    return {
+      privateRailgun: filterNonZeroBalanceItems(
+        mapPrivateBalanceRows(rgRows, tokenMeta)
+      ),
+      privatePrivacyPools: filterNonZeroBalanceItems(
+        mapPrivateBalanceRows(ppRows, tokenMeta)
+      ),
+      erc20FromPrivate,
+    };
+  } finally {
+    rpc.destroy();
+  }
+}
+
+export async function loadPrivateBalancesOnly(
+  opts: Pick<
+    LoadBalancesSnapshotOptions,
+    "rpcUrl" | "walletDir" | "password" | "mnemonic" | "chainId" | "onWarning"
+  >
+): Promise<PrivateBalancesSnapshot> {
+  const { privateRailgun, privatePrivacyPools } = await resolvePrivateBalanceItems(opts);
+  return { privateRailgun, privatePrivacyPools };
+}
+
+export async function loadBalancesSnapshot(
+  opts: LoadBalancesSnapshotOptions
+): Promise<BalancesSnapshot> {
+  const {
+    rpcUrl,
+    walletDir,
+    password,
+    mnemonic,
+    chainId,
+    extraTokenAddresses = [],
+    verbose = false,
+    onWarning,
+  } = opts;
+  const chainIdString = chainId.toString();
+
+  const { privateRailgun, privatePrivacyPools, erc20FromPrivate } =
+    await resolvePrivateBalanceItems({
+      rpcUrl,
+      walletDir,
+      password,
+      mnemonic,
+      chainId,
+      onWarning,
+    });
+
+  const { erc20Addresses: tokenAddresses, knownMetaByLower } =
     mergeDefaultAndExtraErc20s(chainIdString, [
       ...extraTokenAddresses,
       ...erc20FromPrivate,
@@ -321,8 +389,6 @@ export async function loadBalancesSnapshot(
 
   const rpcForPublic = await makeEthersProvider(rpcUrl);
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
-  let privateRailgun: BalanceItem[] = [];
-  let privatePrivacyPools: BalanceItem[] = [];
   let privacyPoolsNotes: PrivateNoteRow[] | undefined;
   try {
     for (const token of tokenAddresses) {
@@ -334,9 +400,6 @@ export async function loadBalancesSnapshot(
         tokenMeta.set(key, await loadErc20Meta(rpcForPublic, token));
       }
     }
-
-    privateRailgun = mapPrivateBalanceRows(rgRows, tokenMeta);
-    privatePrivacyPools = mapPrivateBalanceRows(ppRows, tokenMeta);
 
     if (verbose) {
       try {
@@ -435,8 +498,8 @@ export async function loadBalancesSnapshot(
     publicAggregated: filterNonZeroBalanceItems(publicBalancesAggregated),
     publicByAddress: filterPublicByAddress(publicByAddress),
     publicAccountIndexByAddress,
-    privateRailgun: filterNonZeroBalanceItems(privateRailgun),
-    privatePrivacyPools: filterNonZeroBalanceItems(privatePrivacyPools),
+    privateRailgun,
+    privatePrivacyPools,
     privacyPoolsNotes:
       privacyPoolsNotes !== undefined
         ? filterNonZeroNotes(privacyPoolsNotes)

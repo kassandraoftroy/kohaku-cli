@@ -14,6 +14,7 @@ import {
 import { resolveTokenMeta } from "../../utils/tokens-util.js";
 import {
   broadcastShield,
+  formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   prepareShieldPlan,
   type PublicAccountWithBalance,
@@ -131,7 +132,7 @@ export function ShieldScreen({
     return (
       <PageLayout title="Shield" subtitle="token">
         <TextPrompt
-          label="Token (eth or 0x ERC20):"
+          label="Token ('eth' or '0x address' of a token):"
           value={tokenInput}
           onChange={setTokenInput}
           onSubmit={() => void resolveToken().catch((e) => {
@@ -176,8 +177,7 @@ export function ShieldScreen({
           <Box marginTop={1} flexDirection="column">
             {accounts.map((a) => (
               <Text key={a.address} dimColor>
-                [{a.index}] {shortenAddr(a.address)}  {formatUnits(a.balance, tokenMeta.decimals)}{" "}
-                {tokenMeta.symbol}
+                [{a.index}] {shortenAddr(a.address)}  {formatPublicAccountBalanceLabel(a, tokenMeta)}
               </Text>
             ))}
           </Box>
@@ -212,7 +212,7 @@ export function ShieldScreen({
         <PageLayout title="Shield" subtitle="source account">
           <SelectList
             items={candidates.map((a) => ({
-              label: `[${a.index}] ${a.address.slice(0, 10)}… ${formatUnits(a.balance, tokenMeta.decimals)} ${tokenMeta.symbol}`,
+              label: `[${a.index}] ${a.address.slice(0, 10)}… ${formatPublicAccountBalanceLabel(a, tokenMeta)}`,
               value: a.address,
             }))}
             onSelect={(addr) => {

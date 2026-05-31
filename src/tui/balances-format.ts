@@ -1,4 +1,4 @@
-import type { BalancesSnapshot } from "../lib/balances-snapshot.js";
+import type { BalancesSnapshot, PrivateBalancesSnapshot } from "../lib/balances-snapshot.js";
 import type { ScrollLine } from "./components/ScrollableLines.js";
 
 function shortenAddr(addr: string): string {
@@ -16,6 +16,31 @@ function row(symbol: string, amount: string): ScrollLine {
 
 function noneLine(): ScrollLine {
   return { text: "  (none)", dim: true };
+}
+
+function privateSection(title: string, rows: { symbol: string; formatted_token_holdings: string }[]): ScrollLine[] {
+  const lines: ScrollLine[] = [section(title)];
+  if (rows.length === 0) {
+    lines.push(noneLine());
+  } else {
+    for (const r of rows) {
+      lines.push(row(r.symbol, r.formatted_token_holdings));
+    }
+  }
+  return lines;
+}
+
+export function formatPrivateBalanceLines(
+  snap: PrivateBalancesSnapshot,
+  warnings: string[] = []
+): ScrollLine[] {
+  const lines: ScrollLine[] = [];
+  for (const w of warnings) {
+    lines.push({ text: `⚠ ${w}`, color: "#ffb000" });
+  }
+  lines.push(...privateSection("Private — Railgun", snap.privateRailgun));
+  lines.push(...privateSection("Private — Privacy pools", snap.privatePrivacyPools));
+  return lines;
 }
 
 export function formatBalancesLines(

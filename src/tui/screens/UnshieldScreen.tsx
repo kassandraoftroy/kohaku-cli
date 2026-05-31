@@ -14,9 +14,10 @@ import {
 } from "../../utils/public-accounts.js";
 import {
   broadcastUnshield,
-  maxUnshieldAmountHint,
   prepareUnshieldOperation,
 } from "../../lib/unshield-flow.js";
+import { loadPrivateBalancesOnly, type PrivateBalancesSnapshot } from "../../lib/balances-snapshot.js";
+import { PrivateBalancesPanel } from "../components/PrivateBalancesPanel.js";
 import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import { TextPrompt } from "../components/TextPrompt.js";
@@ -66,8 +67,59 @@ export function UnshieldScreen({
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [persistNextAccount, setPersistNextAccount] = useState(false);
+  const [privateBalances, setPrivateBalances] = useState<PrivateBalancesSnapshot | null>(null);
+  const [privateLoading, setPrivateLoading] = useState(true);
+  const [privateWarnings, setPrivateWarnings] = useState<string[]>([]);
 
   useEscBack(onBack, step === "running");
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrivateLoading(true);
+    setPrivateBalances(null);
+    setPrivateWarnings([]);
+    void (async () => {
+      try {
+        const result = await loadPrivateBalancesOnly({
+          rpcUrl: session.rpcUrl,
+          walletDir: session.walletDir,
+          password: session.password,
+          mnemonic: session.mnemonic,
+          chainId: session.chainId,
+          onWarning: (msg) => {
+            if (!cancelled) setPrivateWarnings((w) => [...w, msg]);
+          },
+        });
+        if (!cancelled) {
+          setPrivateBalances(result);
+          setPrivateLoading(false);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setPrivateLoading(false);
+          setPrivateWarnings([
+            e instanceof Error ? e.message : String(e),
+          ]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const showPrivateBalances = step === "protocol" || step === "token";
+
+  function privateBalancesBlock(): React.ReactNode {
+    if (!showPrivateBalances) return null;
+    return (
+      <PrivateBalancesPanel
+        loading={privateLoading}
+        snapshot={privateBalances}
+        warnings={privateWarnings}
+      />
+    );
+  }
 
   async function resolveToken(): Promise<void> {
     const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
@@ -105,6 +157,7 @@ export function UnshieldScreen({
   if (step === "protocol") {
     return (
       <PageLayout title="Unshield" subtitle="protocol">
+        {privateBalancesBlock()}
         <SelectList
           items={[
             { label: "Railgun", value: "railgun" as const },
@@ -123,8 +176,9 @@ export function UnshieldScreen({
   if (step === "token") {
     return (
       <PageLayout title="Unshield" subtitle="token">
+        {privateBalancesBlock()}
         <TextPrompt
-          label="Token (eth or 0x ERC20):"
+          label="Token ('eth' or '0x address' of a token):"
           value={tokenInput}
           onChange={setTokenInput}
           onSubmit={() => void resolveToken().catch((e) => {
