@@ -2,6 +2,8 @@ import React from "react";
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 
+import { useFocus } from "../context/FocusContext.js";
+
 type TextPromptProps = {
   label: string;
   value: string;
@@ -10,6 +12,7 @@ type TextPromptProps = {
   onCancel?: () => void;
   mask?: string;
   placeholder?: string;
+  active?: boolean;
 };
 
 /**
@@ -24,8 +27,13 @@ export function TextPrompt({
   onCancel,
   mask,
   placeholder,
+  active,
 }: TextPromptProps) {
+  const { focusMain } = useFocus();
+  const isActive = active ?? focusMain;
+
   useInput((input, key) => {
+    if (!isActive) return;
     if (key.escape) {
       onCancel?.();
       return;
@@ -53,7 +61,7 @@ export function TextPrompt({
     if (input) {
       onChange(value + input);
     }
-  });
+  }, { isActive });
 
   return (
     <Box flexDirection="column">

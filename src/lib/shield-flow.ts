@@ -18,6 +18,7 @@ import {
   ETH_AS_ERC20,
   type SupportedProtocol,
 } from "../utils/plugins";
+import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 
 export type PublicAccountWithBalance = {
@@ -28,15 +29,30 @@ export type PublicAccountWithBalance = {
   ethBalance: bigint;
 };
 
+function formatEthDisplay(balanceWei: bigint): string {
+  const full = formatUnits(balanceWei, 18);
+  const [whole, fracRaw = ""] = full.split(".");
+  if (!fracRaw) return whole;
+
+  const firstNonZero = fracRaw.search(/[1-9]/);
+  if (firstNonZero === -1) return `${whole}.0`;
+
+  const keepDigits = Math.max(6, firstNonZero + 1);
+  const clipped = fracRaw.slice(0, keepDigits).replace(/0+$/, "");
+  return clipped ? `${whole}.${clipped}` : whole;
+}
+
 export function formatPublicAccountBalanceLabel(
   acct: PublicAccountWithBalance,
   tokenMeta: ResolvedTokenMeta
 ): string {
-  const tokenBal = formatUnits(acct.balance, tokenMeta.decimals);
+  const tokenBal = tokenMeta.isEth
+    ? formatEthDisplay(acct.balance)
+    : formatUnits(acct.balance, tokenMeta.decimals);
   if (tokenMeta.isEth) {
     return `${tokenBal} ${tokenMeta.symbol}`;
   }
-  const ethBal = formatUnits(acct.ethBalance, 18);
+  const ethBal = formatEthDisplay(acct.ethBalance);
   return `${tokenBal} ${tokenMeta.symbol} (${ethBal} ETH)`;
 }
 
@@ -59,6 +75,41 @@ export function parseFromIndex(fromValue: string): number | null {
   const parsed = Number(fromValue);
   if (!Number.isInteger(parsed) || parsed < 0) return null;
   return parsed;
+}
+
+/** Build shield account rows from the balances snapshot (no RPC). */
+export function publicAccountsWithBalanceFromSnapshot(
+  snap: BalancesSnapshot,
+  walletDir: string,
+  mnemonic: string,
+  password: string,
+  tokenMeta: ResolvedTokenMeta
+): PublicAccountWithBalance[] {
+  const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+  const tokenKey = tokenMeta.tokenAddress.toLowerCase();
+
+  return publicStorage.getAccounts().map((acct) => {
+    const rows = snap.publicByAddress[acct.address];
+    const ethRow = rows?.find((r) => r.symbol === "ETH");
+    const tokenRow = tokenMeta.isEth
+      ? ethRow
+      : rows?.find((r) => r.token_address.toLowerCase() === tokenKey);
+
+    const ethBalance = ethRow ? BigInt(ethRow.raw_token_holdings) : 0n;
+    const balance = tokenMeta.isEth
+      ? ethBalance
+      : tokenRow
+        ? BigInt(tokenRow.raw_token_holdings)
+        : 0n;
+
+    return {
+      index: acct.index,
+      address: acct.address,
+      priv: acct.priv,
+      balance,
+      ethBalance,
+    };
+  });
 }
 
 export async function listPublicAccountsWithBalance(

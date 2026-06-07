@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Box, Text } from "ink";
+import { Text } from "ink";
 import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
 import {
@@ -14,15 +14,15 @@ import {
 } from "../../utils/public-accounts.js";
 import {
   broadcastUnshield,
+  extractBundleTxHash,
   prepareUnshieldOperation,
 } from "../../lib/unshield-flow.js";
-import { loadPrivateBalancesOnly, type PrivateBalancesSnapshot } from "../../lib/balances-snapshot.js";
-import { PrivateBalancesPanel } from "../components/PrivateBalancesPanel.js";
 import PageLayout from "../widgets/PageLayout.js";
 import { SelectList } from "../components/SelectList.js";
 import { TextPrompt } from "../components/TextPrompt.js";
-import { useEscBack } from "../hooks/useEscBack.js";
+import { useEscBack, shortenAddr } from "../hooks/useEscBack.js";
 import type { TuiSession } from "../session.js";
+import { etherscanTxUrl } from "../etherscan.js";
 
 const NEXT_FRESH = "__next_fresh__";
 const CUSTOM_ADDR = "__custom__";
@@ -65,61 +65,11 @@ export function UnshieldScreen({
   const [amount, setAmount] = useState<bigint | null>(null);
   const [broadcast, setBroadcast] = useState(false);
   const [status, setStatus] = useState("");
+  const [bundleTxHash, setBundleTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [persistNextAccount, setPersistNextAccount] = useState(false);
-  const [privateBalances, setPrivateBalances] = useState<PrivateBalancesSnapshot | null>(null);
-  const [privateLoading, setPrivateLoading] = useState(true);
-  const [privateWarnings, setPrivateWarnings] = useState<string[]>([]);
 
   useEscBack(onBack, step === "running");
-
-  useEffect(() => {
-    let cancelled = false;
-    setPrivateLoading(true);
-    setPrivateBalances(null);
-    setPrivateWarnings([]);
-    void (async () => {
-      try {
-        const result = await loadPrivateBalancesOnly({
-          rpcUrl: session.rpcUrl,
-          walletDir: session.walletDir,
-          password: session.password,
-          mnemonic: session.mnemonic,
-          chainId: session.chainId,
-          onWarning: (msg) => {
-            if (!cancelled) setPrivateWarnings((w) => [...w, msg]);
-          },
-        });
-        if (!cancelled) {
-          setPrivateBalances(result);
-          setPrivateLoading(false);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setPrivateLoading(false);
-          setPrivateWarnings([
-            e instanceof Error ? e.message : String(e),
-          ]);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [session]);
-
-  const showPrivateBalances = step === "protocol" || step === "token";
-
-  function privateBalancesBlock(): React.ReactNode {
-    if (!showPrivateBalances) return null;
-    return (
-      <PrivateBalancesPanel
-        loading={privateLoading}
-        snapshot={privateBalances}
-        warnings={privateWarnings}
-      />
-    );
-  }
 
   async function resolveToken(): Promise<void> {
     const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
@@ -157,7 +107,6 @@ export function UnshieldScreen({
   if (step === "protocol") {
     return (
       <PageLayout title="Unshield" subtitle="protocol">
-        {privateBalancesBlock()}
         <SelectList
           items={[
             { label: "Railgun", value: "railgun" as const },
@@ -176,7 +125,6 @@ export function UnshieldScreen({
   if (step === "token") {
     return (
       <PageLayout title="Unshield" subtitle="token">
-        {privateBalancesBlock()}
         <TextPrompt
           label="Token ('eth' or '0x address' of a token):"
           value={tokenInput}
@@ -204,7 +152,7 @@ export function UnshieldScreen({
         ? [{ label: "Custom address", value: CUSTOM_ADDR }]
         : []),
       ...existing.map((a) => ({
-        label: `[${a.index}] ${a.address}`,
+        label: `[${a.index}] ${shortenAddr(a.address)}`,
         value: a.address,
       })),
     ];
@@ -213,6 +161,7 @@ export function UnshieldScreen({
       <PageLayout title="Unshield" subtitle="recipient">
         <SelectList
           items={choices}
+          reservedRows={12}
           onSelect={(v) => {
             if (v === CUSTOM_ADDR) {
               setStep("custom-addr");
@@ -331,18 +280,11 @@ export function UnshieldScreen({
   async function runUnshield(doBroadcast: boolean): Promise<void> {
     if (!protocol || !tokenMeta || !amount || !recipient) return;
     setStatus("Working…");
+    setBundleTxHash(null);
     try {
       if (doBroadcast) {
-        if (persistNextAccount) {
-          const storage = makePublicAccountsStorage(
-            session.walletDir,
-            session.mnemonic,
-            session.password
-          );
-          storage.addNextAccounts(1);
-        }
         setStatus("Broadcasting…");
-        await broadcastUnshield({
+        const relayResult = await broadcastUnshield({
           protocol,
           rpcUrl: session.rpcUrl,
           walletDir: session.walletDir,
@@ -355,6 +297,14 @@ export function UnshieldScreen({
           recipientPriv,
           onStatus: setStatus,
         });
+        if (persistNextAccount) {
+          makePublicAccountsStorage(
+            session.walletDir,
+            session.mnemonic,
+            session.password
+          ).addNextAccounts(1);
+        }
+        setBundleTxHash(extractBundleTxHash(relayResult));
       } else {
         setStatus("Preparing…");
         await prepareUnshieldOperation({
@@ -390,6 +340,11 @@ export function UnshieldScreen({
     return (
       <PageLayout title="Unshield" subtitle="complete">
         <Text color="#3ecf8e">✓ {broadcast ? "Broadcast" : "Prepared"} complete</Text>
+        {broadcast && bundleTxHash ? (
+          <Text color="#74c0fc">{etherscanTxUrl(session.chainId, bundleTxHash)}</Text>
+        ) : broadcast ? (
+          <Text dimColor>Bundler response did not include a tx hash.</Text>
+        ) : null}
         <SelectList items={[{ label: "Back to menu", value: "b" }]} onSelect={onBack} onCancel={onBack} />
       </PageLayout>
     );

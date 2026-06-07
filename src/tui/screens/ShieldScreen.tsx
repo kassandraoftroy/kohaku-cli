@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text } from "ink";
 import { formatUnits, parseUnits } from "ethers";
 
 import PageLayout from "../widgets/PageLayout.js";
+import { ScrollableLines } from "../components/ScrollableLines.js";
 import { SelectList } from "../components/SelectList.js";
 import { TextPrompt } from "../components/TextPrompt.js";
+import { useBalances } from "../context/BalancesContext.js";
 import { shortenAddr, useEscBack } from "../hooks/useEscBack.js";
 import type { TuiSession } from "../session.js";
 import {
@@ -17,8 +19,10 @@ import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   prepareShieldPlan,
+  publicAccountsWithBalanceFromSnapshot,
   type PublicAccountWithBalance,
 } from "../../lib/shield-flow.js";
+import { etherscanTxUrl, extractTxHash } from "../etherscan.js";
 
 type Step =
   | "protocol"
@@ -54,6 +58,7 @@ export function ShieldScreen({
   const [status, setStatus] = useState<string>("");
   const [result, setResult] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const balances = useBalances();
 
   useEscBack(onBack, step === "running");
 
@@ -62,6 +67,38 @@ export function ShieldScreen({
     let cancelled = false;
     setAccountsLoading(true);
     setAccounts([]);
+
+    if (balances?.phase === "view" && balances.snap) {
+      try {
+        const list = publicAccountsWithBalanceFromSnapshot(
+          balances.snap,
+          session.walletDir,
+          session.mnemonic,
+          session.password,
+          tokenMeta
+        );
+        if (!cancelled) {
+          setAccounts(list);
+          setAccountsLoading(false);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setAccountsLoading(false);
+          setError(e instanceof Error ? e.message : String(e));
+          setStep("error");
+        }
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (balances?.phase === "loading") {
+      return () => {
+        cancelled = true;
+      };
+    }
+
     void (async () => {
       try {
         const list = await listPublicAccountsWithBalance(
@@ -86,7 +123,7 @@ export function ShieldScreen({
     return () => {
       cancelled = true;
     };
-  }, [step, tokenMeta, session]);
+  }, [step, tokenMeta, session, balances?.phase, balances?.snap]);
 
   async function resolveToken(): Promise<void> {
     const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
@@ -103,12 +140,20 @@ export function ShieldScreen({
       const parsed = parseUnits(amountInput.trim(), tokenMeta.decimals);
       if (parsed <= 0n) throw new Error("Amount must be > 0");
       setAmount(parsed);
-      setStep("accounts");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStep("error");
     }
   }
+
+  const accountBalanceLines = useMemo(
+    () =>
+      accounts.map((a) => ({
+        text: `[${a.index}] ${shortenAddr(a.address)}  ${formatPublicAccountBalanceLabel(a, tokenMeta!)}`,
+        dim: true,
+      })),
+    [accounts, tokenMeta]
+  );
 
   if (step === "protocol") {
     return (
@@ -147,9 +192,13 @@ export function ShieldScreen({
 
   if (step === "accounts" && tokenMeta) {
     if (accountsLoading) {
+      const loadingMsg =
+        balances?.phase === "loading"
+          ? "Using balances from session…"
+          : "Working… loading public accounts and balances";
       return (
         <PageLayout title="Shield" subtitle="accounts">
-          <Text color={CREAM}>Working… loading public accounts and balances</Text>
+          <Text color={CREAM}>{loadingMsg}</Text>
         </PageLayout>
       );
     }
@@ -167,6 +216,11 @@ export function ShieldScreen({
       return (
         <PageLayout title="Shield" subtitle={`amount (${tokenMeta.symbol})`}>
           <Text dimColor>Balances per public account ({tokenMeta.symbol}):</Text>
+          <ScrollableLines
+            lines={accountBalanceLines}
+            reservedRows={16}
+            active={false}
+          />
           <TextPrompt
             label={`Amount (${tokenMeta.symbol}):`}
             value={amountInput}
@@ -174,13 +228,6 @@ export function ShieldScreen({
             onSubmit={pickAmountAndContinue}
             onCancel={onBack}
           />
-          <Box marginTop={1} flexDirection="column">
-            {accounts.map((a) => (
-              <Text key={a.address} dimColor>
-                [{a.index}] {shortenAddr(a.address)}  {formatPublicAccountBalanceLabel(a, tokenMeta)}
-              </Text>
-            ))}
-          </Box>
         </PageLayout>
       );
     }
@@ -210,6 +257,7 @@ export function ShieldScreen({
     if (!fromAddress) {
       return (
         <PageLayout title="Shield" subtitle="source account">
+          <Text dimColor>Select shielding address</Text>
           <SelectList
             items={candidates.map((a) => ({
               label: `[${a.index}] ${a.address.slice(0, 10)}… ${formatPublicAccountBalanceLabel(a, tokenMeta)}`,
@@ -305,9 +353,16 @@ export function ShieldScreen({
       <PageLayout title="Shield" subtitle="complete">
         <Text color="#3ecf8e">✓ {broadcast ? "Broadcast" : "Dry run"} complete</Text>
         {result.map((line, i) => (
-          <Text key={i} dimColor>
-            {line}
-          </Text>
+          <Box key={i} flexDirection="column">
+            <Text dimColor>{line}</Text>
+            {broadcast && (() => {
+              const hash = extractTxHash(line);
+              if (!hash) return null;
+              return (
+                <Text color="#74c0fc">{etherscanTxUrl(session.chainId, hash)}</Text>
+              );
+            })()}
+          </Box>
         ))}
         <SelectList
           items={[{ label: "Back to menu", value: "back" }]}

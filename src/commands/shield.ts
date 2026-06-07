@@ -68,6 +68,11 @@ type FeeOverrides = {
   maxPriorityFeePerGas: bigint;
 };
 
+function etherscanTxUrl(chainId: bigint, txHash: string): string {
+  const host = chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
+  return `https://${host}/tx/${txHash}`;
+}
+
 function parseFromIndex(fromValue: string): number | null {
   if (!/^\d+$/.test(fromValue)) return null;
   const parsed = Number(fromValue);
@@ -460,6 +465,7 @@ export function registerShieldCommand(program: Command): void {
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const txSpinner = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
+      const broadcastTransactions: BroadcastTxResultJson[] = [];
       try {
         const host = await makeHost({
           rpc: rpcForHost,
@@ -548,7 +554,6 @@ export function registerShieldCommand(program: Command): void {
         const signer = new Wallet(senderPrivateKey, rpcForHost);
         // const feeOverrides = await computeFees(rpcUrl, opts);
         const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
-        const broadcastTransactions: BroadcastTxResultJson[] = [];
 
         let hasApproval = false;
         if (!tokenMeta.isEth) {
@@ -634,6 +639,16 @@ export function registerShieldCommand(program: Command): void {
       }
 
       if (!opts.nonInteractive) {
+        if (broadcastTransactions.length > 0) {
+          console.log(chalk.bold("Etherscan links:"));
+          for (const tx of broadcastTransactions) {
+            console.log(
+              chalk.cyan(
+                `  ${tx.type}: ${etherscanTxUrl(chainId, tx.hash)}`
+              )
+            );
+          }
+        }
         console.log(chalk.green("✔ Shield flow completed."));
       }
     });

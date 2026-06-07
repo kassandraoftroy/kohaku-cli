@@ -18,26 +18,33 @@ const WARN = "#ffb000";
 
 export function RpcScreen({
   autoApplyRpc,
+  initialRpc,
   walletDir,
   initialAlert,
+  pageTitle = "Kohaku TUI",
+  pageSubtitle = "RPC endpoint",
   onDone,
   onBack,
 }: {
   /** When set (from RPC_URL or --rpc-url), try once without prompting. */
   autoApplyRpc?: string;
+  /** Prefill the RPC input (e.g. current session RPC when changing). */
+  initialRpc?: string;
   /** When set, RPC chain ID must match the wallet's .wallet-type before continuing. */
   walletDir?: string;
   /** Shown when returning after a wrong-network RPC (user can enter a new URL). */
   initialAlert?: string;
+  pageTitle?: string;
+  pageSubtitle?: string;
   onDone: (rpc: string) => void;
   onBack: () => void;
 }) {
   const envOrFlagRpc = resolveRpcUrl();
   const [manualEntry, setManualEntry] = useState(
-    () => !!initialAlert || !autoApplyRpc?.trim()
+    () => !!initialAlert || !!initialRpc?.trim() || !autoApplyRpc?.trim()
   );
   const [value, setValue] = useState(
-    () => autoApplyRpc?.trim() || envOrFlagRpc || ""
+    () => initialRpc?.trim() || autoApplyRpc?.trim() || envOrFlagRpc || ""
   );
   const [alert, setAlert] = useState<string | null>(initialAlert ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +124,7 @@ export function RpcScreen({
 
   if (!manualEntry && autoApplyRpc?.trim()) {
     return (
-      <PageLayout title="Kohaku TUI" subtitle="RPC">
+      <PageLayout title={pageTitle} subtitle="RPC">
         <Text color={CREAM}>
           Using RPC from {process.env.RPC_URL ? "RPC_URL" : "--rpc-url"}…
         </Text>
@@ -130,7 +137,7 @@ export function RpcScreen({
   }
 
   return (
-    <PageLayout title="Kohaku TUI" subtitle="RPC endpoint">
+    <PageLayout title={pageTitle} subtitle={pageSubtitle}>
       {alert ? (
         <Box marginBottom={1} flexDirection="column">
           <Text color={WARN} bold>

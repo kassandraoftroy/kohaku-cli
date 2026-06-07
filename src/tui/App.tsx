@@ -17,9 +17,10 @@ import {
   type CreateWalletResult,
 } from "./screens/CreateWalletScreens.js";
 import { MainMenuScreen, type MainMenuAction } from "./screens/MainMenuScreen.js";
-import { BalancesScreen } from "./screens/BalancesScreen.js";
 import { ShieldScreen } from "./screens/ShieldScreen.js";
 import { UnshieldScreen } from "./screens/UnshieldScreen.js";
+import { SessionShell } from "./SessionShell.js";
+import { requestTuiExit } from "./exit.js";
 
 export type TuiLaunchOptions = {
   dataDir?: string;
@@ -35,9 +36,9 @@ type Route =
   | { name: "password"; walletName: string }
   | { name: "boot" }
   | { name: "main"; session: TuiSession }
-  | { name: "balances"; session: TuiSession }
   | { name: "shield"; session: TuiSession }
-  | { name: "unshield"; session: TuiSession };
+  | { name: "unshield"; session: TuiSession }
+  | { name: "change-rpc"; session: TuiSession };
 
 export default function App({ options }: { options: TuiLaunchOptions }) {
   const dataDir = options.dataDir ?? DEFAULT_DATA_DIR;
@@ -145,7 +146,7 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
         dataDir={dataDir}
         initialWallet={presetWallet}
         onChoose={handleWalletChoice}
-        onQuit={() => process.exit(0)}
+        onQuit={requestTuiExit}
       />
     );
   }
@@ -230,50 +231,73 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
     );
   }
 
-  if (route.name === "balances") {
+  if (route.name === "change-rpc") {
+    const session = route.session;
     return (
-      <BalancesScreen
-        session={route.session}
-        onBack={() => setRoute({ name: "main", session: route.session })}
-      />
-    );
-  }
-
-  if (route.name === "shield") {
-    return (
-      <ShieldScreen
-        session={route.session}
-        onBack={() => setRoute({ name: "main", session: route.session })}
-      />
-    );
-  }
-
-  if (route.name === "unshield") {
-    return (
-      <UnshieldScreen
-        session={route.session}
-        onBack={() => setRoute({ name: "main", session: route.session })}
-      />
-    );
-  }
-
-  if (route.name === "main") {
-    // Fresh key so Ink fully replaces boot/onboarding output (avoids header ghosting).
-    return (
-      <MainMenuScreen
-        key="main-menu"
-        session={route.session}
-        onAction={(action: MainMenuAction) => {
-          if (action === "quit") process.exit(0);
-          if (action === "balances") {
-            setRoute({ name: "balances", session: route.session });
-          } else if (action === "shield") {
-            setRoute({ name: "shield", session: route.session });
-          } else if (action === "unshield") {
-            setRoute({ name: "unshield", session: route.session });
-          }
+      <RpcScreen
+        initialRpc={session.rpcUrl}
+        walletDir={session.walletDir}
+        pageTitle="Kohaku"
+        pageSubtitle="change RPC"
+        onDone={(url) => {
+          setWalletName(session.walletName);
+          setPassword(session.password);
+          setRpcUrl(url);
+          setBootError(null);
+          setRoute({ name: "boot" });
         }}
+        onBack={() => setRoute({ name: "main", session })}
       />
+    );
+  }
+
+  if (
+    route.name === "main" ||
+    route.name === "shield" ||
+    route.name === "unshield"
+  ) {
+    const session = route.session;
+    return (
+      <SessionShell
+        session={session}
+        onSwitchWallet={() => {
+          setWalletName("");
+          setPassword("");
+          setRpcUrl(envRpc ?? "");
+          setBootError(null);
+          setPendingImport(false);
+          setRoute({ name: "wallet" });
+        }}
+        onQuit={requestTuiExit}
+      >
+        {route.name === "main" ? (
+          <MainMenuScreen
+            key="main-menu"
+            session={session}
+            onAction={(action: MainMenuAction) => {
+              if (action === "shield") {
+                setRoute({ name: "shield", session });
+              } else if (action === "unshield") {
+                setRoute({ name: "unshield", session });
+              } else if (action === "change-rpc") {
+                setRoute({ name: "change-rpc", session });
+              }
+            }}
+          />
+        ) : null}
+        {route.name === "shield" ? (
+          <ShieldScreen
+            session={session}
+            onBack={() => setRoute({ name: "main", session })}
+          />
+        ) : null}
+        {route.name === "unshield" ? (
+          <UnshieldScreen
+            session={session}
+            onBack={() => setRoute({ name: "main", session })}
+          />
+        ) : null}
+      </SessionShell>
     );
   }
 

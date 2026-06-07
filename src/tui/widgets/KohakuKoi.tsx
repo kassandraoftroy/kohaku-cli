@@ -103,7 +103,7 @@ const KohakuKoi: React.FC<KohakuKoiProps> = ({
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" flexShrink={0} width={grid.width}>
       {renderRows.map((row, y) => (
         <Text key={y}>
           {compactRow(row).map((run, i) => (

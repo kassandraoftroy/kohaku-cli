@@ -6,6 +6,13 @@ function shortenAddr(addr: string): string {
   return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
 }
 
+function shortenMiddle(text: string, max = 36): string {
+  if (text.length <= max) return text;
+  const head = Math.floor((max - 1) / 2);
+  const tail = max - 1 - head;
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+}
+
 function section(title: string): ScrollLine {
   return { text: title, color: "#c92a2a", bold: true };
 }
@@ -87,7 +94,7 @@ export function formatBalancesLines(
     if (addrs.length === 0) {
       lines.push(noneLine());
     } else {
-      for (const addr of addrs) {
+      for (const [i, addr] of addrs.entries()) {
         const idx = snap.publicAccountIndexByAddress[addr];
         lines.push({
           text: `  ${idx !== undefined ? `[${idx}] ` : ""}${addr}`,
@@ -101,6 +108,9 @@ export function formatBalancesLines(
             lines.push(row(r.symbol, r.formatted_token_holdings));
           }
         }
+        if (i < addrs.length - 1) {
+          lines.push({ text: "", dim: true });
+        }
       }
     }
 
@@ -108,7 +118,15 @@ export function formatBalancesLines(
       lines.push(section("Privacy pool notes"));
       for (const n of snap.privacyPoolsNotes) {
         lines.push({
-          text: `  label ${n.label} · ${n.balance_formatted} · ${shortenAddr(n.asset_address)} · ${n.approved ? "approved" : "pending"}`,
+          text: `  label: ${shortenMiddle(n.label, 44)}`,
+          dim: true,
+        });
+        lines.push({
+          text: `  amount: ${n.balance_formatted} · asset: ${shortenAddr(n.asset_address)}`,
+          dim: true,
+        });
+        lines.push({
+          text: `  status: ${n.approved ? "approved" : "pending"} · precommit: ${shortenMiddle(n.precommitment, 30)}`,
           dim: true,
         });
       }

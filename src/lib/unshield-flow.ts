@@ -1,20 +1,79 @@
-import { createPPv1Broadcaster } from "@kohaku-eth/privacy-pools";
+import {
+  createPPv1Broadcaster,
+  PrivacyPoolsV1_0xBow,
+} from "@kohaku-eth/privacy-pools";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
-import { formatUnits, getAddress, parseUnits } from "ethers";
+import { Contract, formatUnits, getAddress, parseUnits } from "ethers";
 
-import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
+import { makeEthersProvider, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import { wethAddressForChain } from "../utils/tokens-util.js";
 import {
   ETH_AS_ERC20,
-  PRIVACY_POOLS_BROADCASTER_URL,
   configureRailgunForUnshield,
+  PRIVACY_POOLS_BROADCASTER_URL,
   railgunNativeEthAssetAmount,
   type SupportedProtocol,
 } from "../utils/plugins.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
+
+const PP_ENTRYPOINT_ASSET_CONFIG_ABI = [
+  "function assetConfig(address _asset) view returns (address pool, uint256 minimumDepositAmount, uint256 vettingFeeBPS, uint256 maxRelayFeeBPS)",
+] as const;
+
+type PpPreparedOp = {
+  rawData?: {
+    relayData?: { relayFeeBps?: bigint | number | string };
+  };
+};
+
+function relayFeeBpsFromPreparedOp(prepared: unknown): bigint | null {
+  const raw = (prepared as PpPreparedOp)?.rawData?.relayData?.relayFeeBps;
+  return raw != null ? BigInt(raw) : null;
+}
+
+async function fetchPrivacyPoolsMaxRelayFeeBps(
+  rpcUrl: string,
+  chainId: bigint
+): Promise<bigint | null> {
+  const deployment = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
+  if (!deployment) return null;
+  const provider = await makeEthersProvider(rpcUrl);
+  try {
+    const entrypoint = new Contract(
+      deployment.entrypoint.entrypointAddress,
+      PP_ENTRYPOINT_ASSET_CONFIG_ABI,
+      provider
+    );
+    const cfg = await entrypoint.assetConfig(ETH_AS_ERC20);
+    return BigInt(cfg.maxRelayFeeBPS);
+  } catch {
+    return null;
+  } finally {
+    provider.destroy();
+  }
+}
+
+/** Rejects before broadcast when the relayer quote exceeds the entrypoint relay-fee cap. */
+export async function assertPrivacyPoolsRelayFeeWithinCap(
+  prepared: unknown,
+  rpcUrl: string,
+  chainId: bigint
+): Promise<void> {
+  const relayFeeBps = relayFeeBpsFromPreparedOp(prepared);
+  const maxBps = await fetchPrivacyPoolsMaxRelayFeeBps(rpcUrl, chainId);
+  if (relayFeeBps == null || maxBps == null) return;
+  if (relayFeeBps <= maxBps) return;
+
+  throw new Error(
+    `Privacy Pools relayer fee too high: ${PRIVACY_POOLS_BROADCASTER_URL} quoted ${relayFeeBps} bps ` +
+      `(${(Number(relayFeeBps) / 100).toFixed(2)}%) but this chain's entrypoint allows at most ` +
+      `${maxBps} bps (${(Number(maxBps) / 100).toFixed(2)}%). ` +
+      `This is not about note size — try a larger withdrawal amount or ask the relayer operator to lower fees.`
+  );
+}
 
 function ppNoteAssetLower(n: PpNoteForMax): string {
   if (typeof n.assetAddress === "bigint") {
@@ -168,6 +227,14 @@ async function runUnshieldWithPlugin(
 
   const privateOp = await prepareUnshield(asset as AssetAmount, opts.recipient);
 
+  if (opts.protocol === "privacy-pools") {
+    await assertPrivacyPoolsRelayFeeWithinCap(
+      privateOp,
+      opts.rpcUrl,
+      opts.chainId
+    );
+  }
+
   if (mode === "prepare") {
     return {
       privateOp,
@@ -208,6 +275,43 @@ export async function broadcastUnshield(opts: UnshieldRuntimeOpts): Promise<unkn
     },
     (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "broadcast")
   );
+}
+
+function findTxHashDeep(value: unknown): string | null {
+  if (typeof value === "string") {
+    return /^0x[a-fA-F0-9]{64}$/.test(value) ? value : null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = findTxHashDeep(item);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  const obj = value as Record<string, unknown>;
+  const prioritizedKeys = [
+    "bundleTxHash",
+    "txHash",
+    "transactionHash",
+    "hash",
+  ] as const;
+  for (const k of prioritizedKeys) {
+    const hit = findTxHashDeep(obj[k]);
+    if (hit) return hit;
+  }
+
+  for (const v of Object.values(obj)) {
+    const hit = findTxHashDeep(v);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Best-effort extraction of the on-chain bundle tx hash from relayer/bundler result. */
+export function extractBundleTxHash(result: unknown): string | null {
+  return findTxHashDeep(result);
 }
 
 /** Max unshield amount using the shared protocol runtime (safe to call repeatedly for Railgun). */
