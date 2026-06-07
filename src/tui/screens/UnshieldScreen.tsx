@@ -14,7 +14,7 @@ import {
 } from "../../utils/public-accounts.js";
 import {
   broadcastUnshield,
-  extractBundleTxHash,
+  extractUnshieldExplorerHash,
   prepareUnshieldOperation,
 } from "../../lib/unshield-flow.js";
 import PageLayout from "../widgets/PageLayout.js";
@@ -304,7 +304,9 @@ export function UnshieldScreen({
             session.password
           ).addNextAccounts(1);
         }
-        setBundleTxHash(extractBundleTxHash(relayResult));
+        setBundleTxHash(
+          extractUnshieldExplorerHash(relayResult, protocol)
+        );
       } else {
         setStatus("Preparing…");
         await prepareUnshieldOperation({
@@ -343,7 +345,11 @@ export function UnshieldScreen({
         {broadcast && bundleTxHash ? (
           <Text color="#74c0fc">{etherscanTxUrl(session.chainId, bundleTxHash)}</Text>
         ) : broadcast ? (
-          <Text dimColor>Bundler response did not include a tx hash.</Text>
+          <Text dimColor>
+            {protocol === "privacy-pools"
+              ? "Relayer did not return an on-chain tx hash."
+              : "Bundler did not return a userOpHash or tx hash."}
+          </Text>
         ) : null}
         <SelectList items={[{ label: "Back to menu", value: "b" }]} onSelect={onBack} onCancel={onBack} />
       </PageLayout>

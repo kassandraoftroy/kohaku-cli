@@ -1,8 +1,7 @@
 import { confirm, input, select } from "@inquirer/prompts";
-import { createPPv1Broadcaster } from "@kohaku-eth/privacy-pools";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
-import type { AssetAmount, Host } from "@kohaku-eth/plugins";
+import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
 import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
@@ -28,14 +27,17 @@ import {
   resolveWalletPassword,
 } from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
-import { assertPrivacyPoolsRelayFeeWithinCap } from "../lib/unshield-flow.js";
+import {
+  assertPrivacyPoolsRelayFeeWithinCap,
+  broadcastPreparedPrivateOp,
+  extractUnshieldExplorerHash,
+} from "../lib/unshield-flow.js";
 import {
   findPublicAccountByAddress,
   makePublicAccountsStorage,
 } from "../utils/public-accounts";
 import {
   ETH_AS_ERC20,
-  PRIVACY_POOLS_BROADCASTER_URL,
   assertPpErc20TokenWhitelisted,
   configureRailgunForUnshield,
   createProtocolPlugin,
@@ -63,30 +65,6 @@ type UnshieldOpts = {
 function etherscanTxUrl(chainId: bigint, txHash: string): string {
   const host = chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
   return `https://${host}/tx/${txHash}`;
-}
-
-function findTxHashDeep(value: unknown): string | null {
-  if (typeof value === "string") {
-    return /^0x[a-fA-F0-9]{64}$/.test(value) ? value : null;
-  }
-  if (!value || typeof value !== "object") return null;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const hash = findTxHashDeep(item);
-      if (hash) return hash;
-    }
-    return null;
-  }
-  const obj = value as Record<string, unknown>;
-  for (const key of ["bundleTxHash", "txHash", "transactionHash", "hash"] as const) {
-    const hash = findTxHashDeep(obj[key]);
-    if (hash) return hash;
-  }
-  for (const v of Object.values(obj)) {
-    const hash = findTxHashDeep(v);
-    if (hash) return hash;
-  }
-  return null;
 }
 
 function as0xPrivateKey(priv: string): `0x${string}` {
@@ -168,24 +146,6 @@ async function maxUnshieldAmountHint(
     // ignore
   }
   return { cap: sum, privacyPoolsLargestNote: false };
-}
-
-async function broadcastPreparedPrivateOp(
-  protocol: SupportedProtocol,
-  host: Host,
-  plugin: unknown,
-  operation: unknown
-): Promise<unknown> {
-  if (protocol === "railgun") {
-    await (plugin as { broadcast: (op: unknown) => Promise<void> }).broadcast(
-      operation
-    );
-    return undefined;
-  }
-  const broadcaster = createPPv1Broadcaster(host, {
-    broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
-  });
-  return await broadcaster.broadcast(operation as never);
 }
 
 export function registerUnshieldCommand(program: Command): void {
@@ -600,6 +560,7 @@ export function registerUnshieldCommand(program: Command): void {
         if (opts.nonInteractive) {
           const amountRaw = amount.toString();
           const amountFormatted = formatUnits(amount, tokenMeta.decimals);
+          const explorerHash = extractUnshieldExplorerHash(relayResult, protocol);
           logCliJson({
             mode: "broadcast" as const,
             protocol,
@@ -608,15 +569,23 @@ export function registerUnshieldCommand(program: Command): void {
             amountWei: amountRaw,
             amountFormatted,
             relay: relayResult ?? null,
+            explorerHash,
+            explorerUrl: explorerHash
+              ? etherscanTxUrl(chainId, explorerHash)
+              : null,
           });
           return;
         }
-        const bundleTxHash = findTxHashDeep(relayResult);
-        if (bundleTxHash) {
+        const explorerHash = extractUnshieldExplorerHash(relayResult, protocol);
+        if (explorerHash) {
           console.log(chalk.bold("Etherscan link:"));
-          console.log(chalk.cyan(`  ${etherscanTxUrl(chainId, bundleTxHash)}`));
+          console.log(chalk.cyan(`  ${etherscanTxUrl(chainId, explorerHash)}`));
         } else {
-          console.log(chalk.dim("Bundler response did not include a tx hash."));
+          const noHashMsg =
+            protocol === "privacy-pools"
+              ? "Relayer response did not include an on-chain tx hash."
+              : "Bundler response did not include a userOpHash or tx hash.";
+          console.log(chalk.dim(noHashMsg));
         }
       } catch (e) {
         cliErrorFromCaught(e);

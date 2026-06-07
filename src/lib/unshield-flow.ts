@@ -143,13 +143,52 @@ export async function broadcastPreparedPrivateOp(
   operation: unknown
 ): Promise<unknown> {
   if (protocol === "railgun") {
-    await (plugin as { broadcast: (op: unknown) => Promise<void> }).broadcast(operation);
-    return undefined;
+    return await broadcastRailgunOp(plugin, operation);
   }
   const broadcaster = createPPv1Broadcaster(host, {
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
   });
   return await broadcaster.broadcast(operation as never);
+}
+
+type RailgunBroadcastPlugin = {
+  broadcast: (op: unknown) => Promise<void>;
+  bundler?: {
+    sendUserOperation: (...args: unknown[]) => Promise<unknown>;
+  };
+};
+
+/** Railgun `broadcast()` returns void but Pimlico yields a userOpHash from `sendUserOperation`. */
+async function broadcastRailgunOp(
+  plugin: unknown,
+  operation: unknown
+): Promise<{ userOpHash: string } | undefined> {
+  const rg = plugin as RailgunBroadcastPlugin;
+  let userOpHash: string | undefined;
+  const bundler = rg.bundler;
+  let restoreSend: (() => void) | undefined;
+
+  if (bundler && typeof bundler.sendUserOperation === "function") {
+    const original = bundler.sendUserOperation.bind(bundler);
+    bundler.sendUserOperation = async (...args: unknown[]) => {
+      const result = await original(...args);
+      if (typeof result === "string" && /^0x[a-fA-F0-9]{64}$/.test(result)) {
+        userOpHash = result;
+      }
+      return result;
+    };
+    restoreSend = () => {
+      bundler.sendUserOperation = original;
+    };
+  }
+
+  try {
+    await rg.broadcast(operation);
+  } finally {
+    restoreSend?.();
+  }
+
+  return userOpHash ? { userOpHash } : undefined;
 }
 
 export type UnshieldPrepared = {
@@ -277,41 +316,58 @@ export async function broadcastUnshield(opts: UnshieldRuntimeOpts): Promise<unkn
   );
 }
 
-function findTxHashDeep(value: unknown): string | null {
+const ON_CHAIN_TX_HASH_KEYS = [
+  "txHash",
+  "bundleTxHash",
+  "transactionHash",
+] as const;
+
+const RAILGUN_EXPLORER_HASH_KEYS = [
+  "userOpHash",
+  ...ON_CHAIN_TX_HASH_KEYS,
+] as const;
+
+function findHashDeep(
+  value: unknown,
+  prioritizedKeys: readonly string[]
+): string | null {
   if (typeof value === "string") {
     return /^0x[a-fA-F0-9]{64}$/.test(value) ? value : null;
   }
   if (typeof value !== "object" || value === null) return null;
   if (Array.isArray(value)) {
     for (const item of value) {
-      const hit = findTxHashDeep(item);
+      const hit = findHashDeep(item, prioritizedKeys);
       if (hit) return hit;
     }
     return null;
   }
 
   const obj = value as Record<string, unknown>;
-  const prioritizedKeys = [
-    "bundleTxHash",
-    "txHash",
-    "transactionHash",
-    "hash",
-  ] as const;
   for (const k of prioritizedKeys) {
-    const hit = findTxHashDeep(obj[k]);
+    const hit = findHashDeep(obj[k], prioritizedKeys);
     if (hit) return hit;
   }
 
   for (const v of Object.values(obj)) {
-    const hit = findTxHashDeep(v);
+    const hit = findHashDeep(v, prioritizedKeys);
     if (hit) return hit;
   }
   return null;
 }
 
-/** Best-effort extraction of the on-chain bundle tx hash from relayer/bundler result. */
-export function extractBundleTxHash(result: unknown): string | null {
-  return findTxHashDeep(result);
+/**
+ * Hash suitable for Etherscan `/tx/` after unshield broadcast.
+ * - Railgun (4337): userOpHash from Pimlico, or a mined tx hash if present.
+ * - Privacy Pools: on-chain tx hash only (`txHash` from relayer) — no userOpHash.
+ */
+export function extractUnshieldExplorerHash(
+  result: unknown,
+  protocol: SupportedProtocol
+): string | null {
+  const keys =
+    protocol === "railgun" ? RAILGUN_EXPLORER_HASH_KEYS : ON_CHAIN_TX_HASH_KEYS;
+  return findHashDeep(result, keys);
 }
 
 /** Max unshield amount using the shared protocol runtime (safe to call repeatedly for Railgun). */
