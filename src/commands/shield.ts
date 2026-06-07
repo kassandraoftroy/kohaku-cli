@@ -15,6 +15,10 @@ import {
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
+import {
+  formatPublicAccountBalanceLabel,
+  listPublicAccountsWithBalance,
+} from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -64,12 +68,10 @@ type FeeOverrides = {
   maxPriorityFeePerGas: bigint;
 };
 
-type PublicAccountWithBalance = {
-  index: number;
-  address: string;
-  priv: string;
-  balance: bigint;
-};
+function etherscanTxUrl(chainId: bigint, txHash: string): string {
+  const host = chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
+  return `https://${host}/tx/${txHash}`;
+}
 
 function parseFromIndex(fromValue: string): number | null {
   if (!/^\d+$/.test(fromValue)) return null;
@@ -339,27 +341,16 @@ export function registerShieldCommand(program: Command): void {
       }
 
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
-      const allPublicAccounts = publicStorage.getAccounts();
 
-      const rpcForSelection = await makeEthersProvider(rpcUrl);
+      const withBalances = await listPublicAccountsWithBalance(
+        rpcUrl,
+        walletDir,
+        mnemonic,
+        password,
+        tokenMeta
+      );
+
       try {
-        const withBalances: PublicAccountWithBalance[] = [];
-        for (const acct of allPublicAccounts) {
-          const bal = tokenMeta.isEth
-            ? await rpcForSelection.getBalance(acct.address)
-            : await new Contract(
-                tokenMeta.tokenAddress,
-                ERC20_ABI,
-                rpcForSelection
-              ).balanceOf(acct.address);
-          withBalances.push({
-            index: acct.index,
-            address: acct.address,
-            priv: acct.priv,
-            balance: bal,
-          });
-        }
-
         if (amount === null) {
           if (opts.nonInteractive) {
             cliError(
@@ -381,7 +372,7 @@ export function registerShieldCommand(program: Command): void {
           );
           for (const acct of withBalances) {
             console.log(
-              `  [${acct.index}] ${acct.address}  ${formatUnits(acct.balance, tokenMeta.decimals)} ${tokenMeta.symbol}`
+              `  [${acct.index}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
             );
           }
 
@@ -424,13 +415,14 @@ export function registerShieldCommand(program: Command): void {
             message: `Pick source account (${tokenMeta.symbol})`,
             choices: candidates.map((acct) => ({
               value: acct.address,
-              name: `[${acct.index}] ${acct.address}  (${formatUnits(acct.balance, tokenMeta.decimals)} ${tokenMeta.symbol}, need ${formatUnits(amount!, tokenMeta.decimals)})`,
+              name: `[${acct.index}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)}, need ${formatUnits(amount!, tokenMeta.decimals)} ${tokenMeta.symbol})`,
             })),
           });
           fromValue = chosen;
         }
-      } finally {
-        rpcForSelection.destroy();
+      } catch (e) {
+        cliErrorFromCaught(e);
+        return;
       }
 
       const fromIndex = parseFromIndex(fromValue);
@@ -473,6 +465,7 @@ export function registerShieldCommand(program: Command): void {
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const txSpinner = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
+      const broadcastTransactions: BroadcastTxResultJson[] = [];
       try {
         const host = await makeHost({
           rpc: rpcForHost,
@@ -561,7 +554,6 @@ export function registerShieldCommand(program: Command): void {
         const signer = new Wallet(senderPrivateKey, rpcForHost);
         // const feeOverrides = await computeFees(rpcUrl, opts);
         const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
-        const broadcastTransactions: BroadcastTxResultJson[] = [];
 
         let hasApproval = false;
         if (!tokenMeta.isEth) {
@@ -647,6 +639,16 @@ export function registerShieldCommand(program: Command): void {
       }
 
       if (!opts.nonInteractive) {
+        if (broadcastTransactions.length > 0) {
+          console.log(chalk.bold("Etherscan links:"));
+          for (const tx of broadcastTransactions) {
+            console.log(
+              chalk.cyan(
+                `  ${tx.type}: ${etherscanTxUrl(chainId, tx.hash)}`
+              )
+            );
+          }
+        }
         console.log(chalk.green("✔ Shield flow completed."));
       }
     });

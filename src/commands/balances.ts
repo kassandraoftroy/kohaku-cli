@@ -5,6 +5,7 @@ import type { AssetAmount } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
 import { makeHost } from "../host/makeHost";
+import { withProtocolRuntime } from "../lib/protocol-runtime";
 import { cliOptions } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -168,22 +169,10 @@ async function loadPrivateBalancesForProtocol(
   mnemonic: string,
   chainId: bigint
 ): Promise<AssetAmount[]> {
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
-      walletDir,
-      password,
-      mnemonic,
-      pluginId: pluginIdForProtocol(protocol),
-    });
-    const plugin = await createProtocolPlugin(protocol, host, chainId);
-    // Must await before `finally` runs — bare `return plugin.balance()` would destroy
-    // the provider while the balance call is still in flight.
-    return await plugin.balance(undefined);
-  } finally {
-    rpc.destroy();
-  }
+  return withProtocolRuntime(
+    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+    async (_host, plugin) => plugin.balance(undefined)
+  );
 }
 
 type PpNotesPlugin = {

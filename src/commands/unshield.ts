@@ -1,8 +1,7 @@
 import { confirm, input, select } from "@inquirer/prompts";
-import { createPPv1Broadcaster } from "@kohaku-eth/privacy-pools";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
-import type { AssetAmount, Host } from "@kohaku-eth/plugins";
+import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
 import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
@@ -29,12 +28,16 @@ import {
 } from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
 import {
+  assertPrivacyPoolsRelayFeeWithinCap,
+  broadcastPreparedPrivateOp,
+  extractUnshieldExplorerHash,
+} from "../lib/unshield-flow.js";
+import {
   findPublicAccountByAddress,
   makePublicAccountsStorage,
 } from "../utils/public-accounts";
 import {
   ETH_AS_ERC20,
-  PRIVACY_POOLS_BROADCASTER_URL,
   assertPpErc20TokenWhitelisted,
   configureRailgunForUnshield,
   createProtocolPlugin,
@@ -59,17 +62,20 @@ type UnshieldOpts = {
   dataDir?: string;
 };
 
+function etherscanTxUrl(chainId: bigint, txHash: string): string {
+  const host = chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
+  return `https://${host}/tx/${txHash}`;
+}
+
 function as0xPrivateKey(priv: string): `0x${string}` {
   return (priv.startsWith("0x") ? priv : `0x${priv}`) as `0x${string}`;
 }
 
-/** Persist the next public account only when the unshield will be broadcast. */
+/** Next fresh public account without advancing storage (persist after successful broadcast). */
 function takeNextFreshPublicAccount(
-  storage: ReturnType<typeof makePublicAccountsStorage>,
-  persist: boolean
+  storage: ReturnType<typeof makePublicAccountsStorage>
 ): { address: string; priv: string } {
-  const added = persist ? storage.addNextAccounts(1) : storage.peekNextAccounts(1);
-  return added[0]!;
+  return storage.peekNextAccounts(1)[0]!;
 }
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
@@ -142,24 +148,6 @@ async function maxUnshieldAmountHint(
   return { cap: sum, privacyPoolsLargestNote: false };
 }
 
-async function broadcastPreparedPrivateOp(
-  protocol: SupportedProtocol,
-  host: Host,
-  plugin: unknown,
-  operation: unknown
-): Promise<unknown> {
-  if (protocol === "railgun") {
-    await (plugin as { broadcast: (op: unknown) => Promise<void> }).broadcast(
-      operation
-    );
-    return undefined;
-  }
-  const broadcaster = createPPv1Broadcaster(host, {
-    broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
-  });
-  return await broadcaster.broadcast(operation as never);
-}
-
 export function registerUnshieldCommand(program: Command): void {
   program
     .command("unshield")
@@ -170,7 +158,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--to <address>", "Public recipient address")
     .option(
       "--next",
-      "Unshield to the next fresh public account (persisted when --broadcast is set)"
+      "Unshield to the next fresh public account (persisted only after a successful --broadcast)"
     )
     .option("--token <address|eth>", "Token address (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
@@ -277,14 +265,15 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
-      const persistNextAccount = !!opts.broadcast;
+      let persistFreshAccountAfterBroadcast = false;
 
       let recipient: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
       if (hasNext) {
-        const fresh = takeNextFreshPublicAccount(publicStorage, persistNextAccount);
+        const fresh = takeNextFreshPublicAccount(publicStorage);
         recipient = getAddress(fresh.address) as `0x${string}`;
         recipientPriv = as0xPrivateKey(fresh.priv);
+        persistFreshAccountAfterBroadcast = true;
       } else if (hasTo) {
         const raw = opts.to!.trim();
         if (!isAddress(raw)) {
@@ -323,9 +312,10 @@ export function registerUnshieldCommand(program: Command): void {
         });
 
         if (chosen === NEXT_FRESH) {
-          const fresh = takeNextFreshPublicAccount(publicStorage, persistNextAccount);
+          const fresh = takeNextFreshPublicAccount(publicStorage);
           recipient = getAddress(fresh.address) as `0x${string}`;
           recipientPriv = as0xPrivateKey(fresh.priv);
+          persistFreshAccountAfterBroadcast = true;
         } else if (chosen === CUSTOM_ADDR) {
           const addr = await input({
             message: "Enter recipient address (0x...):",
@@ -488,6 +478,14 @@ export function registerUnshieldCommand(program: Command): void {
           () => "Unshield operation prepared."
         );
 
+        if (protocol === "privacy-pools") {
+          await assertPrivacyPoolsRelayFeeWithinCap(
+            privateOp,
+            rpcUrl,
+            chainId
+          );
+        }
+
         const amountLabel = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
         const via =
           protocol === "railgun"
@@ -555,9 +553,14 @@ export function registerUnshieldCommand(program: Command): void {
           () => "Unshield broadcast complete."
         );
 
+        if (persistFreshAccountAfterBroadcast) {
+          publicStorage.addNextAccounts(1);
+        }
+
         if (opts.nonInteractive) {
           const amountRaw = amount.toString();
           const amountFormatted = formatUnits(amount, tokenMeta.decimals);
+          const explorerHash = extractUnshieldExplorerHash(relayResult, protocol);
           logCliJson({
             mode: "broadcast" as const,
             protocol,
@@ -566,8 +569,23 @@ export function registerUnshieldCommand(program: Command): void {
             amountWei: amountRaw,
             amountFormatted,
             relay: relayResult ?? null,
+            explorerHash,
+            explorerUrl: explorerHash
+              ? etherscanTxUrl(chainId, explorerHash)
+              : null,
           });
           return;
+        }
+        const explorerHash = extractUnshieldExplorerHash(relayResult, protocol);
+        if (explorerHash) {
+          console.log(chalk.bold("Etherscan link:"));
+          console.log(chalk.cyan(`  ${etherscanTxUrl(chainId, explorerHash)}`));
+        } else {
+          const noHashMsg =
+            protocol === "privacy-pools"
+              ? "Relayer response did not include an on-chain tx hash."
+              : "Bundler response did not include a userOpHash or tx hash.";
+          console.log(chalk.dim(noHashMsg));
         }
       } catch (e) {
         cliErrorFromCaught(e);
