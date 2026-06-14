@@ -43,6 +43,7 @@ import {
   ETH_AS_ERC20,
   isSupportedProtocol,
   pluginIdForProtocol,
+  SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
 } from "../utils/plugins";
 
@@ -188,7 +189,10 @@ function printShieldDryRunInteractive(
   console.log(chalk.cyan(`${label}:`), jsonStringifyWithBigInt(o));
 }
 
-function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigint }> {
+function toShieldTxs(
+  op: unknown,
+  opts?: { allowMultiple?: boolean }
+): Array<{ to: string; data: string; value: bigint }> {
   let txs: Array<{ to: string; data: string; value: bigint }> | null = null;
 
   if (Array.isArray(op)) {
@@ -206,7 +210,11 @@ function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigi
     throw new Error("Unsupported shield operation shape returned by plugin.");
   }
 
-  if (txs.length !== 1) {
+  if (txs.length === 0) {
+    throw new Error("prepareShield() returned no transactions.");
+  }
+
+  if (!opts?.allowMultiple && txs.length !== 1) {
     throw new Error(
       `Expected prepareShield() to return exactly 1 tx, got ${txs.length}.`
     );
@@ -218,7 +226,7 @@ export function registerShieldCommand(program: Command): void {
   program
     .command("shield")
     .description("Shield public funds into a privacy protocol")
-    .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
+    .requiredOption("--protocol <protocol>", `Protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .option("--from <address-or-index>", "Public sender address or public-account index")
@@ -240,7 +248,7 @@ export function registerShieldCommand(program: Command): void {
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ShieldOpts) => {
       if (!isSupportedProtocol(opts.protocol)) {
-        cliError('--protocol must be "railgun" or "privacy-pools".');
+        cliError(`--protocol must be "${SUPPORTED_PROTOCOLS_HELP}".`);
         return;
       }
       const protocol = opts.protocol;
@@ -490,15 +498,16 @@ export function registerShieldCommand(program: Command): void {
               },
               amount,
             };
-        let tx: { to: string; data: string; value: bigint };
+        let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         try {
           const op = await plugin.prepareShield(asset as AssetAmount);
-          tx = toShieldTxs(op)[0]!;
+          shieldTxs = toShieldTxs(op);
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
           cliError(msg);
           return;
         }
+        const tx = shieldTxs[0]!;
 
         if (dryRun) {
           let approve: { to: string; data: string; value: bigint } | null = null;
@@ -529,12 +538,14 @@ export function registerShieldCommand(program: Command): void {
               value: approve.value.toString(),
             });
           }
-          transactions.push({
-            data: tx.data,
-            to: tx.to,
-            from: senderAddress,
-            value: tx.value.toString(),
-          });
+          for (const stx of shieldTxs) {
+            transactions.push({
+              data: stx.data,
+              to: stx.to,
+              from: senderAddress,
+              value: stx.value.toString(),
+            });
+          }
           if (opts.nonInteractive) {
             logCliJson({ transactions });
           } else {
@@ -590,43 +601,52 @@ export function registerShieldCommand(program: Command): void {
           }
         }
 
-        const shieldStep = hasApproval ? "2/2" : "1/1";
-        await maybeConfirm(
-          !!opts.nonInteractive,
-          `Send shield transaction (${shieldStep}): shield ${amountPreview} (from ${senderAddress})?`
-        );
-        await simulateTransactionOrThrow(
-          rpcForHost,
-          {
-            to: tx.to,
-            from: senderAddress,
-            data: tx.data,
-            value: tx.value,
-            gasLimit: 2000000n,
-          },
-          "Shield transaction"
-        );
-        const sent = await runQuietSpinner(
-          quiet,
-          txSpinner,
-          {
-            start: `Sending shield tx ${shieldStep}...`,
-            failure: "Shield transaction failed.",
-          },
-          async () => {
-            const s = await signer.sendTransaction({
-              to: tx.to,
-              data: tx.data,
-              value: tx.value,
-              gasLimit: 2000000,
-              // ...feeOverrides,
-            });
-            await s.wait();
-            return s;
-          },
-          (s) => `Shield tx mined (${shieldStep}): ${s.hash}`
-        );
-        broadcastTransactions.push({ type: "shield", hash: sent.hash });
+        for (let i = 0; i < shieldTxs.length; i++) {
+          const stx = shieldTxs[i]!;
+          const shieldStep =
+            shieldTxs.length > 1
+              ? `${i + 1}/${shieldTxs.length}`
+              : hasApproval
+                ? "2/2"
+                : "1/1";
+          await maybeConfirm(
+            !!opts.nonInteractive,
+            `Send shield transaction (${shieldStep}): shield ${amountPreview} (from ${senderAddress})?`
+          );
+          await simulateTransactionOrThrow(
+            rpcForHost,
+            {
+              to: stx.to,
+              from: senderAddress,
+              data: stx.data,
+              value: stx.value,
+              gasLimit: 2000000n,
+            },
+            shieldTxs.length > 1
+              ? `Shield transaction (${shieldStep})`
+              : "Shield transaction"
+          );
+          const sent = await runQuietSpinner(
+            quiet,
+            txSpinner,
+            {
+              start: `Sending shield tx ${shieldStep}...`,
+              failure: "Shield transaction failed.",
+            },
+            async () => {
+              const s = await signer.sendTransaction({
+                to: stx.to,
+                data: stx.data,
+                value: stx.value,
+                gasLimit: 2000000,
+              });
+              await s.wait();
+              return s;
+            },
+            (s) => `Shield tx mined (${shieldStep}): ${s.hash}`
+          );
+          broadcastTransactions.push({ type: "shield", hash: sent.hash });
+        }
         if (opts.nonInteractive) {
           logCliJson({ transactions: broadcastTransactions });
           return;

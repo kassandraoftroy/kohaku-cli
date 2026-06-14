@@ -4,7 +4,7 @@ import type { Keystore } from "@kohaku-eth/plugins";
 
 export function makeRailgunKeystore(mnemonic: string): Keystore {
   return {
-    deriveAt(path: string): Hex {
+    async deriveAt(path: string): Promise<Hex> {
       return `0x${deriveRailgunKey(mnemonic, path)}`;
     },
   };
@@ -12,7 +12,7 @@ export function makeRailgunKeystore(mnemonic: string): Keystore {
 
 export function makeKeystore(mnemonic: string): Keystore {
   return {
-    deriveAt(path: string): Hex {
+    async deriveAt(path: string): Promise<Hex> {
       return Mnemonic.to0xPrivateKey(mnemonic, path);
     },
   };

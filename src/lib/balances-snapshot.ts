@@ -4,13 +4,17 @@ import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 import { makeHost } from "../host/makeHost";
 import { makeEthersProvider } from "../utils/rpc";
 import { withProtocolRuntime } from "./protocol-runtime";
-import { ERC20_ABI, mergeDefaultAndExtraErc20s } from "../utils/tokens-util";
+import {
+  ERC20_ABI,
+  isPrivateBalanceNativeEth,
+  mergeDefaultAndExtraErc20s,
+} from "../utils/tokens-util";
 import {
   createProtocolPlugin,
-  ETH_AS_ERC20,
   pluginIdForProtocol,
   type SupportedProtocol,
 } from "../utils/plugins";
+import { mapPrivateBalanceRows } from "./private-balance-rows";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 
 export type BalanceItem = {
@@ -19,6 +23,8 @@ export type BalanceItem = {
   decimals: number;
   raw_token_holdings: string;
   formatted_token_holdings: string;
+  /** Spendability status for private protocol rows (e.g. spendable, pending). */
+  status?: string;
 };
 
 export type PrivateNoteRow = {
@@ -86,62 +92,13 @@ function collectErc20AddressesFromPrivateBalances(
     }
     if (!addrStr || !isAddress(addrStr)) continue;
     const checksum = getAddress(addrStr) as `0x${string}`;
-    if (checksum.toLowerCase() === ETH_AS_ERC20.toLowerCase()) continue;
+    if (isPrivateBalanceNativeEth(checksum)) continue;
     const k = checksum.toLowerCase();
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(checksum);
   }
   return out;
-}
-
-function mapPrivateBalanceRows(
-  rows: AssetAmount[],
-  tokenMeta: Map<string, { symbol: string; decimals: number }>
-): BalanceItem[] {
-  return rows.map((row) => {
-    const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
-    const amount = row.amount;
-    const tag = "tag" in row ? (row as { tag?: string }).tag : undefined;
-
-    if (!asset || asset.__type !== "erc20") {
-      return {
-        symbol: "UNKNOWN",
-        token_address: "---",
-        decimals: 18,
-        raw_token_holdings: amount.toString(),
-        formatted_token_holdings: formatUnits(amount, 18),
-      };
-    }
-    const raw = asset.contract;
-    let addrStr: string;
-    if (typeof raw === "string") addrStr = raw;
-    else if (typeof raw === "bigint") {
-      addrStr = `0x${raw.toString(16).padStart(40, "0")}`;
-    } else {
-      addrStr = "---";
-    }
-    const isEth = addrStr.toLowerCase() === ETH_AS_ERC20.toLowerCase();
-    const key =
-      isEth || !isAddress(addrStr)
-        ? null
-        : (getAddress(addrStr).toLowerCase() as string);
-    const meta = key ? tokenMeta.get(key) : { symbol: "ETH", decimals: 18 };
-    const decimals = meta?.decimals ?? 18;
-    let symbol = meta?.symbol ?? "UNKNOWN";
-    if (tag === "pending") {
-      symbol = `${symbol} (pending)`;
-    }
-    const tokenAddr =
-      isEth || !isAddress(addrStr) ? "---" : getAddress(addrStr);
-    return {
-      symbol,
-      token_address: tokenAddr,
-      decimals,
-      raw_token_holdings: amount.toString(),
-      formatted_token_holdings: formatUnits(amount, decimals),
-    };
-  });
 }
 
 async function loadPrivateBalancesForProtocol(
@@ -296,7 +253,6 @@ async function resolvePrivateBalanceItems(
     const msg = e instanceof Error ? e.message : String(e);
     onWarning?.(`Privacy pools private balances unavailable: ${msg}`);
   }
-
   const erc20FromPrivate = [
     ...collectErc20AddressesFromPrivateBalances(rgRows),
     ...collectErc20AddressesFromPrivateBalances(ppRows),
@@ -338,7 +294,8 @@ export async function loadPrivateBalancesOnly(
     "rpcUrl" | "walletDir" | "password" | "mnemonic" | "chainId" | "onWarning"
   >
 ): Promise<PrivateBalancesSnapshot> {
-  const { privateRailgun, privatePrivacyPools } = await resolvePrivateBalanceItems(opts);
+  const { privateRailgun, privatePrivacyPools } =
+    await resolvePrivateBalanceItems(opts);
   return { privateRailgun, privatePrivacyPools };
 }
 

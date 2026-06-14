@@ -17,21 +17,35 @@ function section(title: string): ScrollLine {
   return { text: title, color: "#c92a2a", bold: true };
 }
 
-function row(symbol: string, amount: string): ScrollLine {
-  return { text: `  ${symbol.padEnd(10)} ${amount}`, color: "#f5efe0" };
+function row(symbol: string, amount: string, status?: string): ScrollLine {
+  const statusSuffix = status ? formatStatusSuffix(status, symbol) : "";
+  return {
+    text: `  ${symbol.padEnd(10)} ${amount}${statusSuffix}`,
+    color: "#f5efe0",
+  };
+}
+
+function formatStatusSuffix(status: string, symbol: string): string {
+  if (status === "pending" && symbol.includes("(pending)")) {
+    return "";
+  }
+  return status === "pending" ? `  (${status})` : `  · ${status}`;
 }
 
 function noneLine(): ScrollLine {
   return { text: "  (none)", dim: true };
 }
 
-function privateSection(title: string, rows: { symbol: string; formatted_token_holdings: string }[]): ScrollLine[] {
+function privateSection(
+  title: string,
+  rows: { symbol: string; formatted_token_holdings: string; status?: string }[]
+): ScrollLine[] {
   const lines: ScrollLine[] = [section(title)];
   if (rows.length === 0) {
     lines.push(noneLine());
   } else {
     for (const r of rows) {
-      lines.push(row(r.symbol, r.formatted_token_holdings));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
     }
   }
   return lines;
@@ -75,7 +89,7 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.privateRailgun) {
-      lines.push(row(r.symbol, r.formatted_token_holdings));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
     }
   }
 
@@ -84,7 +98,7 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.privatePrivacyPools) {
-      lines.push(row(r.symbol, r.formatted_token_holdings));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
     }
   }
 
