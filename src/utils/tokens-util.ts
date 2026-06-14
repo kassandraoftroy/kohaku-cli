@@ -3,6 +3,56 @@ import { Contract, getAddress, isAddress } from "ethers";
 import { ETH_AS_ERC20 } from "./plugins";
 import { makeEthersProvider } from "./rpc";
 
+/** Native ETH in private balance rows (privacy-pools: EEE…; zero address variants). */
+export function isPrivateBalanceNativeEth(addrStr: string): boolean {
+  const lower = addrStr.toLowerCase();
+  if (lower === ETH_AS_ERC20.toLowerCase()) return true;
+  if (!lower.startsWith("0x")) return false;
+  const body = lower.slice(2);
+  return body.length > 0 && /^0+$/.test(body);
+}
+
+/** Human-readable status for a private `balance()` row tag (Railgun POI or PP pending). */
+export function privateBalanceStatusLabel(tag: string): string {
+  switch (tag) {
+    case "pending":
+    case "Missing":
+      return "pending";
+    case "Valid":
+      return "spendable";
+    case "ProofSubmitted":
+      return "proof submitted";
+    case "ShieldBlocked":
+      return "blocked";
+    default:
+      return tag;
+  }
+}
+
+/** True when a private `balance()` row is spendable for unshield / transfer. */
+export function isSpendablePrivateBalanceTag(tag?: string): boolean {
+  return !tag || tag === "Valid";
+}
+
+/** True when a private `balance()` row is not yet spendable (POI / approval pending). */
+export function isPendingPrivateBalanceRow(row: { tag?: string }): boolean {
+  return row.tag !== undefined && !isSpendablePrivateBalanceTag(row.tag);
+}
+
+/** Match a private `balance()` row asset to the token being unshielded. */
+export function privateBalanceRowMatchesUnshieldToken(
+  rowAssetAddr: string,
+  tokenMeta: { isEth: boolean; tokenAddress: string },
+  chainId: bigint
+): boolean {
+  const addr = rowAssetAddr.toLowerCase();
+  if (tokenMeta.isEth) {
+    const weth = wethAddressForChain(chainId);
+    return weth ? addr === weth.toLowerCase() : false;
+  }
+  return addr === tokenMeta.tokenAddress.toLowerCase();
+}
+
 // --- Default ERC-20 lists per chain (balances) ---
 
 /** ERC20 with fixed metadata (no RPC reads for symbol/decimals). */

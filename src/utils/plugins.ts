@@ -3,14 +3,25 @@ import {
   PrivacyPoolsV1_0xBow,
   createPPv1Plugin,
 } from "@kohaku-eth/privacy-pools";
-import { Bundler, Signer, chainConfig, createRailgunPlugin } from "@kohaku-eth/railgun";
+import {
+  Bundler,
+  Signer,
+  SimpleSmartAccount,
+  chainConfig,
+  createRailgunPlugin,
+} from "@kohaku-eth/railgun";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
-import { ethers } from "ethers";
+import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
 import ppv1MainnetState from "./ppv1-mainnet-state.json";
 
-const OXBOW_ASP_URL = "https://dw.0xbow.io";
+const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
+const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
+
+function oxbowAspUrlForChain(chainId: bigint): string {
+  return chainId === 11155111n ? OXBOW_ASP_URL_SEPOLIA : OXBOW_ASP_URL_MAINNET;
+}
 
 export type SupportedProtocol = "railgun" | "privacy-pools";
 
@@ -18,6 +29,8 @@ export type SupportedProtocol = "railgun" | "privacy-pools";
 export function isSupportedProtocol(value: unknown): value is SupportedProtocol {
   return value === "railgun" || value === "privacy-pools";
 }
+
+export const SUPPORTED_PROTOCOLS_HELP = "railgun | privacy-pools";
 
 /**
  * Maps CLI `--protocol` to {@link PluginId} for Host (storage paths + keystore flavor).
@@ -62,7 +75,7 @@ export const PRIVACY_POOLS_BROADCASTER_URL = "https://fastrelay.xyz/relayer";
 
 type RailgunUnshieldConfigurable = {
   setBundler: (bundler?: Bundler) => void;
-  setDelegatingSigner: (signer?: Signer) => void;
+  setSmartAccount: (smartAccount: SimpleSmartAccount, signer: Signer) => void;
 };
 
 /**
@@ -88,17 +101,20 @@ export function railgunNativeEthAssetAmount(
   };
 }
 
-/** Railgun unshield: 4337 bundler + recipient EOA as EIP-7702 delegating signer. */
+/** Railgun unshield: 4337 bundler + recipient EOA as EIP-7702 smart account signer. */
 export function configureRailgunForUnshield(
   plugin: unknown,
+  host: Host,
+  chainId: bigint,
   recipientPrivateKey: `0x${string}`,
   bundlerUrl: string
 ): void {
   const rg = plugin as RailgunUnshieldConfigurable;
+  const signer = Signer.privateKey(recipientPrivateKey);
+  const eip1193 = new RailgunEthereumProviderAdapter(host.provider);
+  const smartAccount = new SimpleSmartAccount(signer.address, chainId, eip1193);
   rg.setBundler(Bundler.pimlico(bundlerUrl));
-  console.log("recipientPrivateKey:", recipientPrivateKey);
-  console.log("recipientAddress:", ethers.computeAddress(recipientPrivateKey));
-  rg.setDelegatingSigner(Signer.privateKey(recipientPrivateKey));
+  rg.setSmartAccount(smartAccount, signer);
 }
 
 export async function createProtocolPlugin(
@@ -122,16 +138,15 @@ export async function createProtocolPlugin(
       deploymentBlock: params.entrypoint.deploymentBlock,
     },
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
-    ...(chainId === 11155111n
-      ? {
-          aspServiceFactory: () =>
-            new OxBowAspService({
-              network: host.network,
-              aspUrl: OXBOW_ASP_URL,
-            }),
-          initialState: ppv1SepoliaState as never,
-        }
-      : { initialState: ppv1MainnetState as never }),
+    aspServiceFactory: () =>
+      new OxBowAspService({
+        network: host.network,
+        aspUrl: oxbowAspUrlForChain(chainId),
+      }),
+    initialState:
+      chainId === 11155111n
+        ? (ppv1SepoliaState as never)
+        : (ppv1MainnetState as never),
   };
 
   return createPPv1Plugin(host, ppv1Params);

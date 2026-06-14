@@ -7,10 +7,13 @@ import { Contract, formatUnits, getAddress, parseUnits } from "ethers";
 
 import { makeEthersProvider, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
-import { wethAddressForChain } from "../utils/tokens-util.js";
 import {
-  ETH_AS_ERC20,
+  isPendingPrivateBalanceRow,
+  privateBalanceRowMatchesUnshieldToken,
+} from "../utils/tokens-util.js";
+import {
   configureRailgunForUnshield,
+  ETH_AS_ERC20,
   PRIVACY_POOLS_BROADCASTER_URL,
   railgunNativeEthAssetAmount,
   type SupportedProtocol,
@@ -109,10 +112,8 @@ export async function maxUnshieldAmountHint(
     return { cap: largest, privacyPoolsLargestNote: true };
   }
 
-  let targetAddr = tokenMeta.tokenAddress.toLowerCase();
-  if (tokenMeta.isEth) {
-    const weth = wethAddressForChain(chainId);
-    targetAddr = weth ? weth.toLowerCase() : ETH_AS_ERC20.toLowerCase();
+  if (protocol !== "railgun") {
+    return { cap: 0n, privacyPoolsLargestNote: false };
   }
 
   let sum = 0n;
@@ -121,14 +122,19 @@ export async function maxUnshieldAmountHint(
       plugin as unknown as { balance: (a: unknown) => Promise<AssetAmount[]> }
     ).balance(undefined);
     for (const row of balances) {
+      if (isPendingPrivateBalanceRow(row)) continue;
       const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
       if (!asset || asset.__type !== "erc20") continue;
       let addr: string;
       if (typeof asset.contract === "string") addr = asset.contract.toLowerCase();
       else if (typeof asset.contract === "bigint")
-        addr = `0x${asset.contract.toString(16).padStart(40, "0")}`;
+        addr = `0x${asset.contract.toString(16).padStart(40, "0")}`.toLowerCase();
       else continue;
-      if (addr === targetAddr) sum += row.amount;
+      if (
+        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId)
+      ) {
+        sum += row.amount;
+      }
     }
   } catch {
     // ignore
@@ -225,6 +231,8 @@ async function runUnshieldWithPlugin(
     }
     configureRailgunForUnshield(
       plugin,
+      host,
+      opts.chainId,
       opts.recipientPriv,
       railgunPimlicoBundlerUrl(opts.chainId)
     );
@@ -283,7 +291,12 @@ async function runUnshieldWithPlugin(
   }
 
   opts.onStatus?.("Broadcasting unshield…");
-  return await broadcastPreparedPrivateOp(opts.protocol, host, plugin, privateOp);
+  return await broadcastPreparedPrivateOp(
+    opts.protocol,
+    host,
+    plugin,
+    privateOp
+  );
 }
 
 export async function prepareUnshieldOperation(
@@ -358,7 +371,7 @@ function findHashDeep(
 
 /**
  * Hash suitable for Etherscan `/tx/` after unshield broadcast.
- * - Railgun (4337): userOpHash from Pimlico, or a mined tx hash if present.
+ * - Railgun (4337): userOpHash from Pimlico, or a mined tx hash.
  * - Privacy Pools: on-chain tx hash only (`txHash` from relayer) — no userOpHash.
  */
 export function extractUnshieldExplorerHash(

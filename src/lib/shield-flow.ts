@@ -14,10 +14,7 @@ import { makeEthersProvider } from "../utils/rpc";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
-import {
-  ETH_AS_ERC20,
-  type SupportedProtocol,
-} from "../utils/plugins";
+import { ETH_AS_ERC20, type SupportedProtocol } from "../utils/plugins";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 
@@ -67,6 +64,7 @@ export type ShieldPlan = {
   senderAddress: string;
   approve: { to: string; data: string; value: bigint } | null;
   shieldTx: { to: string; data: string; value: bigint };
+  shieldTxs: Array<{ to: string; data: string; value: bigint }>;
   transactions: ShieldTxPayload[];
 };
 
@@ -155,7 +153,10 @@ function encodeErc20ApproveTx(
   return { to: tokenAddress, data, value: 0n };
 }
 
-function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigint }> {
+function toShieldTxs(
+  op: unknown,
+  opts?: { allowMultiple?: boolean }
+): Array<{ to: string; data: string; value: bigint }> {
   let txs: Array<{ to: string; data: string; value: bigint }> | null = null;
 
   if (Array.isArray(op)) {
@@ -173,7 +174,11 @@ function toShieldTxs(op: unknown): Array<{ to: string; data: string; value: bigi
     throw new Error("Unsupported shield operation shape returned by plugin.");
   }
 
-  if (txs.length !== 1) {
+  if (txs.length === 0) {
+    throw new Error("prepareShield() returned no transactions.");
+  }
+
+  if (!opts?.allowMultiple && txs.length !== 1) {
     throw new Error(
       `Expected prepareShield() to return exactly 1 tx, got ${txs.length}.`
     );
@@ -305,7 +310,8 @@ export async function prepareShieldPlan(opts: {
               };
 
         const op = await plugin.prepareShield(asset as AssetAmount);
-        const shieldTx = toShieldTxs(op)[0]!;
+        const shieldTxs = toShieldTxs(op);
+        const shieldTx = shieldTxs[0]!;
 
         let approve: { to: string; data: string; value: bigint } | null = null;
         if (!tokenMeta.isEth) {
@@ -325,14 +331,16 @@ export async function prepareShieldPlan(opts: {
             value: approve.value.toString(),
           });
         }
-        transactions.push({
-          data: shieldTx.data,
-          to: shieldTx.to,
-          from: senderAddress,
-          value: shieldTx.value.toString(),
-        });
+        for (const tx of shieldTxs) {
+          transactions.push({
+            data: tx.data,
+            to: tx.to,
+            from: senderAddress,
+            value: tx.value.toString(),
+          });
+        }
 
-        return { senderAddress, approve, shieldTx, transactions };
+        return { senderAddress, approve, shieldTx, shieldTxs, transactions };
       } finally {
         dispose();
       }
@@ -358,7 +366,7 @@ export async function broadcastShield(opts: {
   allowDeriveFromMnemonic?: boolean;
 }): Promise<BroadcastShieldResult> {
   const plan = await prepareShieldPlan({ ...opts, allowDeriveFromMnemonic: opts.allowDeriveFromMnemonic ?? true });
-  const { senderAddress, approve, shieldTx } = plan;
+  const { senderAddress, approve, shieldTx, shieldTxs } = plan;
 
   const sender = resolveShieldSender({
     fromValue: opts.fromValue,
@@ -404,25 +412,30 @@ export async function broadcastShield(opts: {
       results.push({ type: "approval", hash: t.hash });
     }
 
-    await simulateTransactionOrThrow(
-      rpc,
-      {
-        to: shieldTx.to,
-        from: senderAddress,
-        data: shieldTx.data,
-        value: shieldTx.value,
-        gasLimit: 2000000n,
-      },
-      "Shield transaction"
-    );
-    const s = await signer.sendTransaction({
-      to: shieldTx.to,
-      data: shieldTx.data,
-      value: shieldTx.value,
-      gasLimit: 2000000,
-    });
-    await s.wait();
-    results.push({ type: "shield", hash: s.hash });
+    for (let i = 0; i < shieldTxs.length; i++) {
+      const tx = shieldTxs[i]!;
+      await simulateTransactionOrThrow(
+        rpc,
+        {
+          to: tx.to,
+          from: senderAddress,
+          data: tx.data,
+          value: tx.value,
+          gasLimit: 2000000n,
+        },
+        shieldTxs.length > 1
+          ? `Shield transaction (${i + 1}/${shieldTxs.length})`
+          : "Shield transaction"
+      );
+      const s = await signer.sendTransaction({
+        to: tx.to,
+        data: tx.data,
+        value: tx.value,
+        gasLimit: 2000000,
+      });
+      await s.wait();
+      results.push({ type: "shield", hash: s.hash });
+    }
     return results;
   } finally {
     dispose();

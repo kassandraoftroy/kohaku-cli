@@ -20,7 +20,11 @@ import {
   railgunPimlicoBundlerUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { resolveTokenMeta, wethAddressForChain } from "../utils/tokens-util";
+import {
+  isPendingPrivateBalanceRow,
+  privateBalanceRowMatchesUnshieldToken,
+  resolveTokenMeta,
+} from "../utils/tokens-util";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -44,6 +48,7 @@ import {
   isSupportedProtocol,
   pluginIdForProtocol,
   railgunNativeEthAssetAmount,
+  SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
 } from "../utils/plugins";
 
@@ -121,10 +126,8 @@ async function maxUnshieldAmountHint(
     return { cap: largest, privacyPoolsLargestNote: true };
   }
 
-  let targetAddr = tokenMeta.tokenAddress.toLowerCase();
-  if (tokenMeta.isEth) {
-    const weth = wethAddressForChain(chainId);
-    targetAddr = weth ? weth.toLowerCase() : ETH_AS_ERC20.toLowerCase();
+  if (protocol !== "railgun") {
+    return { cap: 0n, privacyPoolsLargestNote: false };
   }
 
   let sum = 0n;
@@ -133,14 +136,19 @@ async function maxUnshieldAmountHint(
       plugin as unknown as { balance: (a: unknown) => Promise<AssetAmount[]> }
     ).balance(undefined);
     for (const row of balances) {
+      if (isPendingPrivateBalanceRow(row)) continue;
       const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
       if (!asset || asset.__type !== "erc20") continue;
       let addr: string;
       if (typeof asset.contract === "string") addr = asset.contract.toLowerCase();
       else if (typeof asset.contract === "bigint")
-        addr = `0x${asset.contract.toString(16).padStart(40, "0")}`;
+        addr = `0x${asset.contract.toString(16).padStart(40, "0")}`.toLowerCase();
       else continue;
-      if (addr === targetAddr) sum += row.amount;
+      if (
+        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId)
+      ) {
+        sum += row.amount;
+      }
     }
   } catch {
     // ignore
@@ -152,7 +160,7 @@ export function registerUnshieldCommand(program: Command): void {
   program
     .command("unshield")
     .description("Unshield private balance to a public address (via protocol relayer/broadcaster)")
-    .requiredOption("--protocol <protocol>", "Protocol: railgun | privacy-pools")
+    .requiredOption("--protocol <protocol>", `Protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .option("--to <address>", "Public recipient address")
@@ -172,7 +180,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: UnshieldOpts) => {
       if (!isSupportedProtocol(opts.protocol)) {
-        cliError('--protocol must be "railgun" or "privacy-pools".');
+        cliError(`--protocol must be "${SUPPORTED_PROTOCOLS_HELP}".`);
         return;
       }
       const protocol = opts.protocol;
@@ -363,6 +371,8 @@ export function registerUnshieldCommand(program: Command): void {
         if (protocol === "railgun") {
           configureRailgunForUnshield(
             plugin,
+            host,
+            chainId,
             recipientPriv!,
             railgunPimlicoBundlerUrl(chainId)
           );
@@ -462,11 +472,13 @@ export function registerUnshieldCommand(program: Command): void {
           protocol === "railgun"
             ? "Building Railgun unshield (proof + broadcaster selection)…"
             : "Building Privacy Pools unshield (proof + relayer quote)…";
+
         const prepareUnshield = (
           plugin as unknown as {
             prepareUnshield: (
               a: AssetAmount,
-              t: `0x${string}`
+              t: `0x${string}`,
+              options?: { mode: "paymaster" } | { mode: "relayer" }
             ) => Promise<unknown>;
           }
         ).prepareUnshield.bind(plugin);

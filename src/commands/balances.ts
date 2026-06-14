@@ -4,6 +4,8 @@ import type { Command } from "commander";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
+import type { BalanceItem } from "../lib/balances-snapshot";
+import { mapPrivateBalanceRows } from "../lib/private-balance-rows";
 import { makeHost } from "../host/makeHost";
 import { withProtocolRuntime } from "../lib/protocol-runtime";
 import { cliOptions } from "../utils/cli-command-options";
@@ -15,10 +17,13 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { ERC20_ABI, mergeDefaultAndExtraErc20s } from "../utils/tokens-util";
+import {
+  ERC20_ABI,
+  isPrivateBalanceNativeEth,
+  mergeDefaultAndExtraErc20s,
+} from "../utils/tokens-util";
 import {
   createProtocolPlugin,
-  ETH_AS_ERC20,
   pluginIdForProtocol,
   type SupportedProtocol,
 } from "../utils/plugins";
@@ -38,14 +43,6 @@ type BalancesOpts = {
   rpcUrl?: string;
   tokensList?: string;
   dataDir?: string;
-};
-
-type BalanceItem = {
-  symbol: string;
-  token_address: string;
-  decimals: number;
-  raw_token_holdings: string;
-  formatted_token_holdings: string;
 };
 
 type PrivateNoteRowJson = {
@@ -103,62 +100,13 @@ function collectErc20AddressesFromPrivateBalances(
     }
     if (!addrStr || !isAddress(addrStr)) continue;
     const checksum = getAddress(addrStr) as `0x${string}`;
-    if (checksum.toLowerCase() === ETH_AS_ERC20.toLowerCase()) continue;
+    if (isPrivateBalanceNativeEth(checksum)) continue;
     const k = checksum.toLowerCase();
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(checksum);
   }
   return out;
-}
-
-function mapPrivateBalanceRows(
-  rows: AssetAmount[],
-  tokenMeta: Map<string, { symbol: string; decimals: number }>
-): BalanceItem[] {
-  return rows.map((row) => {
-    const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
-    const amount = row.amount;
-    const tag = "tag" in row ? (row as { tag?: string }).tag : undefined;
-
-    if (!asset || asset.__type !== "erc20") {
-      return {
-        symbol: "UNKNOWN",
-        token_address: "---",
-        decimals: 18,
-        raw_token_holdings: amount.toString(),
-        formatted_token_holdings: formatUnits(amount, 18),
-      };
-    }
-    const raw = asset.contract;
-    let addrStr: string;
-    if (typeof raw === "string") addrStr = raw;
-    else if (typeof raw === "bigint") {
-      addrStr = `0x${raw.toString(16).padStart(40, "0")}`;
-    } else {
-      addrStr = "---";
-    }
-    const isEth = addrStr.toLowerCase() === ETH_AS_ERC20.toLowerCase();
-    const key =
-      isEth || !isAddress(addrStr)
-        ? null
-        : (getAddress(addrStr).toLowerCase() as string);
-    const meta = key ? tokenMeta.get(key) : { symbol: "ETH", decimals: 18 };
-    const decimals = meta?.decimals ?? 18;
-    let symbol = meta?.symbol ?? "UNKNOWN";
-    if (tag === "pending") {
-      symbol = `${symbol} (pending)`;
-    }
-    const tokenAddr =
-      isEth || !isAddress(addrStr) ? "---" : getAddress(addrStr);
-    return {
-      symbol,
-      token_address: tokenAddr,
-      decimals,
-      raw_token_holdings: amount.toString(),
-      formatted_token_holdings: formatUnits(amount, decimals),
-    };
-  });
 }
 
 async function loadPrivateBalancesForProtocol(
@@ -313,14 +261,21 @@ function shortenAddr(addr: string): string {
 const BAR = "═".repeat(62);
 const THIN = "─".repeat(62);
 
-function columnWidths(rows: BalanceItem[]): { symW: number; amtW: number } {
+function columnWidths(
+  rows: BalanceItem[],
+  showStatus: boolean
+): { symW: number; amtW: number; statusW: number } {
   let symW = 10;
   let amtW = 24;
+  let statusW = showStatus ? 8 : 0;
   for (const r of rows) {
     symW = Math.max(symW, r.symbol.length);
     amtW = Math.max(amtW, r.formatted_token_holdings.length);
+    if (showStatus && r.status) {
+      statusW = Math.max(statusW, r.status.length);
+    }
   }
-  return { symW, amtW };
+  return { symW, amtW, statusW };
 }
 
 function printAggregatedTotalsTable(
@@ -333,7 +288,7 @@ function printAggregatedTotalsTable(
     console.log(chalk.dim("  (no non-zero balances)"));
     return;
   }
-  const aggW = columnWidths(aggregated);
+  const aggW = columnWidths(aggregated, false);
   console.log(
     chalk.dim(
       `  ${padCell("Symbol", aggW.symW)}  ${padCell("Balance", aggW.amtW)}  Token`
@@ -350,22 +305,32 @@ function printAggregatedTotalsTable(
   }
 }
 
-function printBalanceItemRows(rows: BalanceItem[]): void {
+function printBalanceItemRows(
+  rows: BalanceItem[],
+  opts?: { status?: boolean }
+): void {
   if (rows.length === 0) {
     console.log(chalk.dim("  (none)"));
     return;
   }
-  const w = columnWidths(rows);
+  const showStatus = opts?.status ?? rows.some((r) => r.status);
+  const w = columnWidths(rows, showStatus);
+  const statusHdr = showStatus ? `  ${padCell("Status", w.statusW)}` : "";
   console.log(
-    chalk.dim(`  ${padCell("Symbol", w.symW)}  ${padCell("Balance", w.amtW)}  Token`)
+    chalk.dim(
+      `  ${padCell("Symbol", w.symW)}  ${padCell("Balance", w.amtW)}${statusHdr}  Token`
+    )
   );
   for (const r of rows) {
     const tokenCol =
       r.token_address === "---"
         ? chalk.dim("native")
         : chalk.dim(shortenAddr(r.token_address));
+    const statusCol = showStatus
+      ? `  ${padCell(r.status ?? "—", w.statusW)}`
+      : "";
     console.log(
-      `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}  ${tokenCol}`
+      `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}${statusCol}  ${tokenCol}`
     );
   }
 }
@@ -397,12 +362,12 @@ function printHumanBalances(opts: {
   console.log();
   console.log(chalk.bold("  ■ Private — Railgun"));
   console.log(chalk.dim(`  ${THIN}`));
-  printBalanceItemRows(opts.privateRailgun);
+  printBalanceItemRows(opts.privateRailgun, { status: true });
 
   console.log();
   console.log(chalk.bold("  ■ Private — Privacy pools"));
   console.log(chalk.dim(`  ${THIN}`));
-  printBalanceItemRows(opts.privatePrivacyPools);
+  printBalanceItemRows(opts.privatePrivacyPools, { status: true });
 
   if (opts.verbose) {
     console.log();
@@ -437,7 +402,7 @@ function printHumanBalances(opts: {
     console.log();
     console.log(chalk.bold("  ■ Private — Railgun (aggregate)"));
     console.log(chalk.dim(`  ${THIN}`));
-    printBalanceItemRows(opts.privateRailgun);
+    printBalanceItemRows(opts.privateRailgun, { status: true });
 
     console.log();
     console.log(chalk.bold("  ■ Private — Railgun (per-note detail)"));
@@ -451,7 +416,7 @@ function printHumanBalances(opts: {
     console.log();
     console.log(chalk.bold("  ■ Private — Privacy pools (aggregate)"));
     console.log(chalk.dim(`  ${THIN}`));
-    printBalanceItemRows(opts.privatePrivacyPools);
+    printBalanceItemRows(opts.privatePrivacyPools, { status: true });
 
     console.log();
     console.log(chalk.bold("  ■ Private — Privacy pools (notes)"));
@@ -587,7 +552,6 @@ export function registerBalancesCommand(program: Command): void {
           chalk.yellow(`Privacy pools private balances unavailable: ${msg}`)
         );
       }
-
       const erc20FromPrivate = [
         ...collectErc20AddressesFromPrivateBalances(rgRows),
         ...collectErc20AddressesFromPrivateBalances(ppRows),
