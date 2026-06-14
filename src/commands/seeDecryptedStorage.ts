@@ -11,13 +11,14 @@ import {
 } from "../utils/wallets-util";
 import { loadStore } from "../utils/aes-storage";
 
-const STORAGE_TYPES = ["public", "railgun", "privacy-pools"] as const;
+const STORAGE_TYPES = ["public", "railgun", "privacy-pools", "tornado"] as const;
 type StorageType = (typeof STORAGE_TYPES)[number];
 
 const TYPE_TO_FILENAME: Record<StorageType, string> = {
   public: "public-accounts.json",
   railgun: "rg-storage.json",
   "privacy-pools": "ppv1-storage.json",
+  tornado: "tc-storage.json",
 };
 
 type SeeDecryptedStorageOpts = {
@@ -51,7 +52,7 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
   program
     .command("see-decrypted-storage <type>")
     .description(
-      "Decrypt and print storage JSON: type is public | railgun | privacy-pools"
+      "Decrypt and print storage JSON: type is public | railgun | privacy-pools | tornado"
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)

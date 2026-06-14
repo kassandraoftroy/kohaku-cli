@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { Storage } from "@kohaku-eth/plugins";
 import { loadStore, saveStore } from "../utils/aes-storage";
 
-export type PluginId = "rg" | "ppv1";
+export type PluginId = "rg" | "ppv1" | "tc";
 
 function pluginStorePathForWallet(walletDir: string, pluginId: PluginId): string {
   return join(walletDir, `${pluginId}-storage.json`);

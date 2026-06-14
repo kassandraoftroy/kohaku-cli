@@ -5,6 +5,7 @@ import type { AssetAmount } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
 import type { BalanceItem } from "../lib/balances-snapshot";
+import { loadTornadoPrivateBalances } from "../lib/balances-snapshot";
 import { mapPrivateBalanceRows } from "../lib/private-balance-rows";
 import { makeHost } from "../host/makeHost";
 import { withProtocolRuntime } from "../lib/protocol-runtime";
@@ -343,6 +344,7 @@ function printHumanBalances(opts: {
   publicAccountIndexByAddress?: Record<string, number>;
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
+  privateTornado: BalanceItem[];
   verbose: boolean;
   privacyPoolsNotes?: PrivateNoteRowJson[];
 }): void {
@@ -368,6 +370,11 @@ function printHumanBalances(opts: {
   console.log(chalk.bold("  ■ Private — Privacy pools"));
   console.log(chalk.dim(`  ${THIN}`));
   printBalanceItemRows(opts.privatePrivacyPools, { status: true });
+
+  console.log();
+  console.log(chalk.bold("  ■ Private — Tornado Cash"));
+  console.log(chalk.dim(`  ${THIN}`));
+  printBalanceItemRows(opts.privateTornado, { status: true });
 
   if (opts.verbose) {
     console.log();
@@ -419,6 +426,11 @@ function printHumanBalances(opts: {
     printBalanceItemRows(opts.privatePrivacyPools, { status: true });
 
     console.log();
+    console.log(chalk.bold("  ■ Private — Tornado Cash (aggregate)"));
+    console.log(chalk.dim(`  ${THIN}`));
+    printBalanceItemRows(opts.privateTornado, { status: true });
+
+    console.log();
     console.log(chalk.bold("  ■ Private — Privacy pools (notes)"));
     console.log(chalk.dim(`  ${THIN}`));
     const notes = opts.privacyPoolsNotes ?? [];
@@ -442,7 +454,7 @@ export function registerBalancesCommand(program: Command): void {
   program
     .command("balances")
     .description(
-      "Public + private balances: ETH, default/extra ERC20s, Railgun & Privacy pools"
+      "Public + private balances: ETH, default/extra ERC20s, Railgun, Privacy pools & Tornado Cash"
     )
     .option("--wallet <name>", cliOptions.walletBalancesOptional)
     .option("--password <password>", cliOptions.password)
@@ -524,6 +536,7 @@ export function registerBalancesCommand(program: Command): void {
           async () => {
       let rgRows: AssetAmount[] = [];
       let ppRows: AssetAmount[] = [];
+      let tcRows: AssetAmount[] = [];
       try {
         rgRows = await loadPrivateBalancesForProtocol(
           "railgun",
@@ -552,9 +565,23 @@ export function registerBalancesCommand(program: Command): void {
           chalk.yellow(`Privacy pools private balances unavailable: ${msg}`)
         );
       }
+      try {
+        tcRows = await loadTornadoPrivateBalances(
+          rpcUrl,
+          walletDir,
+          password,
+          mnemonic,
+          chainIdBn
+        );
+      } catch (e) {
+        const msg = formatWarningError(e);
+        log.warn(chalk.yellow(`Tornado Cash private balances unavailable: ${msg}`));
+      }
+
       const erc20FromPrivate = [
         ...collectErc20AddressesFromPrivateBalances(rgRows),
         ...collectErc20AddressesFromPrivateBalances(ppRows),
+        ...collectErc20AddressesFromPrivateBalances(tcRows),
       ];
 
       const { erc20Addresses: tokenAddresses, knownMetaByLower } =
@@ -582,6 +609,7 @@ export function registerBalancesCommand(program: Command): void {
         const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
         let privateRailgun: BalanceItem[] = [];
         let privatePrivacyPools: BalanceItem[] = [];
+        let privateTornado: BalanceItem[] = [];
         let privacyPoolsNotesJson: PrivateNoteRowJson[] | undefined;
         try {
           for (const token of tokenAddresses) {
@@ -596,6 +624,7 @@ export function registerBalancesCommand(program: Command): void {
 
           privateRailgun = mapPrivateBalanceRows(rgRows, tokenMeta);
           privatePrivacyPools = mapPrivateBalanceRows(ppRows, tokenMeta);
+          privateTornado = mapPrivateBalanceRows(tcRows, tokenMeta);
 
           if (opts.verbose) {
             try {
@@ -695,6 +724,7 @@ export function registerBalancesCommand(program: Command): void {
         const publicByAddressOut = filterPublicByAddress(publicByAddress);
         const privateRailgunOut = filterNonZeroBalanceItems(privateRailgun);
         const privatePrivacyPoolsOut = filterNonZeroBalanceItems(privatePrivacyPools);
+        const privateTornadoOut = filterNonZeroBalanceItems(privateTornado);
         const privacyPoolsNotesOut =
           privacyPoolsNotesJson !== undefined
             ? filterNonZeroNotes(privacyPoolsNotesJson)
@@ -706,6 +736,7 @@ export function registerBalancesCommand(program: Command): void {
           private_balances: {
             railgun: privateRailgunOut,
             "privacy-pools": privatePrivacyPoolsOut,
+            tornado: privateTornadoOut,
           },
         };
         if (opts.verbose) {
@@ -733,6 +764,7 @@ export function registerBalancesCommand(program: Command): void {
             publicAccountIndexByAddress,
             privateRailgun: privateRailgunOut,
             privatePrivacyPools: privatePrivacyPoolsOut,
+            privateTornado: privateTornadoOut,
             verbose: !!opts.verbose,
             privacyPoolsNotes: privacyPoolsNotesOut,
           });

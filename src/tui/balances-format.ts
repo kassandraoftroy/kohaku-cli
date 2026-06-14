@@ -61,6 +61,7 @@ export function formatPrivateBalanceLines(
   }
   lines.push(...privateSection("Private — Railgun", snap.privateRailgun));
   lines.push(...privateSection("Private — Privacy pools", snap.privatePrivacyPools));
+  lines.push(...privateSection("Private — Tornado", snap.privateTornado));
   return lines;
 }
 
@@ -98,6 +99,15 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.privatePrivacyPools) {
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
+    }
+  }
+
+  lines.push(section("Private — Tornado"));
+  if (snap.privateTornado.length === 0) {
+    lines.push(noneLine());
+  } else {
+    for (const r of snap.privateTornado) {
       lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
     }
   }

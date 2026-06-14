@@ -39,10 +39,13 @@ import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
   assertPpErc20TokenWhitelisted,
+  assertTornadoEthOnly,
+  assertTornadoShieldAmount,
   createProtocolPlugin,
   ETH_AS_ERC20,
   isSupportedProtocol,
   pluginIdForProtocol,
+  prepareProtocolShield,
   SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
 } from "../utils/plugins";
@@ -322,6 +325,14 @@ export function registerShieldCommand(program: Command): void {
           return;
         }
       }
+      if (protocol === "tornado") {
+        try {
+          assertTornadoEthOnly(tokenMeta.isEth);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
 
       let amount: bigint | null = null;
       if (opts.amountWei) {
@@ -332,6 +343,14 @@ export function registerShieldCommand(program: Command): void {
       if (amount !== null && amount <= 0n) {
         cliError("Amount must be greater than zero.");
         return;
+      }
+      if (amount !== null && protocol === "tornado") {
+        try {
+          assertTornadoShieldAmount(chainId, amount);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
       }
 
       const broadcast = !!opts.broadcast;
@@ -500,8 +519,8 @@ export function registerShieldCommand(program: Command): void {
             };
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         try {
-          const op = await plugin.prepareShield(asset as AssetAmount);
-          shieldTxs = toShieldTxs(op);
+          const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
+          shieldTxs = toShieldTxs(op, { allowMultiple: protocol === "tornado" });
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
           cliError(msg);
