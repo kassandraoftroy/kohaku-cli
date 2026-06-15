@@ -253,12 +253,6 @@ function printHumanBalances(opts: {
       printBalanceItemRows(rows);
     }
 
-    console.log();
-    printAggregatedTotalsTable(
-      opts.publicAggregated,
-      "  ■ Public — totals (repeat)"
-    );
-
     if (shouldIncludeProtocol("privacy-pools", opts.includeProtocols)) {
       console.log();
       console.log(chalk.bold("  ■ Private — Privacy pools (notes)"));
@@ -292,7 +286,7 @@ export function registerBalancesCommand(program: Command): void {
     .option("--non-interactive", cliOptions.nonInteractiveBalances)
     .option(
       "--verbose",
-      "Human: public by-address + repeated totals + Privacy pools notes (JSON: adds private_notes)"
+      "Human: public by-address breakdown + Privacy pools notes (JSON: adds private_notes)"
     )
     .option(
       "--include <protocols>",
