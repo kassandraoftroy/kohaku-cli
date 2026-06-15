@@ -250,8 +250,8 @@ export async function createProtocolPlugin(
       }),
     initialState:
       chainId === 11155111n
-        ? (ppv1SepoliaState as never)
-        : (ppv1MainnetState as never),
+        ? async () => ppv1SepoliaState as never
+        : async () => ppv1MainnetState as never,
   };
 
   return createPPv1Plugin(host, ppv1Params);

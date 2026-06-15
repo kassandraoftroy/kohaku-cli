@@ -4,7 +4,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hash, Hex, SignedAuthorization } from "viem";
 
 /** Extra call gas on top of @kohaku-eth/tornado-cash manual paymaster estimates. */
-export const TORNADO_PAYMASTER_CALL_GAS_BUMP = 150_000n;
+export const TORNADO_PAYMASTER_CALL_GAS_BUMP = 100_000n;
 
 const ERC20_TRANSFER_GAS = 100_000n;
 
