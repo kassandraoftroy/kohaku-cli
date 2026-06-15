@@ -35,9 +35,54 @@ function oxbowAspUrlForChain(chainId: bigint): string {
 
 export type SupportedProtocol = "railgun" | "privacy-pools" | "tornado";
 
+export const ALL_PRIVATE_PROTOCOLS: readonly SupportedProtocol[] = [
+  "railgun",
+  "privacy-pools",
+  "tornado",
+];
+
 /** True when `value` is a valid CLI `--protocol` (see {@link pluginIdForProtocol}). */
 export function isSupportedProtocol(value: unknown): value is SupportedProtocol {
   return value === "railgun" || value === "privacy-pools" || value === "tornado";
+}
+
+/**
+ * Parses `--include railgun,tornado`. Returns `null` when omitted (all protocols).
+ */
+export function parseIncludeProtocols(
+  raw: string | undefined
+): SupportedProtocol[] | null {
+  if (!raw?.trim()) return null;
+
+  const parts = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  const out: SupportedProtocol[] = [];
+  const seen = new Set<SupportedProtocol>();
+
+  for (const part of parts) {
+    if (!isSupportedProtocol(part)) {
+      throw new Error(
+        `Invalid protocol in --include: ${part}. Use: ${SUPPORTED_PROTOCOLS_HELP}`
+      );
+    }
+    if (seen.has(part)) continue;
+    seen.add(part);
+    out.push(part);
+  }
+
+  if (out.length === 0) {
+    throw new Error(
+      `--include requires at least one protocol. Use: ${SUPPORTED_PROTOCOLS_HELP}`
+    );
+  }
+
+  return out;
+}
+
+export function shouldIncludeProtocol(
+  protocol: SupportedProtocol,
+  includeProtocols: SupportedProtocol[] | null
+): boolean {
+  return includeProtocols === null || includeProtocols.includes(protocol);
 }
 
 export const SUPPORTED_PROTOCOLS_HELP = "railgun | privacy-pools | tornado";
