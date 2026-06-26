@@ -14,7 +14,13 @@ import { makeEthersProvider } from "../utils/rpc";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
-import { ETH_AS_ERC20, type SupportedProtocol } from "../utils/plugins";
+import {
+  assertTornadoEthOnly,
+  assertTornadoShieldAmount,
+  ETH_AS_ERC20,
+  prepareProtocolShield,
+  type SupportedProtocol,
+} from "../utils/plugins";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 
@@ -284,6 +290,11 @@ export async function prepareShieldPlan(opts: {
     allowDeriveFromMnemonic,
   });
 
+  if (protocol === "tornado") {
+    assertTornadoEthOnly(tokenMeta.isEth);
+    assertTornadoShieldAmount(chainId, amount);
+  }
+
   return withProtocolRuntime(
     { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
     async (_host, plugin) => {
@@ -309,8 +320,10 @@ export async function prepareShieldPlan(opts: {
                 amount,
               };
 
-        const op = await plugin.prepareShield(asset as AssetAmount);
-        const shieldTxs = toShieldTxs(op);
+        const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
+        const shieldTxs = toShieldTxs(op, {
+          allowMultiple: protocol === "tornado",
+        });
         const shieldTx = shieldTxs[0]!;
 
         let approve: { to: string; data: string; value: bigint } | null = null;

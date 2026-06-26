@@ -4,6 +4,7 @@ import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
 import {
   assertPpErc20TokenWhitelisted,
+  assertTornadoEthOnly,
   type SupportedProtocol,
 } from "../../utils/plugins.js";
 import { maxUnshieldAmountHintForWallet } from "../../lib/unshield-flow.js";
@@ -71,10 +72,36 @@ export function UnshieldScreen({
 
   useEscBack(onBack, step === "running");
 
+  useEffect(() => {
+    if (step !== "token" || protocol !== "tornado") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const meta = await resolveTokenMeta("eth", session.rpcUrl);
+        assertTornadoEthOnly(meta.isEth);
+        if (!cancelled) {
+          setTokenMeta(meta);
+          setStep("recipient");
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+          setStep("error");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, protocol, session.rpcUrl]);
+
   async function resolveToken(): Promise<void> {
     const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
     if (protocol === "privacy-pools" && !meta.isEth) {
       assertPpErc20TokenWhitelisted(session.chainId, meta.tokenAddress);
+    }
+    if (protocol === "tornado") {
+      assertTornadoEthOnly(meta.isEth);
     }
     setTokenMeta(meta);
     setStep("recipient");
@@ -111,6 +138,7 @@ export function UnshieldScreen({
           items={[
             { label: "Railgun", value: "railgun" as const },
             { label: "Privacy pools", value: "privacy-pools" as const },
+            { label: "Tornado Cash", value: "tornado" as const },
           ]}
           onSelect={(p) => {
             setProtocol(p);
@@ -123,6 +151,13 @@ export function UnshieldScreen({
   }
 
   if (step === "token") {
+    if (protocol === "tornado") {
+      return (
+        <PageLayout title="Unshield" subtitle="token">
+          <Text color={CREAM}>Tornado Cash supports ETH only.</Text>
+        </PageLayout>
+      );
+    }
     return (
       <PageLayout title="Unshield" subtitle="token">
         <TextPrompt
@@ -348,7 +383,9 @@ export function UnshieldScreen({
           <Text dimColor>
             {protocol === "privacy-pools"
               ? "Relayer did not return an on-chain tx hash."
-              : "Bundler did not return a userOpHash or tx hash."}
+              : protocol === "tornado"
+                ? "Tornado paymaster bundler did not return a userOpHash or tx hash."
+                : "Bundler did not return a userOpHash or tx hash."}
           </Text>
         ) : null}
         <SelectList items={[{ label: "Back to menu", value: "b" }]} onSelect={onBack} onCancel={onBack} />

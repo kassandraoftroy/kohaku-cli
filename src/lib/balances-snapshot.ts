@@ -12,6 +12,8 @@ import {
 import {
   createProtocolPlugin,
   pluginIdForProtocol,
+  shouldIncludeProtocol,
+  tornadoHasBundledInitialState,
   type SupportedProtocol,
 } from "../utils/plugins";
 import { mapPrivateBalanceRows } from "./private-balance-rows";
@@ -43,6 +45,7 @@ export type BalancesSnapshot = {
   publicAccountIndexByAddress: Record<string, number>;
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
+  privateTornado: BalanceItem[];
   privacyPoolsNotes?: PrivateNoteRow[];
 };
 
@@ -113,6 +116,42 @@ async function loadPrivateBalancesForProtocol(
     { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
     async (_host, plugin) => plugin.balance(undefined)
   );
+}
+
+const TORNADO_BALANCE_TIMEOUT_MS = 600_000;
+
+export async function loadTornadoPrivateBalances(
+  rpcUrl: string,
+  walletDir: string,
+  password: string,
+  mnemonic: string,
+  chainId: bigint
+): Promise<AssetAmount[]> {
+  if (!tornadoHasBundledInitialState(chainId)) {
+    throw new Error(
+      "Mainnet has no bundled Tornado Cash state snapshot yet; incremental sync from deployment would take too long."
+    );
+  }
+
+  return Promise.race([
+    loadPrivateBalancesForProtocol(
+      "tornado",
+      rpcUrl,
+      walletDir,
+      password,
+      mnemonic,
+      chainId
+    ),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(
+          new Error(
+            "Tornado Cash sync timed out after 10 minutes (first run downloads proving artifacts and scans Sepolia pool events)."
+          )
+        );
+      }, TORNADO_BALANCE_TIMEOUT_MS);
+    }),
+  ]);
 }
 
 type PpNotesPlugin = {
@@ -203,6 +242,8 @@ export type LoadBalancesSnapshotOptions = {
   mnemonic: string;
   chainId: bigint;
   extraTokenAddresses?: `0x${string}`[];
+  /** When set, only these private protocols are synced. Omit for all. */
+  includeProtocols?: SupportedProtocol[] | null;
   verbose?: boolean;
   onWarning?: (message: string) => void;
 };
@@ -210,6 +251,7 @@ export type LoadBalancesSnapshotOptions = {
 export type PrivateBalancesSnapshot = {
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
+  privateTornado: BalanceItem[];
 };
 
 type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
@@ -219,43 +261,80 @@ type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
 async function resolvePrivateBalanceItems(
   opts: Pick<
     LoadBalancesSnapshotOptions,
-    "rpcUrl" | "walletDir" | "password" | "mnemonic" | "chainId" | "onWarning"
+    | "rpcUrl"
+    | "walletDir"
+    | "password"
+    | "mnemonic"
+    | "chainId"
+    | "includeProtocols"
+    | "onWarning"
   >
 ): Promise<ResolvedPrivateBalances> {
-  const { rpcUrl, walletDir, password, mnemonic, chainId, onWarning } = opts;
+  const {
+    rpcUrl,
+    walletDir,
+    password,
+    mnemonic,
+    chainId,
+    includeProtocols = null,
+    onWarning,
+  } = opts;
   const chainIdString = chainId.toString();
 
   let rgRows: AssetAmount[] = [];
   let ppRows: AssetAmount[] = [];
-  try {
-    rgRows = await loadPrivateBalancesForProtocol(
-      "railgun",
-      rpcUrl,
-      walletDir,
-      password,
-      mnemonic,
-      chainId
-    );
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    onWarning?.(`Railgun private balances unavailable: ${msg}`);
+  let tcRows: AssetAmount[] = [];
+
+  if (shouldIncludeProtocol("railgun", includeProtocols)) {
+    try {
+      rgRows = await loadPrivateBalancesForProtocol(
+        "railgun",
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onWarning?.(`Railgun private balances unavailable: ${msg}`);
+    }
   }
-  try {
-    ppRows = await loadPrivateBalancesForProtocol(
-      "privacy-pools",
-      rpcUrl,
-      walletDir,
-      password,
-      mnemonic,
-      chainId
-    );
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    onWarning?.(`Privacy pools private balances unavailable: ${msg}`);
+
+  if (shouldIncludeProtocol("privacy-pools", includeProtocols)) {
+    try {
+      ppRows = await loadPrivateBalancesForProtocol(
+        "privacy-pools",
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onWarning?.(`Privacy pools private balances unavailable: ${msg}`);
+    }
+  }
+
+  if (shouldIncludeProtocol("tornado", includeProtocols)) {
+    try {
+      tcRows = await loadTornadoPrivateBalances(
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onWarning?.(`Tornado Cash private balances unavailable: ${msg}`);
+    }
   }
   const erc20FromPrivate = [
     ...collectErc20AddressesFromPrivateBalances(rgRows),
     ...collectErc20AddressesFromPrivateBalances(ppRows),
+    ...collectErc20AddressesFromPrivateBalances(tcRows),
   ];
 
   const { erc20Addresses: tokenAddresses, knownMetaByLower } =
@@ -281,6 +360,9 @@ async function resolvePrivateBalanceItems(
       privatePrivacyPools: filterNonZeroBalanceItems(
         mapPrivateBalanceRows(ppRows, tokenMeta)
       ),
+      privateTornado: filterNonZeroBalanceItems(
+        mapPrivateBalanceRows(tcRows, tokenMeta)
+      ),
       erc20FromPrivate,
     };
   } finally {
@@ -291,12 +373,18 @@ async function resolvePrivateBalanceItems(
 export async function loadPrivateBalancesOnly(
   opts: Pick<
     LoadBalancesSnapshotOptions,
-    "rpcUrl" | "walletDir" | "password" | "mnemonic" | "chainId" | "onWarning"
+    | "rpcUrl"
+    | "walletDir"
+    | "password"
+    | "mnemonic"
+    | "chainId"
+    | "includeProtocols"
+    | "onWarning"
   >
 ): Promise<PrivateBalancesSnapshot> {
-  const { privateRailgun, privatePrivacyPools } =
+  const { privateRailgun, privatePrivacyPools, privateTornado } =
     await resolvePrivateBalanceItems(opts);
-  return { privateRailgun, privatePrivacyPools };
+  return { privateRailgun, privatePrivacyPools, privateTornado };
 }
 
 export async function loadBalancesSnapshot(
@@ -309,18 +397,20 @@ export async function loadBalancesSnapshot(
     mnemonic,
     chainId,
     extraTokenAddresses = [],
+    includeProtocols = null,
     verbose = false,
     onWarning,
   } = opts;
   const chainIdString = chainId.toString();
 
-  const { privateRailgun, privatePrivacyPools, erc20FromPrivate } =
+  const { privateRailgun, privatePrivacyPools, privateTornado, erc20FromPrivate } =
     await resolvePrivateBalanceItems({
       rpcUrl,
       walletDir,
       password,
       mnemonic,
       chainId,
+      includeProtocols,
       onWarning,
     });
 
@@ -358,7 +448,10 @@ export async function loadBalancesSnapshot(
       }
     }
 
-    if (verbose) {
+    if (
+      verbose &&
+      shouldIncludeProtocol("privacy-pools", includeProtocols)
+    ) {
       try {
         privacyPoolsNotes = await loadPrivacyPoolsNotes(
           rpcUrl,
@@ -457,6 +550,7 @@ export async function loadBalancesSnapshot(
     publicAccountIndexByAddress,
     privateRailgun,
     privatePrivacyPools,
+    privateTornado,
     privacyPoolsNotes:
       privacyPoolsNotes !== undefined
         ? filterNonZeroNotes(privacyPoolsNotes)

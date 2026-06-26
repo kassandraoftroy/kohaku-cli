@@ -43,10 +43,14 @@ export function isPendingPrivateBalanceRow(row: { tag?: string }): boolean {
 export function privateBalanceRowMatchesUnshieldToken(
   rowAssetAddr: string,
   tokenMeta: { isEth: boolean; tokenAddress: string },
-  chainId: bigint
+  chainId: bigint,
+  protocol: "railgun" | "tornado" = "railgun"
 ): boolean {
   const addr = rowAssetAddr.toLowerCase();
   if (tokenMeta.isEth) {
+    if (protocol === "tornado") {
+      return isPrivateBalanceNativeEth(addr);
+    }
     const weth = wethAddressForChain(chainId);
     return weth ? addr === weth.toLowerCase() : false;
   }

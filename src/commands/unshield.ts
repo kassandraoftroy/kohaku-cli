@@ -43,12 +43,15 @@ import {
 import {
   ETH_AS_ERC20,
   assertPpErc20TokenWhitelisted,
+  assertTornadoEthOnly,
+  assertTornadoPaymasterConfigured,
   configureRailgunForUnshield,
   createProtocolPlugin,
   isSupportedProtocol,
   pluginIdForProtocol,
   railgunNativeEthAssetAmount,
   SUPPORTED_PROTOCOLS_HELP,
+  tornadoUnshieldOptions,
   type SupportedProtocol,
 } from "../utils/plugins";
 
@@ -126,7 +129,7 @@ async function maxUnshieldAmountHint(
     return { cap: largest, privacyPoolsLargestNote: true };
   }
 
-  if (protocol !== "railgun") {
+  if (protocol !== "railgun" && protocol !== "tornado") {
     return { cap: 0n, privacyPoolsLargestNote: false };
   }
 
@@ -145,7 +148,7 @@ async function maxUnshieldAmountHint(
         addr = `0x${asset.contract.toString(16).padStart(40, "0")}`.toLowerCase();
       else continue;
       if (
-        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId)
+        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId, protocol)
       ) {
         sum += row.amount;
       }
@@ -271,6 +274,14 @@ export function registerUnshieldCommand(program: Command): void {
           return;
         }
       }
+      if (protocol === "tornado") {
+        try {
+          assertTornadoEthOnly(tokenMeta.isEth);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
 
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
       let persistFreshAccountAfterBroadcast = false;
@@ -378,12 +389,20 @@ export function registerUnshieldCommand(program: Command): void {
           );
         }
 
-        if (protocol === "privacy-pools" && "sync" in plugin && typeof plugin.sync === "function") {
+        if (
+          (protocol === "privacy-pools" || protocol === "tornado") &&
+          "sync" in plugin &&
+          typeof plugin.sync === "function"
+        ) {
           const sync = (plugin as { sync: () => Promise<void> }).sync;
+          const syncLabel =
+            protocol === "tornado"
+              ? "Syncing Tornado Cash state…"
+              : "Syncing private state…";
           await runQuietSpinner(
             quiet,
             spin,
-            { start: "Syncing private state…", failure: "Sync failed." },
+            { start: syncLabel, failure: "Sync failed." },
             () => sync.call(plugin),
             () => "Private state synced."
           );
@@ -471,7 +490,9 @@ export function registerUnshieldCommand(program: Command): void {
         const prepareLabel =
           protocol === "railgun"
             ? "Building Railgun unshield (proof + broadcaster selection)…"
-            : "Building Privacy Pools unshield (proof + relayer quote)…";
+            : protocol === "tornado"
+              ? "Building Tornado Cash unshield (proof + paymaster)…"
+              : "Building Privacy Pools unshield (proof + relayer quote)…";
 
         const prepareUnshield = (
           plugin as unknown as {
@@ -482,11 +503,17 @@ export function registerUnshieldCommand(program: Command): void {
             ) => Promise<unknown>;
           }
         ).prepareUnshield.bind(plugin);
+        if (protocol === "tornado") {
+          assertTornadoPaymasterConfigured(chainId);
+        }
         const privateOp = await runQuietSpinner(
           quiet,
           spin,
           { start: prepareLabel, failure: "Prepare failed." },
-          () => prepareUnshield(asset, recipient),
+          () =>
+            protocol === "tornado"
+              ? prepareUnshield(asset, recipient, tornadoUnshieldOptions())
+              : prepareUnshield(asset, recipient),
           () => "Unshield operation prepared."
         );
 
@@ -502,7 +529,9 @@ export function registerUnshieldCommand(program: Command): void {
         const via =
           protocol === "railgun"
             ? "Railgun (ERC-4337 bundler)"
-            : "Privacy Pools relayer";
+            : protocol === "tornado"
+              ? "Tornado Cash (ERC-4337 paymaster)"
+              : "Privacy Pools relayer";
 
         if (!opts.broadcast) {
           const amountRaw = amount.toString();
@@ -561,7 +590,7 @@ export function registerUnshieldCommand(program: Command): void {
           quiet,
           spin,
           { start: "Broadcasting unshield", failure: "Broadcast failed." },
-          () => broadcastPreparedPrivateOp(protocol, host, plugin, privateOp),
+          () => broadcastPreparedPrivateOp(protocol, host, plugin, privateOp, chainId),
           () => "Unshield broadcast complete."
         );
 
@@ -596,7 +625,9 @@ export function registerUnshieldCommand(program: Command): void {
           const noHashMsg =
             protocol === "privacy-pools"
               ? "Relayer response did not include an on-chain tx hash."
-              : "Bundler response did not include a userOpHash or tx hash.";
+              : protocol === "tornado"
+                ? "Tornado paymaster bundler did not return a userOpHash or tx hash."
+                : "Bundler response did not include a userOpHash or tx hash.";
           console.log(chalk.dim(noHashMsg));
         }
       } catch (e) {

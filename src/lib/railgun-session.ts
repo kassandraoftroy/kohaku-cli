@@ -4,7 +4,7 @@ import { createRailgunPlugin } from "@kohaku-eth/railgun";
 
 import { makeHost } from "../host/makeHost.js";
 import { makeEthersProvider } from "../utils/rpc.js";
-import type { AnyPlugin } from "../utils/plugins.js";
+import { railgunPluginOptions, type AnyPlugin } from "../utils/plugins.js";
 
 export type RailgunSessionKey = `${string}:${string}`;
 
@@ -46,9 +46,10 @@ export async function acquireRailgunSession(opts: {
       mnemonic: opts.mnemonic,
       pluginId: "rg",
     });
-    const plugin = (await createRailgunPlugin(host, {
-      rpcBatchSize: 450,
-    })) as AnyPlugin;
+    const plugin = (await createRailgunPlugin(
+      host,
+      railgunPluginOptions()
+    )) as AnyPlugin;
     const session: RailgunSession = { host, plugin, rpc };
     sessions.set(key, session);
     return session;

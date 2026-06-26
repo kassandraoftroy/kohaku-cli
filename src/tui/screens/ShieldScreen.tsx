@@ -11,6 +11,8 @@ import { shortenAddr, useEscBack } from "../hooks/useEscBack.js";
 import type { TuiSession } from "../session.js";
 import {
   assertPpErc20TokenWhitelisted,
+  assertTornadoEthOnly,
+  assertTornadoShieldAmount,
   type SupportedProtocol,
 } from "../../utils/plugins.js";
 import { resolveTokenMeta } from "../../utils/tokens-util.js";
@@ -125,10 +127,36 @@ export function ShieldScreen({
     };
   }, [step, tokenMeta, session, balances?.phase, balances?.snap]);
 
+  useEffect(() => {
+    if (step !== "token" || protocol !== "tornado") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const meta = await resolveTokenMeta("eth", session.rpcUrl);
+        assertTornadoEthOnly(meta.isEth);
+        if (!cancelled) {
+          setTokenMeta(meta);
+          setStep("accounts");
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+          setStep("error");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, protocol, session.rpcUrl]);
+
   async function resolveToken(): Promise<void> {
     const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
     if (protocol === "privacy-pools" && !meta.isEth) {
       assertPpErc20TokenWhitelisted(session.chainId, meta.tokenAddress);
+    }
+    if (protocol === "tornado") {
+      assertTornadoEthOnly(meta.isEth);
     }
     setTokenMeta(meta);
     setStep("accounts");
@@ -139,6 +167,9 @@ export function ShieldScreen({
     try {
       const parsed = parseUnits(amountInput.trim(), tokenMeta.decimals);
       if (parsed <= 0n) throw new Error("Amount must be > 0");
+      if (protocol === "tornado") {
+        assertTornadoShieldAmount(session.chainId, parsed);
+      }
       setAmount(parsed);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -162,6 +193,7 @@ export function ShieldScreen({
           items={[
             { label: "Railgun", value: "railgun" as const },
             { label: "Privacy pools", value: "privacy-pools" as const },
+            { label: "Tornado Cash", value: "tornado" as const },
           ]}
           onSelect={(p) => {
             setProtocol(p);
@@ -174,6 +206,13 @@ export function ShieldScreen({
   }
 
   if (step === "token") {
+    if (protocol === "tornado") {
+      return (
+        <PageLayout title="Shield" subtitle="token">
+          <Text color={CREAM}>Tornado Cash supports ETH only (0.1 ETH increments).</Text>
+        </PageLayout>
+      );
+    }
     return (
       <PageLayout title="Shield" subtitle="token">
         <TextPrompt

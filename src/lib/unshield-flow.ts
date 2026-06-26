@@ -12,10 +12,13 @@ import {
   privateBalanceRowMatchesUnshieldToken,
 } from "../utils/tokens-util.js";
 import {
+  assertTornadoPaymasterConfigured,
+  broadcastTornadoPrivateOp,
   configureRailgunForUnshield,
   ETH_AS_ERC20,
   PRIVACY_POOLS_BROADCASTER_URL,
   railgunNativeEthAssetAmount,
+  tornadoUnshieldOptions,
   type SupportedProtocol,
 } from "../utils/plugins.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
@@ -112,7 +115,7 @@ export async function maxUnshieldAmountHint(
     return { cap: largest, privacyPoolsLargestNote: true };
   }
 
-  if (protocol !== "railgun") {
+  if (protocol !== "railgun" && protocol !== "tornado") {
     return { cap: 0n, privacyPoolsLargestNote: false };
   }
 
@@ -131,7 +134,7 @@ export async function maxUnshieldAmountHint(
         addr = `0x${asset.contract.toString(16).padStart(40, "0")}`.toLowerCase();
       else continue;
       if (
-        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId)
+        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId, protocol)
       ) {
         sum += row.amount;
       }
@@ -146,10 +149,14 @@ export async function broadcastPreparedPrivateOp(
   protocol: SupportedProtocol,
   host: Host,
   plugin: unknown,
-  operation: unknown
+  operation: unknown,
+  chainId: bigint
 ): Promise<unknown> {
   if (protocol === "railgun") {
     return await broadcastRailgunOp(plugin, operation);
+  }
+  if (protocol === "tornado") {
+    return await broadcastTornadoPrivateOp(host, operation, chainId);
   }
   const broadcaster = createPPv1Broadcaster(host, {
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
@@ -239,7 +246,10 @@ async function runUnshieldWithPlugin(
   }
 
   const maybeSync = plugin as { sync?: () => Promise<void> };
-  if (opts.protocol === "privacy-pools" && typeof maybeSync.sync === "function") {
+  if (
+    (opts.protocol === "privacy-pools" || opts.protocol === "tornado") &&
+    typeof maybeSync.sync === "function"
+  ) {
     opts.onStatus?.("Syncing private state…");
     await maybeSync.sync.call(plugin);
   }
@@ -260,19 +270,36 @@ async function runUnshieldWithPlugin(
 
   const prepareUnshield = (
     plugin as unknown as {
-      prepareUnshield: (a: AssetAmount, t: `0x${string}`) => Promise<unknown>;
+      prepareUnshield: (
+        a: AssetAmount,
+        t: `0x${string}`,
+        options?: { mode: "paymaster" } | { mode: "relayer" }
+      ) => Promise<unknown>;
     }
   ).prepareUnshield.bind(plugin);
+
+  if (opts.protocol === "tornado") {
+    assertTornadoPaymasterConfigured(opts.chainId);
+  }
 
   opts.onStatus?.(
     mode === "broadcast"
       ? "Preparing unshield…"
       : opts.protocol === "railgun"
         ? "Building Railgun unshield…"
-        : "Building Privacy Pools unshield…"
+        : opts.protocol === "tornado"
+          ? "Building Tornado Cash unshield…"
+          : "Building Privacy Pools unshield…"
   );
 
-  const privateOp = await prepareUnshield(asset as AssetAmount, opts.recipient);
+  const privateOp =
+    opts.protocol === "tornado"
+      ? await prepareUnshield(
+          asset as AssetAmount,
+          opts.recipient,
+          tornadoUnshieldOptions()
+        )
+      : await prepareUnshield(asset as AssetAmount, opts.recipient);
 
   if (opts.protocol === "privacy-pools") {
     await assertPrivacyPoolsRelayFeeWithinCap(
@@ -295,7 +322,8 @@ async function runUnshieldWithPlugin(
     opts.protocol,
     host,
     plugin,
-    privateOp
+    privateOp,
+    opts.chainId
   );
 }
 
@@ -371,7 +399,7 @@ function findHashDeep(
 
 /**
  * Hash suitable for Etherscan `/tx/` after unshield broadcast.
- * - Railgun (4337): userOpHash from Pimlico, or a mined tx hash.
+ * - Railgun / Tornado paymaster (4337): userOpHash from Pimlico, or a mined tx hash.
  * - Privacy Pools: on-chain tx hash only (`txHash` from relayer) — no userOpHash.
  */
 export function extractUnshieldExplorerHash(
@@ -379,7 +407,9 @@ export function extractUnshieldExplorerHash(
   protocol: SupportedProtocol
 ): string | null {
   const keys =
-    protocol === "railgun" ? RAILGUN_EXPLORER_HASH_KEYS : ON_CHAIN_TX_HASH_KEYS;
+    protocol === "railgun" || protocol === "tornado"
+      ? RAILGUN_EXPLORER_HASH_KEYS
+      : ON_CHAIN_TX_HASH_KEYS;
   return findHashDeep(result, keys);
 }
 
