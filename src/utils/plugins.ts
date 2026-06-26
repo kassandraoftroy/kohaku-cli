@@ -9,6 +9,7 @@ import {
   SimpleSmartAccount,
   chainConfig,
   createRailgunPlugin,
+  type LogLevel,
 } from "@kohaku-eth/railgun";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import {
@@ -28,6 +29,24 @@ import tcSepoliaState from "./tc-sepolia-state.json";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
+
+function envTruthy(value: string | undefined): boolean {
+  if (!value) return false;
+  const v = value.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/** Shared options for `createRailgunPlugin` (session + direct protocol runtime). */
+export function railgunPluginOptions(): {
+  rpcBatchSize: number;
+  logLevel?: LogLevel;
+} {
+  const opts: { rpcBatchSize: number; logLevel?: LogLevel } = { rpcBatchSize: 450 };
+  if (envTruthy(process.env.KOHAKU_RAILGUN_DEBUG)) {
+    opts.logLevel = "Debug";
+  }
+  return opts;
+}
 
 function oxbowAspUrlForChain(chainId: bigint): string {
   return chainId === 11155111n ? OXBOW_ASP_URL_SEPOLIA : OXBOW_ASP_URL_MAINNET;
@@ -249,13 +268,62 @@ export async function prepareProtocolShield(
   return plugin.prepareShield(asset);
 }
 
+function ppv1BundledSnapshotMap(chainId: bigint): Record<string, unknown> {
+  return (chainId === 11155111n ? ppv1SepoliaState : ppv1MainnetState) as Record<
+    string,
+    unknown
+  >;
+}
+
+function ppv1StorageKey(chainId: bigint, entrypointAddress: bigint): string {
+  return `privacy-pool-state-${chainId.toString()}-${entrypointAddress.toString()}`;
+}
+
+function ppv1LastSyncedBlock(state: unknown): bigint {
+  const raw = (state as { sync?: { lastSyncedBlock?: string | number } })?.sync
+    ?.lastSyncedBlock;
+  if (raw == null) return 0n;
+  return typeof raw === "string" ? BigInt(raw) : BigInt(raw);
+}
+
+/**
+ * Privacy Pools only uses bundled JSON when wallet storage has no entry for this
+ * chain/entrypoint. Seed (or upgrade stale) ppv1-storage so first sync resumes from
+ * the snapshot instead of deployment block.
+ */
+async function ensurePpv1BundledStateSeeded(
+  host: Host,
+  chainId: bigint,
+  entrypointAddress: bigint
+): Promise<void> {
+  const storageKey = ppv1StorageKey(chainId, entrypointAddress);
+  const bundled = ppv1BundledSnapshotMap(chainId)[storageKey];
+  if (!bundled) return;
+
+  const bundledBlock = ppv1LastSyncedBlock(bundled);
+  const existingRaw = await host.storage.get(storageKey);
+  if (!existingRaw) {
+    await host.storage.set(storageKey, JSON.stringify(bundled));
+    return;
+  }
+
+  try {
+    const existing = JSON.parse(existingRaw) as unknown;
+    if (ppv1LastSyncedBlock(existing) < bundledBlock) {
+      await host.storage.set(storageKey, JSON.stringify(bundled));
+    }
+  } catch {
+    await host.storage.set(storageKey, JSON.stringify(bundled));
+  }
+}
+
 export async function createProtocolPlugin(
   protocol: SupportedProtocol,
   host: Host,
   chainId: bigint
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
-    return createRailgunPlugin(host, { rpcBatchSize: 450 });
+    return createRailgunPlugin(host, railgunPluginOptions());
   }
 
   if (protocol === "tornado") {
@@ -281,10 +349,14 @@ export async function createProtocolPlugin(
     throw new Error(`No Privacy Pools deployment config for chainId ${chainId.toString()}`);
   }
 
+  const entrypointAddress = BigInt(params.entrypoint.entrypointAddress);
+
+  await ensurePpv1BundledStateSeeded(host, chainId, entrypointAddress);
+
   const ppv1Params = {
     accountIndex: 0,
     entrypoint: {
-      address: BigInt(params.entrypoint.entrypointAddress),
+      address: entrypointAddress,
       deploymentBlock: params.entrypoint.deploymentBlock,
     },
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
