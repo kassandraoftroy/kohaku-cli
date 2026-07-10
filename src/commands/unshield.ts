@@ -6,36 +6,19 @@ import type { Command } from "commander";
 import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
 
 import { makeHost } from "../host/makeHost";
-import { cliOptions } from "../utils/cli-command-options";
-import {
-  logCliJson,
-  quietNonInteractive,
-  runQuietSpinner,
-} from "../utils/cli-quiet";
-import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
-import {
-  DEFAULT_DATA_DIR,
-  getRpcChainIdMatchingWallet,
-  makeEthersProvider,
-  railgunPimlicoBundlerUrl,
-  resolveRpcUrl,
-} from "../utils/rpc";
-import {
-  isPendingPrivateBalanceRow,
-  privateBalanceRowMatchesUnshieldToken,
-  resolveTokenMeta,
-} from "../utils/tokens-util";
-import {
-  resolveWalletDir,
-  resolveWalletNameOrPrompt,
-  resolveWalletPassword,
-} from "../utils/wallets-util";
-import { readSeedKeystore } from "../utils/mnemonic";
 import {
   assertPrivacyPoolsRelayFeeWithinCap,
   broadcastPreparedPrivateOp,
   extractUnshieldExplorerHash,
 } from "../lib/unshield-flow.js";
+import { cliOptions } from "../utils/cli-command-options";
+import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import {
+  logCliJson,
+  quietNonInteractive,
+  runQuietSpinner,
+} from "../utils/cli-quiet";
+import { readSeedKeystore } from "../utils/mnemonic";
 import {
   findPublicAccountByAddress,
   makePublicAccountsStorage,
@@ -54,6 +37,24 @@ import {
   tornadoUnshieldOptions,
   type SupportedProtocol,
 } from "../utils/plugins";
+import {
+  DEFAULT_DATA_DIR,
+  getRpcChainIdMatchingWallet,
+  makeEthersProvider,
+  railgunPimlicoBundlerUrl,
+  resolveRpcUrl,
+} from "../utils/rpc";
+import {
+  isPendingPrivateBalanceRow,
+  privateBalanceRowMatchesUnshieldToken,
+  resolveTokenMeta,
+} from "../utils/tokens-util";
+import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
+import {
+  resolveWalletDir,
+  resolveWalletNameOrPrompt,
+  resolveWalletPassword,
+} from "../utils/wallets-util";
 
 type UnshieldOpts = {
   protocol?: SupportedProtocol;
@@ -171,7 +172,7 @@ export function registerUnshieldCommand(program: Command): void {
       "--next",
       "Unshield to the next fresh public account (persisted only after a successful --broadcast)"
     )
-    .option("--token <address|eth>", "Token address (default: eth)")
+    .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option("--rpc-url <url>", cliOptions.rpcUrl)
@@ -260,7 +261,7 @@ export function registerUnshieldCommand(program: Command): void {
 
       let tokenMeta: Awaited<ReturnType<typeof resolveTokenMeta>>;
       try {
-        tokenMeta = await resolveTokenMeta(opts.token, rpcUrl);
+        tokenMeta = await resolveTokenMeta(opts.token, rpcUrl, chainId);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -376,6 +377,7 @@ export function registerUnshieldCommand(program: Command): void {
           password,
           mnemonic,
           pluginId: pluginIdForProtocol(protocol),
+          chainId,
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
@@ -506,13 +508,25 @@ export function registerUnshieldCommand(program: Command): void {
         if (protocol === "tornado") {
           assertTornadoPaymasterConfigured(chainId);
         }
+        let tornadoMaxFeePerGas: bigint | undefined;
+        if (protocol === "tornado") {
+          tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(chainId);
+        }
         const privateOp = await runQuietSpinner(
           quiet,
           spin,
           { start: prepareLabel, failure: "Prepare failed." },
           () =>
             protocol === "tornado"
-              ? prepareUnshield(asset, recipient, tornadoUnshieldOptions())
+              ? prepareUnshield(
+                  asset,
+                  recipient,
+                  tornadoUnshieldOptions(
+                    recipient,
+                    amount,
+                    tornadoMaxFeePerGas!
+                  )
+                )
               : prepareUnshield(asset, recipient),
           () => "Unshield operation prepared."
         );

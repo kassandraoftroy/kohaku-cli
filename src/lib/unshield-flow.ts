@@ -21,6 +21,7 @@ import {
   tornadoUnshieldOptions,
   type SupportedProtocol,
 } from "../utils/plugins.js";
+import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
@@ -282,6 +283,11 @@ async function runUnshieldWithPlugin(
     assertTornadoPaymasterConfigured(opts.chainId);
   }
 
+  let tornadoMaxFeePerGas: bigint | undefined;
+  if (opts.protocol === "tornado") {
+    tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(opts.chainId);
+  }
+
   opts.onStatus?.(
     mode === "broadcast"
       ? "Preparing unshield…"
@@ -297,7 +303,11 @@ async function runUnshieldWithPlugin(
       ? await prepareUnshield(
           asset as AssetAmount,
           opts.recipient,
-          tornadoUnshieldOptions()
+          tornadoUnshieldOptions(
+            opts.recipient,
+            opts.amount,
+            tornadoMaxFeePerGas!
+          )
         )
       : await prepareUnshield(asset as AssetAmount, opts.recipient);
 

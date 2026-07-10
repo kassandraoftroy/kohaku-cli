@@ -18,6 +18,7 @@ import { makeHost } from "../host/makeHost";
 import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
+  shieldTransactionConfirmMessage,
 } from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
@@ -156,9 +157,9 @@ async function simulateTransactionOrThrow(
 }
 
 function printShieldDryRunInteractive(
-  shieldTx: { to: string; data: string; value: bigint },
+  shieldTxs: Array<{ to: string; data: string; value: bigint }>,
   approve: { to: string; data: string; value: bigint } | null,
-  tokenMeta: { symbol: string },
+  tokenMeta: { symbol: string; decimals: number },
   senderAddress: string
 ): void {
   console.log();
@@ -167,6 +168,8 @@ function printShieldDryRunInteractive(
     chalk.dim("Add --broadcast to sign and send these transactions on-chain from the CLI.")
   );
   console.log();
+  const shieldStepOffset = approve ? 1 : 0;
+  const totalSteps = shieldStepOffset + shieldTxs.length;
   if (approve) {
     const o: TxPayloadJson = {
       data: approve.data,
@@ -175,21 +178,32 @@ function printShieldDryRunInteractive(
       value: approve.value.toString(),
     };
     console.log(
-      chalk.cyan(`Approve ${tokenMeta.symbol} ERC20 tx (1/2):`),
+      chalk.cyan(`Approve ${tokenMeta.symbol} ERC20 tx (1/${totalSteps}):`),
       jsonStringifyWithBigInt(o)
     );
     console.log();
   }
-  const o: TxPayloadJson = {
-    data: shieldTx.data,
-    to: shieldTx.to,
-    from: senderAddress,
-    value: shieldTx.value.toString(),
-  };
-  const label = approve
-    ? "Shield operation tx (2/2)"
-    : "Shield operation tx (1/1)";
-  console.log(chalk.cyan(`${label}:`), jsonStringifyWithBigInt(o));
+  for (let i = 0; i < shieldTxs.length; i++) {
+    const shieldTx = shieldTxs[i]!;
+    const step = shieldStepOffset + i + 1;
+    const o: TxPayloadJson = {
+      data: shieldTx.data,
+      to: shieldTx.to,
+      from: senderAddress,
+      value: shieldTx.value.toString(),
+    };
+    const valueLabel =
+      shieldTxs.length > 1
+        ? ` — ${formatUnits(shieldTx.value, tokenMeta.decimals)} ${tokenMeta.symbol}`
+        : "";
+    console.log(
+      chalk.cyan(`Shield operation tx (${step}/${totalSteps})${valueLabel}:`),
+      jsonStringifyWithBigInt(o)
+    );
+    if (i < shieldTxs.length - 1) {
+      console.log();
+    }
+  }
 }
 
 function toShieldTxs(
@@ -241,7 +255,7 @@ export function registerShieldCommand(program: Command): void {
       "--broadcast",
       "Sign and submit on-chain (omit to print transaction payloads only)"
     )
-    .option("--token <address|eth>", "Token address (default: eth)")
+    .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option("--rpc-url <url>", cliOptions.rpcUrl)
@@ -311,7 +325,7 @@ export function registerShieldCommand(program: Command): void {
 
       let tokenMeta: Awaited<ReturnType<typeof resolveTokenMeta>>;
       try {
-        tokenMeta = await resolveTokenMeta(opts.token, rpcUrl);
+        tokenMeta = await resolveTokenMeta(opts.token, rpcUrl, chainId);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -500,6 +514,7 @@ export function registerShieldCommand(program: Command): void {
           password,
           mnemonic,
           pluginId: pluginIdForProtocol(protocol),
+          chainId,
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
@@ -568,7 +583,7 @@ export function registerShieldCommand(program: Command): void {
           if (opts.nonInteractive) {
             logCliJson({ transactions });
           } else {
-            printShieldDryRunInteractive(tx, approve, tokenMeta, senderAddress);
+            printShieldDryRunInteractive(shieldTxs, approve, tokenMeta, senderAddress);
             console.log(chalk.green("✔ Shield dry run complete."));
           }
           return;
@@ -630,7 +645,13 @@ export function registerShieldCommand(program: Command): void {
                 : "1/1";
           await maybeConfirm(
             !!opts.nonInteractive,
-            `Send shield transaction (${shieldStep}): shield ${amountPreview} (from ${senderAddress})?`
+            shieldTransactionConfirmMessage({
+              step: shieldStep,
+              txValue: stx.value,
+              shieldTxs,
+              tokenMeta,
+              senderAddress,
+            })
           );
           await simulateTransactionOrThrow(
             rpcForHost,

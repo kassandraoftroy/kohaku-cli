@@ -77,7 +77,7 @@ export function UnshieldScreen({
     let cancelled = false;
     void (async () => {
       try {
-        const meta = await resolveTokenMeta("eth", session.rpcUrl);
+        const meta = await resolveTokenMeta("eth", session.rpcUrl, session.chainId);
         assertTornadoEthOnly(meta.isEth);
         if (!cancelled) {
           setTokenMeta(meta);
@@ -96,7 +96,7 @@ export function UnshieldScreen({
   }, [step, protocol, session.rpcUrl]);
 
   async function resolveToken(): Promise<void> {
-    const meta = await resolveTokenMeta(tokenInput, session.rpcUrl);
+    const meta = await resolveTokenMeta(tokenInput, session.rpcUrl, session.chainId);
     if (protocol === "privacy-pools" && !meta.isEth) {
       assertPpErc20TokenWhitelisted(session.chainId, meta.tokenAddress);
     }

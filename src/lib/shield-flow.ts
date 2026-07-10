@@ -458,3 +458,42 @@ export async function broadcastShield(opts: {
 export function formatAmountPreview(amount: bigint, tokenMeta: ResolvedTokenMeta): string {
   return `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 }
+
+export function summarizeMultiShieldPlan(
+  shieldTxs: Array<{ value: bigint }>,
+  tokenMeta: ResolvedTokenMeta
+): string {
+  const counts = new Map<string, { count: number; value: bigint }>();
+  for (const tx of shieldTxs) {
+    const key = tx.value.toString();
+    const existing = counts.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      counts.set(key, { count: 1, value: tx.value });
+    }
+  }
+  return [...counts.values()]
+    .sort((a, b) => (a.value > b.value ? -1 : a.value < b.value ? 1 : 0))
+    .map(({ count, value }) => {
+      const amount = formatAmountPreview(value, tokenMeta);
+      return count === 1 ? `1 × ${amount}` : `${count} × ${amount}`;
+    })
+    .join(" + ");
+}
+
+export function shieldTransactionConfirmMessage(opts: {
+  step: string;
+  txValue: bigint;
+  shieldTxs: Array<{ value: bigint }>;
+  tokenMeta: ResolvedTokenMeta;
+  senderAddress: string;
+}): string {
+  const txAmount = formatAmountPreview(opts.txValue, opts.tokenMeta);
+  const base = `Send shield transaction (${opts.step}): shield ${txAmount}`;
+  if (opts.shieldTxs.length > 1) {
+    const plan = summarizeMultiShieldPlan(opts.shieldTxs, opts.tokenMeta);
+    return `${base} (${plan}) (from ${opts.senderAddress})?`;
+  }
+  return `${base} (from ${opts.senderAddress})?`;
+}

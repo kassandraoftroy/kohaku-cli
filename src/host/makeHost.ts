@@ -5,6 +5,7 @@ import type { JsonRpcProvider } from "ethers";
 import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
 import { makeStorage, type PluginId } from "./storage";
+import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 
 export type MakeHostOptions = {
   rpc: JsonRpcProvider;
@@ -12,6 +13,8 @@ export type MakeHostOptions = {
   password: string;
   mnemonic: string;
   pluginId: PluginId;
+  chainId?: bigint;
+  externalSyncProvider?: Host["externalSyncProvider"];
 };
 
 function makeNetwork(): Host["network"] {
@@ -28,18 +31,33 @@ function makeNetwork(): Host["network"] {
 }
 
 export async function makeHost(options: MakeHostOptions): Promise<Host> {
-  const { rpc, walletDir, password, mnemonic, pluginId } = options;
+  const {
+    rpc,
+    walletDir,
+    password,
+    mnemonic,
+    pluginId,
+    chainId,
+    externalSyncProvider: externalSyncProviderIn,
+  } = options;
 
   const provider = withChunkedGetLogs(
     withTransactionCount(kohakuEthersProvider(rpc))
   );
 
   const keystore = pluginId === "rg" ? makeRailgunKeystore(mnemonic) : makeKeystore(mnemonic);
+  const network = makeNetwork();
+  const externalSyncProvider =
+    externalSyncProviderIn ??
+    (pluginId === "tc" && chainId != null
+      ? tornadoExternalSyncForChain(chainId, network)
+      : undefined);
 
   return {
-    network: makeNetwork(),
+    network,
     storage: makeStorage(walletDir, pluginId, password),
     keystore,
     provider,
+    ...(externalSyncProvider ? { externalSyncProvider } : {}),
   };
 }

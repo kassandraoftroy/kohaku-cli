@@ -47,6 +47,7 @@ export async function withProtocolRuntime<T>(
       password: ctx.password,
       mnemonic: ctx.mnemonic,
       pluginId: pluginIdForProtocol(ctx.protocol),
+      chainId: ctx.chainId,
     });
     const plugin = await createProtocolPlugin(ctx.protocol, host, ctx.chainId);
     return await fn(host, plugin);

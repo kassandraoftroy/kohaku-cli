@@ -1,4 +1,6 @@
 import type { BalancesSnapshot, PrivateBalancesSnapshot } from "../lib/balances-snapshot.js";
+import type { PrivateNoteRow } from "../lib/private-notes.js";
+import type { SupportedProtocol } from "../utils/plugins.js";
 import type { ScrollLine } from "./components/ScrollableLines.js";
 
 function shortenAddr(addr: string): string {
@@ -62,6 +64,81 @@ export function formatPrivateBalanceLines(
   lines.push(...privateSection("Private — Railgun", snap.privateRailgun));
   lines.push(...privateSection("Private — Privacy pools", snap.privatePrivacyPools));
   lines.push(...privateSection("Private — Tornado", snap.privateTornado));
+  return lines;
+}
+
+function formatNoteDetailLines(note: PrivateNoteRow): ScrollLine[] {
+  const lines: ScrollLine[] = [
+    {
+      text: `  amount: ${note.balance_formatted} · asset: ${shortenAddr(note.asset_address)}`,
+      dim: true,
+    },
+  ];
+
+  if (note.protocol === "privacy-pools") {
+    if (note.label) {
+      lines.unshift({
+        text: `  label: ${shortenMiddle(note.label, 44)}`,
+        dim: true,
+      });
+    }
+    lines.push({
+      text: `  status: ${note.approved ? "approved" : "pending"}${note.precommitment ? ` · precommit: ${shortenMiddle(note.precommitment, 30)}` : ""}`,
+      dim: true,
+    });
+    return lines;
+  }
+
+  if (note.protocol === "tornado") {
+    if (note.deposit_index) {
+      lines.unshift({ text: `  deposit #${note.deposit_index}`, dim: true });
+    }
+    const extras = [
+      note.leaf_index ? `leaf ${note.leaf_index}` : null,
+      note.pool ? `pool ${shortenAddr(note.pool)}` : null,
+      note.status,
+    ].filter(Boolean);
+    if (extras.length > 0) {
+      lines.push({ text: `  ${extras.join(" · ")}`, dim: true });
+    }
+    return lines;
+  }
+
+  if (note.railgun_address) {
+    lines.unshift({
+      text: `  address: ${shortenMiddle(note.railgun_address, 44)}`,
+      dim: true,
+    });
+  }
+  const extras = [
+    note.tree_number != null ? `tree ${note.tree_number}` : null,
+    note.leaf_index != null ? `leaf ${note.leaf_index}` : null,
+    note.status,
+  ].filter(Boolean);
+  if (note.blinded_commitment) {
+    extras.push(`commit ${shortenMiddle(note.blinded_commitment, 24)}`);
+  }
+  if (note.memo) {
+    extras.push(`memo ${shortenMiddle(note.memo, 20)}`);
+  }
+  if (extras.length > 0) {
+    lines.push({ text: `  ${extras.join(" · ")}`, dim: true });
+  }
+  return lines;
+}
+
+function privateNotesSection(
+  title: string,
+  notes: PrivateNoteRow[] | undefined
+): ScrollLine[] {
+  const lines: ScrollLine[] = [section(title)];
+  if (!notes || notes.length === 0) {
+    lines.push(noneLine());
+    return lines;
+  }
+  for (const n of notes) {
+    lines.push(...formatNoteDetailLines(n));
+  }
   return lines;
 }
 
@@ -138,21 +215,16 @@ export function formatBalancesLines(
       }
     }
 
-    if (snap.privacyPoolsNotes && snap.privacyPoolsNotes.length > 0) {
-      lines.push(section("Privacy pool notes"));
-      for (const n of snap.privacyPoolsNotes) {
-        lines.push({
-          text: `  label: ${shortenMiddle(n.label, 44)}`,
-          dim: true,
-        });
-        lines.push({
-          text: `  amount: ${n.balance_formatted} · asset: ${shortenAddr(n.asset_address)}`,
-          dim: true,
-        });
-        lines.push({
-          text: `  status: ${n.approved ? "approved" : "pending"} · precommit: ${shortenMiddle(n.precommitment, 30)}`,
-          dim: true,
-        });
+    if (snap.privateNotes) {
+      const noteSections: Array<{ title: string; protocol: SupportedProtocol }> = [
+        { title: "Railgun notes", protocol: "railgun" },
+        { title: "Privacy pool notes", protocol: "privacy-pools" },
+        { title: "Tornado notes", protocol: "tornado" },
+      ];
+      for (const { title, protocol } of noteSections) {
+        if (snap.privateNotes[protocol] !== undefined) {
+          lines.push(...privateNotesSection(title, snap.privateNotes[protocol]));
+        }
       }
     }
   }

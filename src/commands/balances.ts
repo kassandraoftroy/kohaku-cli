@@ -5,6 +5,7 @@ import { getAddress, isAddress } from "ethers";
 
 import type { BalanceItem } from "../lib/balances-snapshot";
 import { loadBalancesSnapshot } from "../lib/balances-snapshot";
+import type { PrivateNoteRow } from "../lib/private-notes";
 import { cliOptions } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -35,27 +36,6 @@ type BalancesOpts = {
   tokensList?: string;
   dataDir?: string;
 };
-
-type PrivateNoteRowJson = {
-  label: string;
-  balance_raw: string;
-  balance_formatted: string;
-  asset_address: string;
-  approved: boolean;
-  precommitment: string;
-};
-
-function isNonZeroRawHoldings(raw: string): boolean {
-  try {
-    return BigInt(raw) !== 0n;
-  } catch {
-    return true;
-  }
-}
-
-function filterNonZeroNotes(notes: PrivateNoteRowJson[]): PrivateNoteRowJson[] {
-  return notes.filter((n) => isNonZeroRawHoldings(n.balance_raw));
-}
 
 function stringifyBalancesJson(payload: unknown): string {
   return JSON.stringify(
@@ -181,6 +161,29 @@ function printPrivateProtocolSection(
   printBalanceItemRows(rows, opts);
 }
 
+function printPrivateNoteRow(n: PrivateNoteRow): void {
+  if (n.protocol === "privacy-pools") {
+    const label = n.label ? chalk.cyan(`label ${n.label}`) : chalk.cyan("note");
+    console.log(
+      `  ${label}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.approved ? "approved" : "pending"}`
+    );
+    return;
+  }
+  if (n.protocol === "tornado") {
+    const id = n.deposit_index ? `deposit #${n.deposit_index}` : "note";
+    console.log(
+      `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.status ?? ""}`
+    );
+    return;
+  }
+  const id = n.railgun_address
+    ? shortenAddr(n.railgun_address)
+    : `tree ${n.tree_number ?? "?"}`;
+  console.log(
+    `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.status ?? ""}`
+  );
+}
+
 function printHumanBalances(opts: {
   walletName: string;
   chainId: string;
@@ -192,7 +195,7 @@ function printHumanBalances(opts: {
   privateTornado: BalanceItem[];
   includeProtocols: SupportedProtocol[] | null;
   verbose: boolean;
-  privacyPoolsNotes?: PrivateNoteRowJson[];
+  privateNotes?: Partial<Record<SupportedProtocol, PrivateNoteRow[]>>;
 }): void {
   console.log();
   console.log(chalk.bold(` ${BAR}`));
@@ -253,18 +256,23 @@ function printHumanBalances(opts: {
       printBalanceItemRows(rows);
     }
 
-    if (shouldIncludeProtocol("privacy-pools", opts.includeProtocols)) {
+    const noteSections: Array<{ title: string; protocol: SupportedProtocol }> = [
+      { title: "Private — Railgun (notes)", protocol: "railgun" },
+      { title: "Private — Privacy pools (notes)", protocol: "privacy-pools" },
+      { title: "Private — Tornado Cash (notes)", protocol: "tornado" },
+    ];
+    for (const { title, protocol } of noteSections) {
+      if (!shouldIncludeProtocol(protocol, opts.includeProtocols)) continue;
+      const notes = opts.privateNotes?.[protocol];
+      if (notes === undefined) continue;
       console.log();
-      console.log(chalk.bold("  ■ Private — Privacy pools (notes)"));
+      console.log(chalk.bold(`  ■ ${title}`));
       console.log(chalk.dim(`  ${THIN}`));
-      const notes = opts.privacyPoolsNotes ?? [];
       if (notes.length === 0) {
         console.log(chalk.dim("  (no notes)"));
       } else {
         for (const n of notes) {
-          console.log(
-            `  ${chalk.cyan(`label ${n.label}`)}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.approved ? "approved" : "unapproved"}`
-          );
+          printPrivateNoteRow(n);
         }
       }
     }
@@ -286,7 +294,7 @@ export function registerBalancesCommand(program: Command): void {
     .option("--non-interactive", cliOptions.nonInteractiveBalances)
     .option(
       "--verbose",
-      "Human: public by-address breakdown + Privacy pools notes (JSON: adds private_notes)"
+      "Human: public by-address breakdown + per-protocol private notes (JSON: adds private_notes)"
     )
     .option(
       "--include <protocols>",
@@ -387,10 +395,7 @@ export function registerBalancesCommand(program: Command): void {
               },
             });
 
-            const privacyPoolsNotesOut =
-              snap.privacyPoolsNotes !== undefined
-                ? filterNonZeroNotes(snap.privacyPoolsNotes)
-                : undefined;
+            const privateNotesOut = snap.privateNotes;
 
             const privateBalances: Record<string, BalanceItem[]> = {};
             if (shouldIncludeProtocol("railgun", includeProtocols)) {
@@ -418,10 +423,8 @@ export function registerBalancesCommand(program: Command): void {
                 }
               }
               payload.public_account_indexes_by_address = publicAccountIndexesOut;
-              if (shouldIncludeProtocol("privacy-pools", includeProtocols)) {
-                payload.private_notes = {
-                  "privacy-pools": privacyPoolsNotesOut ?? [],
-                };
+              if (privateNotesOut) {
+                payload.private_notes = privateNotesOut;
               }
             }
 
@@ -439,7 +442,7 @@ export function registerBalancesCommand(program: Command): void {
                 privateTornado: snap.privateTornado,
                 includeProtocols,
                 verbose: !!opts.verbose,
-                privacyPoolsNotes: privacyPoolsNotesOut,
+                privateNotes: privateNotesOut,
               });
             }
           },

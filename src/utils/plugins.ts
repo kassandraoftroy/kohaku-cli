@@ -19,13 +19,15 @@ import {
   createTCBroadcaster,
   createTCPlugin,
 } from "@kohaku-eth/tornado-cash";
+import {
+  ensureTornadoPaymasterGasPatched,
+  estimateTornadoPaymasterFee,
+} from "./tornado-paymaster-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
-import { createTornadoPaymasterBroadcaster } from "./tornado-paymaster-broadcaster";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
 import ppv1MainnetState from "./ppv1-mainnet-state.json";
-import tcSepoliaState from "./tc-sepolia-state.json";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
@@ -159,6 +161,9 @@ export function assertPpErc20TokenWhitelisted(
   }
 }
 
+/** Use saga CDN when a pool is at least this many blocks behind head. */
+export const TORNADO_MIN_EXTERNAL_SYNC_BLOCKS = 1_000;
+
 export type AnyPlugin = {
   balance(assets: Array<unknown> | undefined): Promise<Array<AssetAmount>>;
   prepareShield(asset: AssetAmount, ...args: unknown[]): Promise<unknown>;
@@ -168,6 +173,7 @@ export type AnyPlugin = {
     ...args: unknown[]
   ): Promise<unknown>;
   sync?: () => Promise<void>;
+  notes?: (...args: unknown[]) => Promise<unknown[]>;
 };
 
 export const ETH_AS_ERC20 = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -223,10 +229,6 @@ export function configureRailgunForUnshield(
   rg.setSmartAccount(smartAccount, signer);
 }
 
-export function tornadoHasBundledInitialState(chainId: bigint): boolean {
-  return chainId === 11155111n;
-}
-
 /** ERC-4337 paymaster settings for Tornado unshield (same Pimlico bundler as Railgun). */
 export function tornadoPaymasterConfig(
   chainId: bigint
@@ -251,8 +253,30 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
 }
 
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
-export function tornadoUnshieldOptions(): { mode: "paymaster" } {
-  return { mode: "paymaster" };
+export function tornadoUnshieldOptions(
+  recipient: `0x${string}`,
+  denominationWei: bigint,
+  maxFeePerGas: bigint
+): {
+  mode: "paymaster";
+  tailCalls: (sender: string) => Promise<
+    Array<{ to: string; data: string; value: bigint }>
+  >;
+} {
+  const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas);
+  const forwardValue = denominationWei - estimatedFee;
+  if (forwardValue <= 0n) {
+    throw new Error(
+      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${estimatedFee.toString()} wei).`
+    );
+  }
+
+  return {
+    mode: "paymaster",
+    tailCalls: async () => [
+      { to: recipient, data: "0x", value: forwardValue },
+    ],
+  };
 }
 
 export async function prepareProtocolShield(
@@ -323,10 +347,14 @@ export async function createProtocolPlugin(
   chainId: bigint
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
-    return createRailgunPlugin(host, railgunPluginOptions());
+    return (await createRailgunPlugin(
+      host,
+      railgunPluginOptions()
+    )) as AnyPlugin;
   }
 
   if (protocol === "tornado") {
+    ensureTornadoPaymasterGasPatched();
     const config = TornadoCashConfigs[Number(chainId) as 1 | 11155111];
     if (!config) {
       throw new Error(
@@ -337,11 +365,9 @@ export async function createProtocolPlugin(
     return createTCPlugin(host, {
       accountIndex: 0,
       protocolConfig: config,
+      minExternalSyncBlocksAmount: TORNADO_MIN_EXTERNAL_SYNC_BLOCKS,
       ...(paymasterConfig ? { paymasterConfig: paymasterConfig as never } : {}),
-      ...(chainId === 11155111n
-        ? { initialState: async () => tcSepoliaState as never }
-        : {}),
-    });
+    }) as AnyPlugin;
   }
 
   const params = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
@@ -371,7 +397,7 @@ export async function createProtocolPlugin(
         : async () => ppv1MainnetState as never,
   };
 
-  return createPPv1Plugin(host, ppv1Params);
+  return createPPv1Plugin(host, ppv1Params) as AnyPlugin;
 }
 
 export async function broadcastTornadoPrivateOp(
@@ -382,15 +408,9 @@ export async function broadcastTornadoPrivateOp(
   const paymasterConfig = tornadoPaymasterConfig(chainId);
   const broadcaster = createTCBroadcaster(host, {
     ...(paymasterConfig
-      ? {
-          paymasterConfig: paymasterConfig as never,
-          paymasterClientFactory: () =>
-            createTornadoPaymasterBroadcaster(
-              host,
-              paymasterConfig as never
-            ) as never,
-        }
+      ? { paymasterConfig: paymasterConfig as never }
       : {}),
   });
+
   return await broadcaster.broadcast(operation as never);
 }

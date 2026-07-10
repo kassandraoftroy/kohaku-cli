@@ -1,7 +1,6 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
-import { makeHost } from "../host/makeHost";
 import { makeEthersProvider } from "../utils/rpc";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
@@ -10,14 +9,22 @@ import {
   mergeDefaultAndExtraErc20s,
 } from "../utils/tokens-util";
 import {
-  createProtocolPlugin,
-  pluginIdForProtocol,
   shouldIncludeProtocol,
-  tornadoHasBundledInitialState,
+  type AnyPlugin,
   type SupportedProtocol,
 } from "../utils/plugins";
 import { mapPrivateBalanceRows } from "./private-balance-rows";
+import {
+  filterNonZeroNotes,
+  mapPrivacyPoolsNotes,
+  mapRailgunNotes,
+  mapTornadoNotes,
+  type PrivateNoteRow,
+  type PrivateNotesByProtocol,
+} from "./private-notes";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+
+export type { PrivateNoteRow, PrivateNotesByProtocol };
 
 export type BalanceItem = {
   symbol: string;
@@ -29,15 +36,6 @@ export type BalanceItem = {
   status?: string;
 };
 
-export type PrivateNoteRow = {
-  label: string;
-  balance_raw: string;
-  balance_formatted: string;
-  asset_address: string;
-  approved: boolean;
-  precommitment: string;
-};
-
 export type BalancesSnapshot = {
   chainId: string;
   publicAggregated: BalanceItem[];
@@ -46,7 +44,7 @@ export type BalancesSnapshot = {
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
-  privacyPoolsNotes?: PrivateNoteRow[];
+  privateNotes?: PrivateNotesByProtocol;
 };
 
 function isNonZeroRawHoldings(raw: string): boolean {
@@ -72,10 +70,6 @@ function filterPublicByAddress(
     }
   }
   return out;
-}
-
-function filterNonZeroNotes(notes: PrivateNoteRow[]): PrivateNoteRow[] {
-  return notes.filter((n) => isNonZeroRawHoldings(n.balance_raw));
 }
 
 function collectErc20AddressesFromPrivateBalances(
@@ -104,6 +98,43 @@ function collectErc20AddressesFromPrivateBalances(
   return out;
 }
 
+function mapProtocolNotes(
+  protocol: SupportedProtocol,
+  notes: unknown[],
+  tokenMeta: Map<string, { symbol: string; decimals: number }>
+): PrivateNoteRow[] {
+  if (protocol === "privacy-pools") {
+    return mapPrivacyPoolsNotes(notes, tokenMeta);
+  }
+  if (protocol === "tornado") {
+    return mapTornadoNotes(notes, tokenMeta);
+  }
+  return mapRailgunNotes(notes, tokenMeta);
+}
+
+async function loadProtocolNotes(
+  protocol: SupportedProtocol,
+  rpcUrl: string,
+  walletDir: string,
+  password: string,
+  mnemonic: string,
+  chainId: bigint,
+  tokenMeta: Map<string, { symbol: string; decimals: number }>
+): Promise<PrivateNoteRow[]> {
+  const notes = await withProtocolRuntime(
+    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+    async (_host, plugin) => {
+      const notesFn = (plugin as AnyPlugin).notes;
+      if (!notesFn) {
+        throw new Error(`${protocol} plugin does not expose notes()`);
+      }
+      // Preserve method `this` binding for class-based plugin implementations.
+      return (plugin as AnyPlugin).notes!(undefined, false);
+    }
+  );
+  return mapProtocolNotes(protocol, notes, tokenMeta);
+}
+
 async function loadPrivateBalancesForProtocol(
   protocol: SupportedProtocol,
   rpcUrl: string,
@@ -127,12 +158,6 @@ export async function loadTornadoPrivateBalances(
   mnemonic: string,
   chainId: bigint
 ): Promise<AssetAmount[]> {
-  if (!tornadoHasBundledInitialState(chainId)) {
-    throw new Error(
-      "Mainnet has no bundled Tornado Cash state snapshot yet; incremental sync from deployment would take too long."
-    );
-  }
-
   return Promise.race([
     loadPrivateBalancesForProtocol(
       "tornado",
@@ -146,78 +171,12 @@ export async function loadTornadoPrivateBalances(
       setTimeout(() => {
         reject(
           new Error(
-            "Tornado Cash sync timed out after 10 minutes (first run downloads proving artifacts and scans Sepolia pool events)."
+            "Tornado Cash sync timed out after 10 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain)."
           )
         );
       }, TORNADO_BALANCE_TIMEOUT_MS);
     }),
   ]);
-}
-
-type PpNotesPlugin = {
-  notes: (
-    assets?: unknown,
-    includeSpent?: boolean
-  ) => Promise<
-    Array<{
-      label: bigint;
-      balance: bigint;
-      assetAddress: bigint | string;
-      approved: boolean;
-      precommitment: bigint;
-    }>
-  >;
-};
-
-async function loadPrivacyPoolsNotes(
-  rpcUrl: string,
-  walletDir: string,
-  password: string,
-  mnemonic: string,
-  chainId: bigint,
-  tokenMeta: Map<string, { symbol: string; decimals: number }>
-): Promise<PrivateNoteRow[]> {
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
-      walletDir,
-      password,
-      mnemonic,
-      pluginId: pluginIdForProtocol("privacy-pools"),
-    });
-    const plugin = (await createProtocolPlugin(
-      "privacy-pools",
-      host,
-      chainId
-    )) as unknown as PpNotesPlugin;
-    const notes = await plugin.notes(undefined, false);
-    return notes.map((n) => {
-      const rawAddr = n.assetAddress;
-      const assetHex =
-        typeof rawAddr === "bigint"
-          ? `0x${rawAddr.toString(16).padStart(40, "0")}`
-          : String(rawAddr);
-      const addrStr = isAddress(assetHex) ? getAddress(assetHex) : assetHex;
-      const canonicalKey = isAddress(addrStr)
-        ? getAddress(addrStr).toLowerCase()
-        : String(addrStr).toLowerCase();
-      const meta = tokenMeta.get(canonicalKey) ?? {
-        symbol: "UNKNOWN",
-        decimals: 18,
-      };
-      return {
-        label: n.label.toString(),
-        balance_raw: n.balance.toString(),
-        balance_formatted: formatUnits(n.balance, meta.decimals),
-        asset_address: isAddress(addrStr) ? getAddress(addrStr) : addrStr,
-        approved: n.approved,
-        precommitment: n.precommitment.toString(),
-      };
-    });
-  } finally {
-    rpc.destroy();
-  }
 }
 
 async function loadErc20Meta(
@@ -256,6 +215,7 @@ export type PrivateBalancesSnapshot = {
 
 type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
   erc20FromPrivate: `0x${string}`[];
+  protocolAvailable: Partial<Record<SupportedProtocol, boolean>>;
 };
 
 async function resolvePrivateBalanceItems(
@@ -284,6 +244,7 @@ async function resolvePrivateBalanceItems(
   let rgRows: AssetAmount[] = [];
   let ppRows: AssetAmount[] = [];
   let tcRows: AssetAmount[] = [];
+  const protocolAvailable: Partial<Record<SupportedProtocol, boolean>> = {};
 
   if (shouldIncludeProtocol("railgun", includeProtocols)) {
     try {
@@ -295,9 +256,11 @@ async function resolvePrivateBalanceItems(
         mnemonic,
         chainId
       );
+      protocolAvailable.railgun = true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       onWarning?.(`Railgun private balances unavailable: ${msg}`);
+      protocolAvailable.railgun = false;
     }
   }
 
@@ -311,9 +274,11 @@ async function resolvePrivateBalanceItems(
         mnemonic,
         chainId
       );
+      protocolAvailable["privacy-pools"] = true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       onWarning?.(`Privacy pools private balances unavailable: ${msg}`);
+      protocolAvailable["privacy-pools"] = false;
     }
   }
 
@@ -326,9 +291,11 @@ async function resolvePrivateBalanceItems(
         mnemonic,
         chainId
       );
+      protocolAvailable.tornado = true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       onWarning?.(`Tornado Cash private balances unavailable: ${msg}`);
+      protocolAvailable.tornado = false;
     }
   }
   const erc20FromPrivate = [
@@ -364,6 +331,7 @@ async function resolvePrivateBalanceItems(
         mapPrivateBalanceRows(tcRows, tokenMeta)
       ),
       erc20FromPrivate,
+      protocolAvailable,
     };
   } finally {
     rpc.destroy();
@@ -403,7 +371,13 @@ export async function loadBalancesSnapshot(
   } = opts;
   const chainIdString = chainId.toString();
 
-  const { privateRailgun, privatePrivacyPools, privateTornado, erc20FromPrivate } =
+  const {
+    privateRailgun,
+    privatePrivacyPools,
+    privateTornado,
+    erc20FromPrivate,
+    protocolAvailable,
+  } =
     await resolvePrivateBalanceItems({
       rpcUrl,
       walletDir,
@@ -436,7 +410,7 @@ export async function loadBalancesSnapshot(
 
   const rpcForPublic = await makeEthersProvider(rpcUrl);
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
-  let privacyPoolsNotes: PrivateNoteRow[] | undefined;
+  let privateNotes: PrivateNotesByProtocol | undefined;
   try {
     for (const token of tokenAddresses) {
       const key = token.toLowerCase();
@@ -448,23 +422,41 @@ export async function loadBalancesSnapshot(
       }
     }
 
-    if (
-      verbose &&
-      shouldIncludeProtocol("privacy-pools", includeProtocols)
-    ) {
-      try {
-        privacyPoolsNotes = await loadPrivacyPoolsNotes(
-          rpcUrl,
-          walletDir,
-          password,
-          mnemonic,
-          chainId,
-          tokenMeta
-        );
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        onWarning?.(`Privacy pools notes unavailable: ${msg}`);
-        privacyPoolsNotes = [];
+    if (verbose) {
+      privateNotes = {};
+      const protocolsToNotes: SupportedProtocol[] = [
+        "railgun",
+        "privacy-pools",
+        "tornado",
+      ];
+      for (const protocol of protocolsToNotes) {
+        if (!shouldIncludeProtocol(protocol, includeProtocols)) continue;
+        if (protocolAvailable[protocol] === false) {
+          privateNotes[protocol] = [];
+          continue;
+        }
+        try {
+          const rows = await loadProtocolNotes(
+            protocol,
+            rpcUrl,
+            walletDir,
+            password,
+            mnemonic,
+            chainId,
+            tokenMeta
+          );
+          privateNotes[protocol] = filterNonZeroNotes(rows);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const label =
+            protocol === "privacy-pools"
+              ? "Privacy pools"
+              : protocol === "tornado"
+                ? "Tornado Cash"
+                : "Railgun";
+          onWarning?.(`${label} notes unavailable: ${msg}`);
+          privateNotes[protocol] = [];
+        }
       }
     }
 
@@ -551,9 +543,6 @@ export async function loadBalancesSnapshot(
     privateRailgun,
     privatePrivacyPools,
     privateTornado,
-    privacyPoolsNotes:
-      privacyPoolsNotes !== undefined
-        ? filterNonZeroNotes(privacyPoolsNotes)
-        : undefined,
+    privateNotes,
   };
 }

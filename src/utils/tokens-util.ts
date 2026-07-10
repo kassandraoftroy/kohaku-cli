@@ -71,20 +71,91 @@ export type KnownErc20 = {
  * Addresses are checksummed at load time.
  */
 function checksummed(addr: string): `0x${string}` {
-  return getAddress(addr) as `0x${string}`;
+  const normalized = addr.startsWith("0x") ? addr : `0x${addr}`;
+  return getAddress(normalized.toLowerCase()) as `0x${string}`;
+}
+
+function knownToken(
+  symbol: string,
+  address: string,
+  decimals: number
+): KnownErc20 {
+  return { symbol, address: checksummed(address), decimals };
+}
+
+/** Canonical mainnet ERC-20s resolvable by `--token <symbol>`. */
+const MAINNET_KNOWN_TOKENS: KnownErc20[] = [
+  knownToken("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6),
+  knownToken("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7", 6),
+  knownToken("DAI", "0x6B175474E89094C44Da98b954EedeAC495271d0F", 18),
+  knownToken("WETH", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18),
+  knownToken("WBTC", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", 8),
+  knownToken("USDS", "0xdC035D45d973E3EC169d2276DDab16f1e407384F", 18),
+  knownToken("UNI", "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", 18),
+  knownToken("LINK", "0x514910771AF9Ca656af840dff83E8264EcF986CA", 18),
+  knownToken("AAVE", "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9", 18),
+  knownToken("MKR", "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2", 18),
+  knownToken("LDO", "0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32", 18),
+  knownToken("CRV", "0xD533a949740bb3306d119CC777fa900bA034cd52", 18),
+  knownToken("SNX", "0xC011a73ee8576Fb46F5E1c5751cA3B9Fe0af2a6F", 18),
+  knownToken("COMP", "0xc00e94Cb662C3520282E6f5717214004A7f26888", 18),
+  knownToken("SHIB", "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE", 18),
+  knownToken("PEPE", "0x6982508145454Ce325dDbE47a25d4ec3d2311933", 18),
+  knownToken("stETH", "0xae7ab96520de3a18e5d111722f8daa6aef8b9c1c", 18),
+  knownToken("wstETH", "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0", 18),
+  knownToken("rETH", "0xae78736Cd615f374D3085123A210448E74Fc6393", 18),
+  knownToken("cbETH", "0xBe9895146f7AF43049ca1c1AE358B0541Ea49704", 18),
+  knownToken("FRAX", "0x853d955aCEf822Db058eb8505911ED77F175b99e", 18),
+  knownToken("USDe", "0x4c9edd5852cd905f086c759e8383e09bff1e68b3", 18),
+  knownToken("ENA", "0x57e114B691Db790C35207b2e685D4A43181e6061", 18),
+  knownToken("GRT", "0xc944E90C64B2c07662A292be6244BDf05Cda44a7", 18),
+  knownToken("POL", "0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6", 18),
+  knownToken("PYUSD", "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", 6),
+];
+
+/** Sepolia ERC-20s resolvable by `--token <symbol>`. */
+const SEPOLIA_KNOWN_TOKENS: KnownErc20[] = [
+  knownToken("USDC", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", 6),
+  knownToken("WETH", "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", 18),
+];
+
+function buildSymbolLookup(
+  tokens: KnownErc20[]
+): Map<string, KnownErc20> {
+  const map = new Map<string, KnownErc20>();
+  for (const token of tokens) {
+    map.set(token.symbol.toUpperCase(), token);
+  }
+  return map;
+}
+
+const TOKEN_SYMBOL_BY_CHAIN_ID: Record<string, Map<string, KnownErc20>> = {
+  "1": buildSymbolLookup(MAINNET_KNOWN_TOKENS),
+  "11155111": buildSymbolLookup(SEPOLIA_KNOWN_TOKENS),
+};
+
+/** Lookup a known token by symbol on mainnet or Sepolia. */
+export function lookupKnownTokenBySymbol(
+  chainId: string | bigint,
+  symbol: string
+): KnownErc20 | undefined {
+  const id = typeof chainId === "bigint" ? chainId.toString() : chainId;
+  return TOKEN_SYMBOL_BY_CHAIN_ID[id]?.get(symbol.toUpperCase());
+}
+
+/** Sorted symbols available for `--token` on this chain (empty when unsupported). */
+export function knownTokenSymbolsForChain(chainId: string | bigint): string[] {
+  const id = typeof chainId === "bigint" ? chainId.toString() : chainId;
+  const map = TOKEN_SYMBOL_BY_CHAIN_ID[id];
+  if (!map) return [];
+  return [...map.keys()].sort();
 }
 
 export const DEFAULT_ERC20_BY_CHAIN_ID: Record<string, KnownErc20[]> = {
-  "1": [
-    { address: checksummed("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), symbol: "USDC", decimals: 6 },
-    { address: checksummed("0xdAC17F958D2ee523a2206206994597C13D831ec7"), symbol: "USDT", decimals: 6 },
-    { address: checksummed("0x6B175474E89094C44Da98b954EedeAC495271d0F"), symbol: "DAI", decimals: 18 },
-    { address: checksummed("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), symbol: "WETH", decimals: 18 },
-  ],
-  "11155111": [
-    { address: checksummed("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"), symbol: "USDC", decimals: 6 },
-    { address: checksummed("0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"), symbol: "WETH", decimals: 18 },
-  ],
+  "1": MAINNET_KNOWN_TOKENS.filter((t) =>
+    ["USDC", "USDT", "DAI", "WETH"].includes(t.symbol)
+  ),
+  "11155111": SEPOLIA_KNOWN_TOKENS,
 };
 
 export type MergedPublicTokenList = {
@@ -160,27 +231,47 @@ export type ResolvedTokenMeta = {
 
 export async function resolveTokenMeta(
   tokenArg: string | undefined,
-  rpcUrl: string
+  rpcUrl: string,
+  chainId: bigint
 ): Promise<ResolvedTokenMeta> {
   if (!tokenArg || tokenArg.toLowerCase() === "eth") {
     return { symbol: "ETH", tokenAddress: ETH_AS_ERC20, decimals: 18, isEth: true };
   }
-  if (!isAddress(tokenArg)) {
-    throw new Error(`Invalid token address: ${tokenArg}`);
-  }
-  const tokenAddress = getAddress(tokenArg);
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const erc20 = new Contract(tokenAddress, ERC20_ABI, rpc);
-    let decimals: number;
+  if (isAddress(tokenArg)) {
+    const tokenAddress = getAddress(tokenArg);
+    const rpc = await makeEthersProvider(rpcUrl);
     try {
-      decimals = Number(await erc20.decimals());
-    } catch {
-      throw new Error(`Failed to read decimals() from token ${tokenAddress}`);
+      const erc20 = new Contract(tokenAddress, ERC20_ABI, rpc);
+      let decimals: number;
+      try {
+        decimals = Number(await erc20.decimals());
+      } catch {
+        throw new Error(`Failed to read decimals() from token ${tokenAddress}`);
+      }
+      const symbol = await erc20.symbol().catch(() => "UNKNOWN");
+      return { symbol, tokenAddress, decimals, isEth: false };
+    } finally {
+      rpc.destroy();
     }
-    const symbol = await erc20.symbol().catch(() => "UNKNOWN");
-    return { symbol, tokenAddress, decimals, isEth: false };
-  } finally {
-    rpc.destroy();
   }
+
+  const known = lookupKnownTokenBySymbol(chainId, tokenArg);
+  if (known) {
+    return {
+      symbol: known.symbol,
+      tokenAddress: known.address,
+      decimals: known.decimals,
+      isEth: false,
+    };
+  }
+
+  const knownSymbols = knownTokenSymbolsForChain(chainId);
+  if (knownSymbols.length > 0) {
+    throw new Error(
+      `Unknown token symbol "${tokenArg}". Pass a contract address with --token, or use one of: ${knownSymbols.join(", ")}`
+    );
+  }
+  throw new Error(
+    `Unknown token "${tokenArg}". Pass a contract address with --token (symbol shortcuts are only supported on mainnet and Sepolia).`
+  );
 }
