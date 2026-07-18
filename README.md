@@ -1,6 +1,9 @@
 # kohaku-cli
 
-A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on [Railgun](https://railgun.org/) and [Privacy Pools](https://privacypools.com/). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
+> [!IMPORTANT]
+> NOTICE: this CLI has NOT BEEN AUDITED and IS UNDER ACTIVE DEVELOPMENT and HAS BEEN WRITTEN WITH HELP FROM CLAUDE ET AL.  
+
+A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, [Railgun](https://railgun.org/) and [Privacy Pools](https://privacypools.com/). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
@@ -8,10 +11,10 @@ A terminal wallet for moving funds between **public** Ethereum accounts (derived
 npm install
 npm run build
 # or during development:
-npm run dev -- <command> ...
+npm run dev:prod -- <command> ...
 ```
 
-After build, the binary is `kohaku` (see `package.json`). Examples below use `kohaku`; swap in `npm run dev --` if you have not built yet.
+After build, the binary is `kohaku` (see `package.json`). Examples below use `kohaku`; swap in `npm run dev:prod --` if you have not built yet.
 
 Set your RPC once per shell (Sepolia for `--testnet` wallets):
 
@@ -193,6 +196,30 @@ kohaku next-fresh-address --wallet testWallet --password "$WALLET_PW" --non-inte
 
 ---
 
+### `export-private-key`
+
+Export the private key for one public account. The key is printed directly to stdout; handle it as sensitive material.
+
+| Option | Description |
+|--------|-------------|
+| `--wallet <name>` | Wallet (prompt if omitted). |
+| `--password <password>` | Unlock password. |
+| `--address <address>` | Export a persisted public account by address. |
+| `--index <index>` | Export by non-negative HD derivation index, even if the account has not been persisted yet. |
+| `--non-interactive` | Skip the reveal confirmation; requires `--wallet` and `--password`. |
+| `--dataDir <path>` | Data root. |
+
+Provide exactly one of `--address` or `--index`. Interactive mode confirms before revealing the key.
+
+**Examples:**
+
+```bash
+kohaku export-private-key --wallet testWallet --index 0
+kohaku export-private-key --wallet testWallet --address 0xYourAddress
+```
+
+---
+
 ### `balances`
 
 Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus any private tokens discovered), and **private** balances for Railgun and Privacy Pools.
@@ -216,6 +243,66 @@ Default Sepolia ERC-20s include USDC and WETH; mainnet adds USDC, USDT, DAI, WET
 ```bash
 kohaku balances --wallet testWallet
 kohaku balances --wallet testWallet --verbose --tokensList 0xYourToken
+```
+
+---
+
+### `transfer`
+
+Transfer ETH or ERC-20 tokens from one wallet public account to any public address. By default, the command simulates the transfer and prints its transaction payload without submitting it.
+
+| Option | Description |
+|--------|-------------|
+| `--wallet <name>` | Wallet. |
+| `--password <password>` | Unlock password. |
+| `--from <address-or-index>` | Sender public account address or HD index. |
+| `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
+| `--to <address>` | Recipient address. |
+| `--token <address\|symbol\|eth>` | Token address or symbol (default: `eth`). |
+| `--amount-wei <n>` | Amount in base units. |
+| `--amount-formatted <decimal>` | Human-readable amount using token decimals. |
+| `--amount-max` | Send the full ERC-20 balance, or the maximum ETH balance after reserving estimated gas. |
+| `--rpc-url <url>` | RPC endpoint. |
+| `--broadcast` | Sign and submit on-chain. Omit to simulate and print the transaction payload. |
+| `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, `--to`, and one amount flag. |
+| `--dataDir <path>` | Data root. |
+
+Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted.
+
+**Examples:**
+
+```bash
+kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --amount-formatted 0.01
+kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --token USDC --amount-max --broadcast
+```
+
+---
+
+### `transact-raw`
+
+Simulate or submit one or more raw contract calls from a public account. Calls are processed sequentially in the order supplied.
+
+| Option | Description |
+|--------|-------------|
+| `--targets <addresses>` | **Required.** Comma- or space-separated contract addresses. |
+| `--payloads <hex>` | **Required.** Comma- or space-separated calldata values matching `--targets` by position. |
+| `--values <wei>` | ETH value in wei for each call (default: `0` for every call). The count must match `--targets`. |
+| `--wallet <name>` | Wallet. |
+| `--password <password>` | Unlock password. |
+| `--from <address-or-index>` | Sender public account address or HD index. |
+| `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
+| `--rpc-url <url>` | RPC endpoint. |
+| `--broadcast` | Sign and submit each call on-chain. Omit to simulate and print transaction payloads. |
+| `--non-interactive` | JSON output; requires `--wallet`, `--password`, and `--from`. |
+| `--dataDir <path>` | Data root. |
+
+Each target must have one payload and, when provided, one value. Every call is simulated before any transaction is broadcast.
+
+**Examples:**
+
+```bash
+kohaku transact-raw --wallet testWallet --from 0 --targets 0xContract --payloads 0xCalldata
+kohaku transact-raw --wallet testWallet --from 0 --targets 0xContractA,0xContractB --payloads 0xDataA,0xDataB --values 0,1000000000000000 --broadcast
 ```
 
 ---
@@ -300,7 +387,8 @@ Files: `public-accounts.json`, `rg-storage.json`, `ppv1-storage.json`.
 
 ## Tips
 
-- **Dry run vs broadcast:** `shield` and `unshield` default to *prepare only*. Always read the printed JSON before adding `--broadcast`.
+- **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, and `unshield` default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source.
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
+- **Private key exports:** `export-private-key` prints raw key material to stdout. Avoid terminal logs, shell history, and shared environments.
 - **Agents:** Pass `--non-interactive --password … --wallet …` and parse JSON stdout; set `RPC_URL` in the environment to avoid repeating `--rpc-url`.
