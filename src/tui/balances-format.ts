@@ -19,10 +19,12 @@ function section(title: string): ScrollLine {
   return { text: title, color: "#c92a2a", bold: true };
 }
 
-function row(symbol: string, amount: string, status?: string): ScrollLine {
+function row(symbol: string, amount: string, usdValue: string, status?: string): ScrollLine {
   const statusSuffix = status ? formatStatusSuffix(status, symbol) : "";
+  const usd =
+    usdValue === "--" ? "  --" : `  $${usdValue}`;
   return {
-    text: `  ${symbol.padEnd(10)} ${amount}${statusSuffix}`,
+    text: `  ${symbol.padEnd(10)} ${amount}${usd}${statusSuffix}`,
     color: "#f5efe0",
   };
 }
@@ -40,14 +42,19 @@ function noneLine(): ScrollLine {
 
 function privateSection(
   title: string,
-  rows: { symbol: string; formatted_token_holdings: string; status?: string }[]
+  rows: {
+    symbol: string;
+    formatted_token_holdings: string;
+    usd_value: string;
+    status?: string;
+  }[]
 ): ScrollLine[] {
   const lines: ScrollLine[] = [section(title)];
   if (rows.length === 0) {
     lines.push(noneLine());
   } else {
     for (const r of rows) {
-      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.usd_value, r.status));
     }
   }
   return lines;
@@ -158,7 +165,7 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.publicAggregated) {
-      lines.push(row(r.symbol, r.formatted_token_holdings));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.usd_value));
     }
   }
 
@@ -167,7 +174,7 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.privateRailgun) {
-      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.usd_value, r.status));
     }
   }
 
@@ -176,7 +183,9 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.privatePrivacyPools) {
-      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
+      lines.push(
+        row(r.symbol, r.formatted_token_holdings, r.usd_value, r.status)
+      );
     }
   }
 
@@ -185,7 +194,7 @@ export function formatBalancesLines(
     lines.push(noneLine());
   } else {
     for (const r of snap.privateTornado) {
-      lines.push(row(r.symbol, r.formatted_token_holdings, r.status));
+      lines.push(row(r.symbol, r.formatted_token_holdings, r.usd_value, r.status));
     }
   }
 
@@ -206,7 +215,7 @@ export function formatBalancesLines(
           lines.push(noneLine());
         } else {
           for (const r of rows) {
-            lines.push(row(r.symbol, r.formatted_token_holdings));
+            lines.push(row(r.symbol, r.formatted_token_holdings, r.usd_value));
           }
         }
         if (i < addrs.length - 1) {

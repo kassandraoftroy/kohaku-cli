@@ -23,6 +23,10 @@ import {
   type PrivateNotesByProtocol,
 } from "./private-notes";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+import {
+  attachUsdValuesToRowsLists,
+  USD_VALUE_UNAVAILABLE,
+} from "./usd-values";
 
 export type { PrivateNoteRow, PrivateNotesByProtocol };
 
@@ -32,6 +36,8 @@ export type BalanceItem = {
   decimals: number;
   raw_token_holdings: string;
   formatted_token_holdings: string;
+  /** USD value of holdings (cents), or `"--"` on testnet / when unavailable. */
+  usd_value: string;
   /** Spendability status for private protocol rows (e.g. spendable, pending). */
   status?: string;
 };
@@ -352,7 +358,16 @@ export async function loadPrivateBalancesOnly(
 ): Promise<PrivateBalancesSnapshot> {
   const { privateRailgun, privatePrivacyPools, privateTornado } =
     await resolvePrivateBalanceItems(opts);
-  return { privateRailgun, privatePrivacyPools, privateTornado };
+  const [pricedRailgun, pricedPrivacyPools, pricedTornado] =
+    await attachUsdValuesToRowsLists(
+      [privateRailgun, privatePrivacyPools, privateTornado],
+      { chainId: opts.chainId, rpcUrl: opts.rpcUrl }
+    );
+  return {
+    privateRailgun: pricedRailgun!,
+    privatePrivacyPools: pricedPrivacyPools!,
+    privateTornado: pricedTornado!,
+  };
 }
 
 export async function loadBalancesSnapshot(
@@ -475,6 +490,7 @@ export async function loadBalancesSnapshot(
           decimals: 18,
           raw_token_holdings: ethBalance.toString(),
           formatted_token_holdings: formatUnits(ethBalance, 18),
+          usd_value: USD_VALUE_UNAVAILABLE,
         },
       ];
 
@@ -491,6 +507,7 @@ export async function loadBalancesSnapshot(
           decimals: meta.decimals,
           raw_token_holdings: bal.toString(),
           formatted_token_holdings: formatUnits(bal, meta.decimals),
+          usd_value: USD_VALUE_UNAVAILABLE,
         });
       }
 
@@ -520,6 +537,7 @@ export async function loadBalancesSnapshot(
       decimals: 18,
       raw_token_holdings: totalPublicEth.toString(),
       formatted_token_holdings: formatUnits(totalPublicEth, 18),
+      usd_value: USD_VALUE_UNAVAILABLE,
     },
   ];
   for (const token of tokenAddresses) {
@@ -532,17 +550,47 @@ export async function loadBalancesSnapshot(
       decimals: meta.decimals,
       raw_token_holdings: total.toString(),
       formatted_token_holdings: formatUnits(total, meta.decimals),
+      usd_value: USD_VALUE_UNAVAILABLE,
     });
+  }
+
+  const filteredPublicAggregated = filterNonZeroBalanceItems(
+    publicBalancesAggregated
+  );
+  const filteredPublicByAddress = filterPublicByAddress(publicByAddress);
+
+  // Price all balance rows once (shared unit prices). Testnet → "--".
+  const publicByAddressEntries = Object.entries(filteredPublicByAddress);
+  const [
+    publicAggregatedPriced,
+    ...pricedRest
+  ] = await attachUsdValuesToRowsLists(
+    [
+      filteredPublicAggregated,
+      ...publicByAddressEntries.map(([, rows]) => rows),
+      privateRailgun,
+      privatePrivacyPools,
+      privateTornado,
+    ],
+    { chainId, rpcUrl }
+  );
+
+  const pricedPrivate = pricedRest.slice(-3);
+  const pricedPublicByAddressLists = pricedRest.slice(0, -3);
+  const publicByAddressPriced: Record<string, BalanceItem[]> = {};
+  for (let i = 0; i < publicByAddressEntries.length; i++) {
+    publicByAddressPriced[publicByAddressEntries[i]![0]] =
+      pricedPublicByAddressLists[i]!;
   }
 
   return {
     chainId: chainIdString,
-    publicAggregated: filterNonZeroBalanceItems(publicBalancesAggregated),
-    publicByAddress: filterPublicByAddress(publicByAddress),
+    publicAggregated: publicAggregatedPriced!,
+    publicByAddress: publicByAddressPriced,
     publicAccountIndexByAddress,
-    privateRailgun,
-    privatePrivacyPools,
-    privateTornado,
+    privateRailgun: pricedPrivate[0]!,
+    privatePrivacyPools: pricedPrivate[1]!,
+    privateTornado: pricedPrivate[2]!,
     privateNotes,
   };
 }

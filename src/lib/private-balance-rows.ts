@@ -2,6 +2,7 @@ import type { AssetAmount } from "@kohaku-eth/plugins";
 import { formatUnits, getAddress, isAddress } from "ethers";
 
 import type { BalanceItem } from "./balances-snapshot.js";
+import { USD_VALUE_UNAVAILABLE } from "./usd-values.js";
 import {
   isPrivateBalanceNativeEth,
   isSpendablePrivateBalanceTag,
@@ -29,6 +30,7 @@ export function mapPrivateBalanceRows(
         decimals: 18,
         raw_token_holdings: amount.toString(),
         formatted_token_holdings: formatUnits(amount, 18),
+        usd_value: USD_VALUE_UNAVAILABLE,
         status,
       };
     }
@@ -57,6 +59,7 @@ export function mapPrivateBalanceRows(
       decimals,
       raw_token_holdings: amount.toString(),
       formatted_token_holdings: formatUnits(amount, decimals),
+      usd_value: USD_VALUE_UNAVAILABLE,
       status,
     };
   });

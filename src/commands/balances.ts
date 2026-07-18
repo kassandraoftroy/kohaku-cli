@@ -79,18 +79,25 @@ const THIN = "─".repeat(62);
 function columnWidths(
   rows: BalanceItem[],
   showStatus: boolean
-): { symW: number; amtW: number; statusW: number } {
+): { symW: number; amtW: number; usdW: number; statusW: number } {
   let symW = 10;
   let amtW = 24;
+  let usdW = 10;
   let statusW = showStatus ? 8 : 0;
   for (const r of rows) {
     symW = Math.max(symW, r.symbol.length);
     amtW = Math.max(amtW, r.formatted_token_holdings.length);
+    usdW = Math.max(usdW, formatUsdDisplay(r.usd_value).length);
     if (showStatus && r.status) {
       statusW = Math.max(statusW, r.status.length);
     }
   }
-  return { symW, amtW, statusW };
+  return { symW, amtW, usdW, statusW };
+}
+
+function formatUsdDisplay(usdValue: string): string {
+  if (usdValue === "--") return "--";
+  return `$${usdValue}`;
 }
 
 function printAggregatedTotalsTable(
@@ -106,7 +113,7 @@ function printAggregatedTotalsTable(
   const aggW = columnWidths(aggregated, false);
   console.log(
     chalk.dim(
-      `  ${padCell("Symbol", aggW.symW)}  ${padCell("Balance", aggW.amtW)}  Token`
+      `  ${padCell("Symbol", aggW.symW)}  ${padCell("Balance", aggW.amtW)}  ${padCell("USD", aggW.usdW)}  Token`
     )
   );
   for (const r of aggregated) {
@@ -115,7 +122,7 @@ function printAggregatedTotalsTable(
         ? chalk.dim("native")
         : chalk.dim(shortenAddr(r.token_address));
     console.log(
-      `  ${padCell(r.symbol, aggW.symW)}  ${padCell(r.formatted_token_holdings, aggW.amtW)}  ${tokenCol}`
+      `  ${padCell(r.symbol, aggW.symW)}  ${padCell(r.formatted_token_holdings, aggW.amtW)}  ${padCell(formatUsdDisplay(r.usd_value), aggW.usdW)}  ${tokenCol}`
     );
   }
 }
@@ -133,7 +140,7 @@ function printBalanceItemRows(
   const statusHdr = showStatus ? `  ${padCell("Status", w.statusW)}` : "";
   console.log(
     chalk.dim(
-      `  ${padCell("Symbol", w.symW)}  ${padCell("Balance", w.amtW)}${statusHdr}  Token`
+      `  ${padCell("Symbol", w.symW)}  ${padCell("Balance", w.amtW)}  ${padCell("USD", w.usdW)}${statusHdr}  Token`
     )
   );
   for (const r of rows) {
@@ -145,7 +152,7 @@ function printBalanceItemRows(
       ? `  ${padCell(r.status ?? "—", w.statusW)}`
       : "";
     console.log(
-      `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}${statusCol}  ${tokenCol}`
+      `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}  ${padCell(formatUsdDisplay(r.usd_value), w.usdW)}${statusCol}  ${tokenCol}`
     );
   }
 }
