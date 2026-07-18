@@ -50,6 +50,14 @@ export function findPublicAccountByAddress(
   return storage.getAccounts().find((a) => a.address.toLowerCase() === lower);
 }
 
+/** Standard public-account path used by derive-railgun-keys. */
+export function publicAccountDerivationPath(index: number): string {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(`Invalid public account index: ${index}`);
+  }
+  return `m/44'/60'/0'/0/${index}`;
+}
+
 function derivePublicAccountAtIndex(mnemonic: string, index: number): PublicAccount {
   const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
   const address = ethers.computeAddress(priv);

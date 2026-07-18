@@ -14,11 +14,13 @@ import {
 import {
   assertTornadoPaymasterConfigured,
   broadcastTornadoPrivateOp,
+  countTornadoWithdrawals,
   configureRailgunForUnshield,
   ETH_AS_ERC20,
   PRIVACY_POOLS_BROADCASTER_URL,
   railgunNativeEthAssetAmount,
   tornadoUnshieldOptions,
+  type AnyPlugin,
   type SupportedProtocol,
 } from "../utils/plugins.js";
 import {
@@ -269,6 +271,7 @@ type UnshieldRuntimeOpts = {
   amount: bigint;
   recipient: `0x${string}`;
   recipientPriv?: `0x${string}`;
+  recipientDerivationPath?: string;
   onStatus?: (message: string) => void;
 };
 
@@ -290,6 +293,11 @@ async function runUnshieldWithPlugin(
       opts.chainId,
       opts.recipientPriv,
       railgunPimlicoBundlerUrl(opts.chainId)
+    );
+  }
+  if (opts.protocol === "tornado" && !opts.recipientDerivationPath) {
+    throw new Error(
+      "Tornado unshield requires a wallet public-account derivation path for the EIP-7702 delegation."
     );
   }
 
@@ -334,6 +342,14 @@ async function runUnshieldWithPlugin(
   if (opts.protocol === "tornado") {
     tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(opts.chainId);
   }
+  const tornadoWithdrawalCount =
+    opts.protocol === "tornado"
+      ? await countTornadoWithdrawals(
+          plugin as AnyPlugin,
+          asset as AssetAmount,
+          opts.amount
+        )
+      : undefined;
 
   opts.onStatus?.(
     mode === "broadcast"
@@ -353,7 +369,9 @@ async function runUnshieldWithPlugin(
           tornadoUnshieldOptions(
             opts.recipient,
             opts.amount,
-            tornadoMaxFeePerGas!
+            tornadoMaxFeePerGas!,
+            opts.recipientDerivationPath!,
+            tornadoWithdrawalCount!
           )
         )
       : await prepareUnshield(asset as AssetAmount, opts.recipient);

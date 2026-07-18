@@ -24,12 +24,14 @@ import { readSeedKeystore } from "../utils/mnemonic";
 import {
   findPublicAccountByAddress,
   makePublicAccountsStorage,
+  publicAccountDerivationPath,
 } from "../utils/public-accounts";
 import {
   ETH_AS_ERC20,
   assertPpErc20TokenWhitelisted,
   assertTornadoEthOnly,
   assertTornadoPaymasterConfigured,
+  countTornadoWithdrawals,
   configureRailgunForUnshield,
   createProtocolPlugin,
   isSupportedProtocol,
@@ -83,7 +85,7 @@ function as0xPrivateKey(priv: string): `0x${string}` {
 /** Next fresh public account without advancing storage (persist after successful broadcast). */
 function takeNextFreshPublicAccount(
   storage: ReturnType<typeof makePublicAccountsStorage>
-): { address: string; priv: string } {
+): { address: string; priv: string; index: number } {
   return storage.peekNextAccounts(1)[0]!;
 }
 
@@ -225,10 +227,12 @@ export function registerUnshieldCommand(program: Command): void {
 
       let recipient: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
+      let recipientDerivationPath: string | undefined;
       if (hasNext) {
         const fresh = takeNextFreshPublicAccount(publicStorage);
         recipient = getAddress(fresh.address) as `0x${string}`;
         recipientPriv = as0xPrivateKey(fresh.priv);
+        recipientDerivationPath = publicAccountDerivationPath(fresh.index);
         persistFreshAccountAfterBroadcast = true;
       } else if (hasTo) {
         const raw = opts.to!.trim();
@@ -239,6 +243,9 @@ export function registerUnshieldCommand(program: Command): void {
         recipient = getAddress(raw) as `0x${string}`;
         const acct = findPublicAccountByAddress(publicStorage, recipient);
         recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
+        recipientDerivationPath = acct
+          ? publicAccountDerivationPath(acct.index)
+          : undefined;
       } else {
         const existingAccounts = publicStorage.getAccounts();
         const NEXT_FRESH = "__next_fresh__";
@@ -249,7 +256,7 @@ export function registerUnshieldCommand(program: Command): void {
           value: NEXT_FRESH,
           name: "Generate next fresh public account (--next)",
         });
-        if (protocol !== "railgun") {
+        if (protocol === "privacy-pools") {
           choices.push({
             value: CUSTOM_ADDR,
             name: "Enter a custom address",
@@ -271,6 +278,7 @@ export function registerUnshieldCommand(program: Command): void {
           const fresh = takeNextFreshPublicAccount(publicStorage);
           recipient = getAddress(fresh.address) as `0x${string}`;
           recipientPriv = as0xPrivateKey(fresh.priv);
+          recipientDerivationPath = publicAccountDerivationPath(fresh.index);
           persistFreshAccountAfterBroadcast = true;
         } else if (chosen === CUSTOM_ADDR) {
           const addr = await input({
@@ -285,12 +293,21 @@ export function registerUnshieldCommand(program: Command): void {
           recipient = getAddress(chosen) as `0x${string}`;
           const acct = findPublicAccountByAddress(publicStorage, recipient);
           recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
+          recipientDerivationPath = acct
+            ? publicAccountDerivationPath(acct.index)
+            : undefined;
         }
       }
 
       if (protocol === "railgun" && !recipientPriv) {
         cliError(
           "Railgun unshield requires a recipient public account from this wallet (use --next or --to with a stored public address)."
+        );
+        return;
+      }
+      if (protocol === "tornado" && !recipientDerivationPath) {
+        cliError(
+          "Tornado unshield requires --to to be a public account from this wallet (or use --next) so that account can sign the EIP-7702 delegation."
         );
         return;
       }
@@ -468,6 +485,10 @@ export function registerUnshieldCommand(program: Command): void {
           cliErrorFromCaught(e);
           return;
         }
+        const tornadoWithdrawalCount =
+          protocol === "tornado"
+            ? await countTornadoWithdrawals(plugin, asset, amount)
+            : undefined;
 
         const prepareLabel =
           protocol === "railgun"
@@ -504,7 +525,9 @@ export function registerUnshieldCommand(program: Command): void {
                   tornadoUnshieldOptions(
                     recipient,
                     amount,
-                    tornadoMaxFeePerGas!
+                    tornadoMaxFeePerGas!,
+                    recipientDerivationPath!,
+                    tornadoWithdrawalCount!
                   )
                 )
               : prepareUnshield(asset, recipient),

@@ -18,6 +18,8 @@ import {
   TornadoPaymasterConfigs,
   createTCBroadcaster,
   createTCPlugin,
+  type TCPaymasterUnshieldOptions,
+  type TCNote,
 } from "@kohaku-eth/tornado-cash";
 import {
   ensureTornadoPaymasterGasPatched,
@@ -255,16 +257,17 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
   recipient: `0x${string}`,
-  denominationWei: bigint,
-  maxFeePerGas: bigint
-): {
-  mode: "paymaster";
-  tailCalls: (sender: string) => Promise<
-    Array<{ to: string; data: string; value: bigint }>
-  >;
-} {
-  const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas);
-  const forwardValue = denominationWei - estimatedFee;
+  amountWei: bigint,
+  maxFeePerGas: bigint,
+  delegationPath: string,
+  withdrawalCount: number
+): TCPaymasterUnshieldOptions {
+  if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
+    throw new Error("Tornado unshield requires at least one withdrawal.");
+  }
+  const estimatedFee =
+    estimateTornadoPaymasterFee(maxFeePerGas) * BigInt(withdrawalCount);
+  const forwardValue = amountWei - estimatedFee;
   if (forwardValue <= 0n) {
     throw new Error(
       `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${estimatedFee.toString()} wei).`
@@ -273,10 +276,43 @@ export function tornadoUnshieldOptions(
 
   return {
     mode: "paymaster",
+    delegation: { mode: "deterministic", path: delegationPath },
     tailCalls: async () => [
       { to: recipient, data: "0x", value: forwardValue },
     ],
   };
+}
+
+/**
+ * Mirrors Tornado's largest-denomination-first note selection so the tail call
+ * reserves one paymaster fee for every UserOperation in the batch.
+ */
+export async function countTornadoWithdrawals(
+  plugin: AnyPlugin,
+  asset: AssetAmount,
+  amount: bigint
+): Promise<number> {
+  if (!plugin.notes) {
+    throw new Error("Tornado plugin does not expose notes.");
+  }
+  const notes = (await plugin.notes([asset.asset], false)) as TCNote[];
+  const sorted = [...notes].sort((a, b) =>
+    a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1
+  );
+  let selectedAmount = 0n;
+  let selectedCount = 0;
+  for (const note of sorted) {
+    if (selectedAmount + note.amount > amount) continue;
+    selectedAmount += note.amount;
+    selectedCount += 1;
+    if (selectedAmount === amount) break;
+  }
+  if (selectedAmount < amount) {
+    throw new Error(
+      `Insufficient Tornado notes to spend exactly ${amount.toString()} wei.`
+    );
+  }
+  return selectedCount;
 }
 
 export async function prepareProtocolShield(
