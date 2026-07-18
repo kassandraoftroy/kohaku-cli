@@ -55,38 +55,19 @@ export function estimateTornadoPaymasterFee(
   return (requiredGas * maxFeePerGas * 12n) / 10n;
 }
 
+import { fetchPimlicoMaxFeePerGas } from "./pimlico-gas.js";
+
 export async function fetchTornadoMaxFeePerGas(
   bundlerUrl: string
 ): Promise<bigint> {
-  const res = await fetch(bundlerUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "pimlico_getUserOperationGasPrice",
-      params: [],
-    }),
-  });
-  const json = (await res.json()) as {
-    result?: { standard?: { maxFeePerGas?: string } };
-    error?: { message?: string };
-  };
-  const hex = json.result?.standard?.maxFeePerGas;
-  if (!hex) {
-    throw new Error(
-      json.error?.message ??
-        "Failed to fetch bundler gas price for Tornado paymaster unshield."
-    );
-  }
-  return BigInt(hex);
+  return fetchPimlicoMaxFeePerGas(bundlerUrl);
 }
 
 export async function resolveTornadoPrepareMaxFeePerGas(
   chainId: bigint
 ): Promise<bigint> {
   const { railgunPimlicoBundlerUrl } = await import("./rpc.js");
-  return fetchTornadoMaxFeePerGas(railgunPimlicoBundlerUrl(chainId));
+  return fetchPimlicoMaxFeePerGas(railgunPimlicoBundlerUrl(chainId));
 }
 
 let patched = false;

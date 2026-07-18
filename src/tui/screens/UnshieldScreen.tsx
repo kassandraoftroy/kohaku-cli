@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { Text } from "ink";
-import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
+import { formatUnits, getAddress, isAddress } from "ethers";
 
 import {
   assertPpErc20TokenWhitelisted,
   assertTornadoEthOnly,
   type SupportedProtocol,
 } from "../../utils/plugins.js";
-import { maxUnshieldAmountHintForWallet } from "../../lib/unshield-flow.js";
 import { resolveTokenMeta } from "../../utils/tokens-util.js";
 import {
   findPublicAccountByAddress,
@@ -16,6 +15,8 @@ import {
 import {
   broadcastUnshield,
   extractUnshieldExplorerHash,
+  maxUnshieldAmountHintForWallet,
+  parseUnshieldAmount,
   prepareUnshieldOperation,
 } from "../../lib/unshield-flow.js";
 import PageLayout from "../widgets/PageLayout.js";
@@ -256,18 +257,18 @@ export function UnshieldScreen({
         ? formatUnits(maxHint, tokenMeta.decimals)
         : "unknown";
     return (
-      <PageLayout title="Unshield" subtitle={`amount (max ~${maxLabel})`}>
+      <PageLayout title="Unshield" subtitle={`amount (max ~${maxLabel}, or "max")`}>
         <TextPrompt
           label={`Amount (${tokenMeta.symbol}):`}
           value={amountInput}
           onChange={setAmountInput}
           onSubmit={() => {
             try {
-              const parsed = parseUnits(amountInput.trim(), tokenMeta.decimals);
-              if (parsed <= 0n) throw new Error("Amount must be > 0");
-              if (maxHint > 0n && parsed > maxHint) {
-                throw new Error(`Exceeds max ${maxLabel}`);
-              }
+              const parsed = parseUnshieldAmount(
+                amountInput,
+                tokenMeta.decimals,
+                maxHint
+              );
               setAmount(parsed);
               setStep("confirm");
             } catch (e) {

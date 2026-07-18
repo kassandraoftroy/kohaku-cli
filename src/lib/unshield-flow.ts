@@ -21,6 +21,11 @@ import {
   tornadoUnshieldOptions,
   type SupportedProtocol,
 } from "../utils/plugins.js";
+import {
+  computeRailgunMaxUnshieldAmount,
+  railgunMaxReceivableFromBalance,
+  railgunUnshieldFeeBps,
+} from "../utils/railgun-unshield-max.js";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
 
@@ -89,12 +94,21 @@ function ppNoteAssetLower(n: PpNoteForMax): string {
   return String(n.assetAddress).toLowerCase();
 }
 
+export type MaxUnshieldAmountHint = {
+  cap: bigint;
+  privacyPoolsLargestNote: boolean;
+  /** Railgun: estimated bundler fee reserved from WETH (0 for other assets). */
+  estimatedGasFeeWei?: bigint;
+  /** Railgun fee-token max used BPS-only because bundler gas price fetch failed. */
+  railgunGasEstimateFailed?: boolean;
+};
+
 export async function maxUnshieldAmountHint(
   protocol: SupportedProtocol,
   plugin: unknown,
   tokenMeta: ResolvedTokenMeta,
   chainId: bigint
-): Promise<{ cap: bigint; privacyPoolsLargestNote: boolean }> {
+): Promise<MaxUnshieldAmountHint> {
   if (protocol === "privacy-pools") {
     const targetAddr = tokenMeta.isEth
       ? ETH_AS_ERC20.toLowerCase()
@@ -143,6 +157,39 @@ export async function maxUnshieldAmountHint(
   } catch {
     // ignore
   }
+
+  // Tornado / Privacy Pools: fees come out after withdrawal — max is full balance / note.
+  if (protocol === "tornado") {
+    return { cap: sum, privacyPoolsLargestNote: false };
+  }
+
+  if (sum > 0n) {
+    try {
+      const { amount, estimatedGasFeeWei } = await computeRailgunMaxUnshieldAmount({
+        chainId,
+        balance: sum,
+        tokenMeta,
+      });
+      return {
+        cap: amount,
+        privacyPoolsLargestNote: false,
+        estimatedGasFeeWei,
+      };
+    } catch {
+      // Soft fallback for prompts: treasury fee only (no gas reserve).
+      const amount = railgunMaxReceivableFromBalance(
+        sum,
+        railgunUnshieldFeeBps(chainId),
+        0n
+      );
+      return {
+        cap: amount,
+        privacyPoolsLargestNote: false,
+        railgunGasEstimateFailed: true,
+      };
+    }
+  }
+
   return { cap: sum, privacyPoolsLargestNote: false };
 }
 
@@ -432,7 +479,7 @@ export async function maxUnshieldAmountHintForWallet(opts: {
   mnemonic: string;
   chainId: bigint;
   tokenMeta: ResolvedTokenMeta;
-}): Promise<{ cap: bigint; privacyPoolsLargestNote: boolean }> {
+}): Promise<MaxUnshieldAmountHint> {
   return withProtocolRuntime(
     {
       protocol: opts.protocol,
@@ -452,7 +499,14 @@ export function parseUnshieldAmount(
   decimals: number,
   maxAmountHint: bigint
 ): bigint {
-  const parsed = parseUnits(raw.trim(), decimals);
+  const trimmed = raw.trim();
+  if (trimmed.toLowerCase() === "max") {
+    if (maxAmountHint <= 0n) {
+      throw new Error("Could not determine max unshield amount.");
+    }
+    return maxAmountHint;
+  }
+  const parsed = parseUnits(trimmed, decimals);
   if (parsed <= 0n) {
     throw new Error("Amount must be greater than zero.");
   }

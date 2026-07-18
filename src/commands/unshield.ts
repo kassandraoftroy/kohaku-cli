@@ -10,6 +10,8 @@ import {
   assertPrivacyPoolsRelayFeeWithinCap,
   broadcastPreparedPrivateOp,
   extractUnshieldExplorerHash,
+  maxUnshieldAmountHint,
+  parseUnshieldAmount,
 } from "../lib/unshield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -37,6 +39,7 @@ import {
   tornadoUnshieldOptions,
   type SupportedProtocol,
 } from "../utils/plugins";
+import { isRailgunFeeToken } from "../utils/railgun-unshield-max.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -44,11 +47,7 @@ import {
   railgunPimlicoBundlerUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
-import {
-  isPendingPrivateBalanceRow,
-  privateBalanceRowMatchesUnshieldToken,
-  resolveTokenMeta,
-} from "../utils/tokens-util";
+import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
 import {
   resolveWalletDir,
@@ -65,6 +64,7 @@ type UnshieldOpts = {
   token?: string;
   amountWei?: string;
   amountFormatted?: string;
+  amountMax?: boolean;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -87,79 +87,6 @@ function takeNextFreshPublicAccount(
   return storage.peekNextAccounts(1)[0]!;
 }
 
-type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
-
-function ppNoteAssetLower(n: PpNoteForMax): string {
-  if (typeof n.assetAddress === "bigint") {
-    return `0x${n.assetAddress.toString(16).padStart(40, "0")}`.toLowerCase();
-  }
-  return String(n.assetAddress).toLowerCase();
-}
-
-/**
- * Upper bound for one `prepareUnshield` call: Privacy Pools uses the largest
- * single note (protocol cannot merge notes in one proof); Railgun uses summed
- * balance for the token from `balance()`.
- */
-async function maxUnshieldAmountHint(
-  protocol: SupportedProtocol,
-  plugin: unknown,
-  tokenMeta: { isEth: boolean; tokenAddress: string; decimals: number },
-  chainId: bigint
-): Promise<{ cap: bigint; privacyPoolsLargestNote: boolean }> {
-  if (protocol === "privacy-pools") {
-    const targetAddr = tokenMeta.isEth
-      ? ETH_AS_ERC20.toLowerCase()
-      : tokenMeta.tokenAddress.toLowerCase();
-    let largest = 0n;
-    try {
-      const notes = await (
-        plugin as unknown as {
-          notes: (assets?: unknown[], includeSpent?: boolean) => Promise<
-            PpNoteForMax[]
-          >;
-        }
-      ).notes(undefined, false);
-      for (const n of notes) {
-        if (ppNoteAssetLower(n) !== targetAddr || n.balance <= 0n) continue;
-        if (n.balance > largest) largest = n.balance;
-      }
-    } catch {
-      // ignore
-    }
-    return { cap: largest, privacyPoolsLargestNote: true };
-  }
-
-  if (protocol !== "railgun" && protocol !== "tornado") {
-    return { cap: 0n, privacyPoolsLargestNote: false };
-  }
-
-  let sum = 0n;
-  try {
-    const balances: AssetAmount[] = await (
-      plugin as unknown as { balance: (a: unknown) => Promise<AssetAmount[]> }
-    ).balance(undefined);
-    for (const row of balances) {
-      if (isPendingPrivateBalanceRow(row)) continue;
-      const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
-      if (!asset || asset.__type !== "erc20") continue;
-      let addr: string;
-      if (typeof asset.contract === "string") addr = asset.contract.toLowerCase();
-      else if (typeof asset.contract === "bigint")
-        addr = `0x${asset.contract.toString(16).padStart(40, "0")}`.toLowerCase();
-      else continue;
-      if (
-        privateBalanceRowMatchesUnshieldToken(addr, tokenMeta, chainId, protocol)
-      ) {
-        sum += row.amount;
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return { cap: sum, privacyPoolsLargestNote: false };
-}
-
 export function registerUnshieldCommand(program: Command): void {
   program
     .command("unshield")
@@ -175,6 +102,10 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
+    .option(
+      "--amount-max",
+      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools: largest note; Tornado: full balance)"
+    )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option(
@@ -196,8 +127,13 @@ export function registerUnshieldCommand(program: Command): void {
         return;
       }
 
-      if (opts.amountWei && opts.amountFormatted) {
-        cliError("Provide only one of --amount-wei or --amount-formatted.");
+      const amountFlags = [opts.amountWei, opts.amountFormatted, opts.amountMax].filter(
+        Boolean
+      ).length;
+      if (amountFlags > 1) {
+        cliError(
+          "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
+        );
         return;
       }
 
@@ -205,9 +141,9 @@ export function registerUnshieldCommand(program: Command): void {
         cliError("Missing --to or --next in non-interactive mode.");
         return;
       }
-      if (!opts.amountWei && !opts.amountFormatted && opts.nonInteractive) {
+      if (!opts.amountWei && !opts.amountFormatted && !opts.amountMax && opts.nonInteractive) {
         cliError(
-          "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+          "Missing amount in non-interactive mode. Provide --amount-wei, --amount-formatted, or --amount-max."
         );
         return;
       }
@@ -411,18 +347,47 @@ export function registerUnshieldCommand(program: Command): void {
         }
 
         const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
-        const { cap: maxAmountHint, privacyPoolsLargestNote } =
-          await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
+        const {
+          cap: maxAmountHint,
+          privacyPoolsLargestNote,
+          estimatedGasFeeWei,
+          railgunGasEstimateFailed,
+        } = await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
         const maxPromptLabel = privacyPoolsLargestNote
           ? "max (largest single note)"
-          : "max";
+          : protocol === "railgun"
+            ? "max (after fees)"
+            : "max";
         const maxCapLabel = isRailgunEth
           ? `WETH ${maxPromptLabel}`
           : maxPromptLabel;
 
         let amount: bigint | null = null;
-        if (opts.amountWei) {
+        if (opts.amountMax) {
+          if (
+            protocol === "railgun" &&
+            isRailgunFeeToken(tokenMeta, chainId) &&
+            railgunGasEstimateFailed
+          ) {
+            cliError(
+              "Could not fetch bundler gas price to compute --amount-max. Retry when Pimlico is reachable."
+            );
+            return;
+          }
+          if (maxAmountHint <= 0n) {
+            cliError(
+              "No spendable balance for --amount-max (or amount too small after estimated fees)."
+            );
+            return;
+          }
+          amount = maxAmountHint;
+          if (!quiet && estimatedGasFeeWei != null && estimatedGasFeeWei > 0n) {
+            log.info(
+              `Reserving ~${formatUnits(estimatedGasFeeWei, 18)} ETH for estimated bundler gas.`
+            );
+          }
+        } else if (opts.amountWei) {
           amount = BigInt(opts.amountWei);
         } else if (opts.amountFormatted) {
           amount = parseUnits(opts.amountFormatted, tokenMeta.decimals);
@@ -435,7 +400,9 @@ export function registerUnshieldCommand(program: Command): void {
         ) {
           const scope = privacyPoolsLargestNote
             ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
-            : "shielded balance for this token";
+            : protocol === "railgun"
+              ? "max unshield after estimated fees for this token"
+              : "shielded balance for this token";
           cliError(
             `Amount exceeds ${scope} (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`
           );
@@ -444,25 +411,38 @@ export function registerUnshieldCommand(program: Command): void {
 
         if (amount === null) {
           const amountInput = await input({
-            message: `Amount to unshield (${tokenMeta.symbol}, ${maxCapLabel}: ${maxFormatted}):`,
+            message: `Amount to unshield (${tokenMeta.symbol}, ${maxCapLabel}: ${maxFormatted}, or "max"):`,
             validate: (value) => {
               if (!value.trim()) return "Amount is required.";
               try {
-                const parsed = parseUnits(value.trim(), tokenMeta.decimals);
-                if (parsed <= 0n) return "Amount must be greater than zero.";
-                if (maxAmountHint > 0n && parsed > maxAmountHint) {
-                  const capSymbol = isRailgunEth ? "WETH" : tokenMeta.symbol;
-                  return privacyPoolsLargestNote
-                    ? `Exceeds largest note (${maxFormatted} ${capSymbol}); enter that amount or less per withdrawal.`
-                    : `Exceeds shielded balance (max ${maxFormatted} ${capSymbol}).`;
-                }
-              } catch {
-                return `Invalid ${tokenMeta.symbol} amount format.`;
+                parseUnshieldAmount(value, tokenMeta.decimals, maxAmountHint);
+              } catch (e) {
+                return e instanceof Error ? e.message : String(e);
               }
               return true;
             },
           });
-          amount = parseUnits(amountInput.trim(), tokenMeta.decimals);
+          if (
+            amountInput.trim().toLowerCase() === "max" &&
+            protocol === "railgun" &&
+            isRailgunFeeToken(tokenMeta, chainId) &&
+            railgunGasEstimateFailed
+          ) {
+            cliError(
+              "Could not fetch bundler gas price to compute max. Enter an explicit amount or retry."
+            );
+            return;
+          }
+          try {
+            amount = parseUnshieldAmount(
+              amountInput,
+              tokenMeta.decimals,
+              maxAmountHint
+            );
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
         }
 
         if (amount <= 0n) {

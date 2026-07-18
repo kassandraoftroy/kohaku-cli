@@ -1,5 +1,5 @@
 import { confirm, input, select } from "@inquirer/prompts";
-import { spinner } from "@clack/prompts";
+import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 import {
@@ -15,8 +15,10 @@ import {
 import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
+  parseFromIndex,
   resolveShieldSender,
   simulateTransactionOrThrow,
+  type PublicAccountWithBalance,
 } from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
@@ -29,7 +31,11 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { ERC20_ABI, resolveTokenMeta } from "../utils/tokens-util";
+import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
+import {
+  estimateEthTransferGasReserveWei,
+  transferMaxAmountFromBalance,
+} from "../utils/transfer-max.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -45,6 +51,7 @@ type TransferOpts = {
   token?: string;
   amountWei?: string;
   amountFormatted?: string;
+  amountMax?: boolean;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -91,6 +98,62 @@ function buildTransferTx(
   };
 }
 
+function findAccountWithBalance(
+  fromValue: string,
+  accounts: PublicAccountWithBalance[]
+): PublicAccountWithBalance | undefined {
+  const idx = parseFromIndex(fromValue);
+  if (idx !== null) {
+    return accounts.find((a) => a.index === idx);
+  }
+  if (isAddress(fromValue)) {
+    const addr = getAddress(fromValue).toLowerCase();
+    return accounts.find((a) => a.address.toLowerCase() === addr);
+  }
+  return undefined;
+}
+
+async function computeTransferMaxAmount(opts: {
+  rpcUrl: string;
+  isEth: boolean;
+  balance: bigint;
+}): Promise<{ amount: bigint; ethGasReserveWei: bigint }> {
+  if (!opts.isEth) {
+    return {
+      amount: transferMaxAmountFromBalance(opts.balance, { isEth: false }),
+      ethGasReserveWei: 0n,
+    };
+  }
+  const ethGasReserveWei = await estimateEthTransferGasReserveWei(opts.rpcUrl);
+  return {
+    amount: transferMaxAmountFromBalance(opts.balance, {
+      isEth: true,
+      ethGasReserveWei,
+    }),
+    ethGasReserveWei,
+  };
+}
+
+async function promptSourceAccount(
+  withBalances: PublicAccountWithBalance[],
+  tokenMeta: ResolvedTokenMeta,
+  message: string
+): Promise<string> {
+  const candidates = withBalances.filter((x) => x.balance > 0n);
+  if (candidates.length === 0) {
+    throw new Error(
+      `No public account has a positive ${tokenMeta.symbol} balance.`
+    );
+  }
+  return select<string>({
+    message,
+    choices: candidates.map((acct) => ({
+      value: acct.address,
+      name: `[${acct.index}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)})`,
+    })),
+  });
+}
+
 function printTransferDryRunInteractive(
   tx: { to: string; data: string; value: bigint },
   tokenMeta: { symbol: string },
@@ -135,12 +198,21 @@ export function registerTransferCommand(program: Command): void {
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
+    .option(
+      "--amount-max",
+      "Transfer the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance)"
+    )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransferOpts) => {
-      if (opts.amountWei && opts.amountFormatted) {
-        cliError("Provide only one of --amount-wei or --amount-formatted.");
+      const amountFlags = [opts.amountWei, opts.amountFormatted, opts.amountMax].filter(
+        Boolean
+      ).length;
+      if (amountFlags > 1) {
+        cliError(
+          "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
+        );
         return;
       }
 
@@ -224,9 +296,13 @@ export function registerTransferCommand(program: Command): void {
         cliError("Missing --to in non-interactive mode.");
         return;
       }
-      if (amount === null && opts.nonInteractive) {
+      if (
+        amount === null &&
+        !opts.amountMax &&
+        opts.nonInteractive
+      ) {
         cliError(
-          "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+          "Missing amount in non-interactive mode. Provide --amount-wei, --amount-formatted, or --amount-max."
         );
         return;
       }
@@ -239,15 +315,63 @@ export function registerTransferCommand(program: Command): void {
         tokenMeta
       );
 
-      try {
-        if (amount === null) {
-          if (withBalances.length === 0) {
-            cliError(
-              "No public accounts found in this wallet. Create one with next-fresh-address first."
-            );
-            return;
-          }
+      const quiet = quietNonInteractive(opts.nonInteractive);
 
+      try {
+        if (withBalances.length === 0) {
+          cliError(
+            "No public accounts found in this wallet. Create one with next-fresh-address first."
+          );
+          return;
+        }
+
+        const resolveMaxForFrom = async (from: string): Promise<bigint> => {
+          const acct = findAccountWithBalance(from, withBalances);
+          if (!acct) {
+            throw new Error(
+              `Could not find public account balance for --from ${from}.`
+            );
+          }
+          const { amount: maxAmount, ethGasReserveWei } =
+            await computeTransferMaxAmount({
+              rpcUrl,
+              isEth: tokenMeta.isEth,
+              balance: acct.balance,
+            });
+          if (maxAmount <= 0n) {
+            throw new Error(
+              tokenMeta.isEth
+                ? `Insufficient ETH for --amount-max after reserving ~${formatUnits(ethGasReserveWei, 18)} ETH for gas.`
+                : `No spendable ${tokenMeta.symbol} balance for --amount-max.`
+            );
+          }
+          if (!quiet && tokenMeta.isEth && ethGasReserveWei > 0n) {
+            log.info(
+              `Reserving ~${formatUnits(ethGasReserveWei, 18)} ETH for estimated transfer gas.`
+            );
+          }
+          return maxAmount;
+        };
+
+        if (opts.amountMax) {
+          if (!fromValue) {
+            console.log();
+            console.log(
+              chalk.bold(`Available accounts (${tokenMeta.symbol} balances):`)
+            );
+            for (const acct of withBalances) {
+              console.log(
+                `  [${acct.index}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
+              );
+            }
+            fromValue = await promptSourceAccount(
+              withBalances,
+              tokenMeta,
+              `Pick source account for max ${tokenMeta.symbol} transfer`
+            );
+          }
+          amount = await resolveMaxForFrom(fromValue);
+        } else if (amount === null) {
           console.log();
           console.log(
             chalk.bold(`Available accounts (${tokenMeta.symbol} balances):`)
@@ -259,11 +383,13 @@ export function registerTransferCommand(program: Command): void {
           }
 
           const amountFormattedInput = await input({
-            message: `Amount to transfer (${tokenMeta.symbol}, formatted):`,
+            message: `Amount to transfer (${tokenMeta.symbol}, formatted, or "max"):`,
             validate: (value) => {
-              if (!value.trim()) return "Amount is required.";
+              const trimmed = value.trim();
+              if (!trimmed) return "Amount is required.";
+              if (trimmed.toLowerCase() === "max") return true;
               try {
-                const parsed = parseUnits(value.trim(), tokenMeta.decimals);
+                const parsed = parseUnits(trimmed, tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
               } catch {
                 return `Invalid ${tokenMeta.symbol} amount format.`;
@@ -271,7 +397,21 @@ export function registerTransferCommand(program: Command): void {
               return true;
             },
           });
-          amount = parseUnits(amountFormattedInput.trim(), tokenMeta.decimals);
+          if (amountFormattedInput.trim().toLowerCase() === "max") {
+            if (!fromValue) {
+              fromValue = await promptSourceAccount(
+                withBalances,
+                tokenMeta,
+                `Pick source account for max ${tokenMeta.symbol} transfer`
+              );
+            }
+            amount = await resolveMaxForFrom(fromValue);
+          } else {
+            amount = parseUnits(
+              amountFormattedInput.trim(),
+              tokenMeta.decimals
+            );
+          }
         }
         if (amount === null) {
           cliError("Amount is required.");
@@ -346,7 +486,6 @@ export function registerTransferCommand(program: Command): void {
       const tx = buildTransferTx(tokenMeta, recipient, amount);
       const rpc = await makeEthersProvider(rpcUrl);
       const txSpinner = spinner();
-      const quiet = quietNonInteractive(opts.nonInteractive);
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
       try {
