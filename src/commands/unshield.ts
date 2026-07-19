@@ -52,7 +52,11 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
-import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
+import {
+  ensureTornadoPaymasterGasPatched,
+  estimateTornadoCallGasLimit,
+  resolveTornadoPrepareMaxFeePerGas,
+} from "../utils/tornado-paymaster-gas.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -89,33 +93,51 @@ function parseTailCalls(raw: string): UnshieldTailCall[] {
   const entries = raw.split(",").map((entry) => entry.trim());
   if (entries.length === 0 || entries.some((entry) => !entry)) {
     throw new Error(
-      "--tail-calls must contain comma-separated TARGET:CALLDATA entries."
+      "--tail-calls must contain comma-separated TARGET:CALLDATA or TARGET:CALLDATA:VALUE entries."
     );
   }
 
   return entries.map((entry, index) => {
-    const separator = entry.indexOf(":");
-    if (separator < 0) {
+    const parts = entry.split(":").map((part) => part.trim());
+    if (parts.length < 2 || parts.length > 3 || parts.some((part) => !part)) {
       throw new Error(
-        `Invalid tail call at index ${index}: expected TARGET:CALLDATA.`
+        `Invalid tail call at index ${index}: expected TARGET:CALLDATA or TARGET:CALLDATA:VALUE.`
       );
     }
 
-    const target = entry.slice(0, separator).trim();
-    const data = entry.slice(separator + 1).trim();
-    if (!isAddress(target)) {
+    const [target, data, valueRaw] = parts;
+    if (!isAddress(target!)) {
       throw new Error(`Invalid tail call target at index ${index}: ${target}`);
     }
-    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data)) {
+    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data!)) {
       throw new Error(
         `Invalid tail call calldata at index ${index}: expected 0x-prefixed, byte-aligned hex.`
       );
     }
 
+    let value = 0n;
+    if (valueRaw !== undefined) {
+      if (!/^0x[0-9a-fA-F]+$/.test(valueRaw) && !/^[0-9]+$/.test(valueRaw)) {
+        throw new Error(
+          `Invalid tail call value at index ${index}: expected 0x-hex or decimal wei (${valueRaw}).`
+        );
+      }
+      try {
+        value = BigInt(valueRaw);
+      } catch {
+        throw new Error(
+          `Invalid tail call value at index ${index}: ${valueRaw}`
+        );
+      }
+      if (value < 0n) {
+        throw new Error(`Invalid tail call value at index ${index}: must be >= 0.`);
+      }
+    }
+
     return {
-      to: getAddress(target) as `0x${string}`,
-      data: data as `0x${string}`,
-      value: 0n,
+      to: getAddress(target!) as `0x${string}`,
+      data: data! as `0x${string}`,
+      value,
     };
   });
 }
@@ -153,8 +175,8 @@ export function registerUnshieldCommand(program: Command): void {
       "Submit via protocol broadcaster (omit to print the prepared private operation only)"
     )
     .option(
-      "--tail-calls <target:calldata,...>",
-      "Ordered zero-value calls appended to the Tornado UserOperation"
+      "--tail-calls <target:calldata[:value],...>",
+      "Ordered calls appended to the Tornado UserOperation (optional value in hex or decimal wei)"
     )
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: UnshieldOpts) => {
@@ -385,7 +407,24 @@ export function registerUnshieldCommand(program: Command): void {
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const spin = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
+      let tornadoCallGasLimit: bigint | undefined;
       try {
+        if (protocol === "tornado") {
+          // Patch worker callGasLimit before the Tornado worker is spawned.
+          const gasCalls = [
+            { to: recipient, data: "0x", value: 0n },
+            ...tailCalls,
+          ];
+          const callGasLimit = estimateTornadoCallGasLimit(gasCalls);
+          tornadoCallGasLimit = callGasLimit;
+          ensureTornadoPaymasterGasPatched({ callGasLimit });
+          if (!quiet && tailCalls.length > 0) {
+            log.info(
+              `Tornado UserOp callGasLimit set to ${callGasLimit.toString()} (heuristic from tail calls).`
+            );
+          }
+        }
+
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,
@@ -610,7 +649,8 @@ export function registerUnshieldCommand(program: Command): void {
                     tornadoMaxFeePerGas!,
                     recipientDerivationPath!,
                     tornadoWithdrawalCount!,
-                    tailCalls
+                    tailCalls,
+                    tornadoCallGasLimit
                   )
                 )
               : prepareUnshield(asset, recipient),

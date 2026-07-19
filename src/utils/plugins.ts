@@ -306,25 +306,38 @@ export function tornadoUnshieldOptions(
   maxFeePerGas: bigint,
   delegationPath: string,
   withdrawalCount: number,
-  tailCalls: readonly UnshieldTailCall[] = []
+  tailCalls: readonly UnshieldTailCall[] = [],
+  callGasLimit?: bigint
 ): TCPaymasterUnshieldOptions {
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
   }
   const estimatedFee =
-    estimateTornadoPaymasterFee(maxFeePerGas) * BigInt(withdrawalCount);
-  const forwardValue = amountWei - estimatedFee;
-  if (forwardValue <= 0n) {
+    estimateTornadoPaymasterFee(maxFeePerGas, {
+      hasTailCalls: true,
+      callGasLimit,
+    }) * BigInt(withdrawalCount);
+  const afterFee = amountWei - estimatedFee;
+  if (afterFee <= 0n) {
     throw new Error(
       `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${estimatedFee.toString()} wei).`
     );
   }
+  const userTailValue = tailCalls.reduce((sum, call) => sum + call.value, 0n);
+  if (userTailValue > afterFee) {
+    throw new Error(
+      `--tail-calls msg.value total (${userTailValue.toString()} wei) exceeds the amount remaining after the Tornado paymaster fee (${afterFee.toString()} wei).`
+    );
+  }
+  const forwardValue = afterFee - userTailValue;
 
   return {
     mode: "paymaster",
     delegation: { mode: "deterministic", path: delegationPath },
     tailCalls: async () => [
-      { to: recipient, data: "0x", value: forwardValue },
+      ...(forwardValue > 0n
+        ? [{ to: recipient, data: "0x" as const, value: forwardValue }]
+        : []),
       ...tailCalls,
     ],
   };

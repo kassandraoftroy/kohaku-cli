@@ -359,7 +359,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount. |
 | `--amount-max` | Maximum spendable amount (Tornado / Privacy Pools: largest single note). |
-| `--tail-calls <target:calldata,...>` | Ordered zero-value calls appended after the Tornado payout call. Currently Tornado-only. |
+| `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the Tornado payout call. Optional third field is `msg.value` (hex or decimal wei). Currently Tornado-only. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol broadcaster, relayer, or paymaster. **Omit** to print prepared private operation JSON only. |
 | `--non-interactive` | JSON; requires `--wallet`, `--password`, `--to` or `--next`, and an amount flag. |
@@ -374,7 +374,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 ```bash
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-max
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
-kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 1 --tail-calls 0x1111111111111111111111111111111111111111:0x1234,0x2222222222222222222222222222222222222222:0xabcd --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 1 --tail-calls 0x1111111111111111111111111111111111111111:0x1234,0x2222222222222222222222222222222222222222:0xabcd:0x2386f26fc10000 --broadcast
 kohaku unshield --protocol railgun --wallet testWallet --to 0xStoredWalletAddress --token USDC --amount-formatted 25 --broadcast
 ```
 
