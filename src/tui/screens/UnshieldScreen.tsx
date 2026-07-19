@@ -5,6 +5,7 @@ import { formatUnits, getAddress, isAddress } from "ethers";
 import {
   assertPpErc20TokenWhitelisted,
   assertTornadoEthOnly,
+  assertTornadoUnshieldAmount,
   type SupportedProtocol,
 } from "../../utils/plugins.js";
 import { resolveTokenMeta } from "../../utils/tokens-util.js";
@@ -256,8 +257,12 @@ export function UnshieldScreen({
       maxHint > 0n
         ? formatUnits(maxHint, tokenMeta.decimals)
         : "unknown";
+    const maxHintText =
+      protocol === "tornado" || protocol === "privacy-pools"
+        ? `largest note ~${maxLabel}`
+        : `max ~${maxLabel}`;
     return (
-      <PageLayout title="Unshield" subtitle={`amount (max ~${maxLabel}, or "max")`}>
+      <PageLayout title="Unshield" subtitle={`amount (${maxHintText}, or "max")`}>
         <TextPrompt
           label={`Amount (${tokenMeta.symbol}):`}
           value={amountInput}
@@ -269,6 +274,9 @@ export function UnshieldScreen({
                 tokenMeta.decimals,
                 maxHint
               );
+              if (protocol === "tornado") {
+                assertTornadoUnshieldAmount(session.chainId, parsed);
+              }
               setAmount(parsed);
               setStep("confirm");
             } catch (e) {

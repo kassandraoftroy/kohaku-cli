@@ -1,7 +1,7 @@
 # kohaku-cli
 
 > [!IMPORTANT]
-> NOTICE: this CLI has NOT BEEN AUDITED and IS UNDER ACTIVE DEVELOPMENT and HAS BEEN WRITTEN WITH HELP FROM CLAUDE ET AL.  
+> NOTICE: this CLI has **NOT BEEN AUDITED** and **IS UNDER ACTIVE DEVELOPMENT** and **HAS BEEN WRITTEN WITH HELP FROM CLAUDE** et al. **DO NOT USE ON MAINNET** without understanding **YOU RISK CATASTROPHIC LOSS OF FUNDS**.
 
 A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, [Railgun](https://railgun.org/) and [Privacy Pools](https://privacypools.com/). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
 
@@ -36,7 +36,7 @@ Wallet data lives in `~/.kohaku-cli` by default (`--dataDir` to override).
 
 ## Getting started
 
-This walkthrough creates a testnet wallet, funds a fresh public address, shields ETH into Privacy Pools, checks balances, then unshields to a **new** public address so the withdrawal lands on an address that was never used as the shield source.
+This walkthrough creates a testnet wallet, funds a fresh public address, shields 0.1 ETH with Tornado Cash, checks balances, then unshields that note to a **new** public address.
 
 ### 1. Create wallets
 
@@ -62,7 +62,7 @@ Paste your 12- or 24-word phrase when prompted (masked). `--rpc-url` or `RPC_URL
 kohaku balances
 ```
 
-Pick `testWallet` if you have more than one wallet, enter the wallet password, then wait for the spinner. You should see **Public** totals (ETH + common ERC-20s on Sepolia), plus **Private — Railgun** and **Private — Privacy pools** (both empty at first).
+Pick `testWallet` if you have more than one wallet, enter the wallet password, then wait for the spinner. You should see **Public** totals (ETH + common ERC-20s on Sepolia) and private balances for the supported protocols.
 
 To pin the wallet and get per-address detail:
 
@@ -78,23 +78,23 @@ kohaku next-fresh-address --wallet testWallet
 
 The command prints a single `0x…` address and saves it as the next public account in your wallet. Send **Sepolia ETH** (and optionally test ERC-20s) to that address from a faucet or another wallet. Run `balances` again until public ETH shows up.
 
-### 4. Shield into Privacy Pools (ETH)
+### 4. Shield with Tornado Cash (ETH)
 
 Dry run first (prints transaction JSON, does not send):
 
 ```bash
-kohaku shield --protocol privacy-pools --wallet testWallet
+kohaku shield --protocol tornado --wallet testWallet --amount-formatted 0.1
 ```
 
-Interactively: enter the amount of ETH to shield, then choose a public account that has enough balance. Review the planned tx(s). Add `--broadcast` when you are ready to sign and submit on-chain:
+Choose a public account that has enough balance and review the planned transaction. Add `--broadcast` when you are ready to sign and submit on-chain:
 
 ```bash
-kohaku shield --protocol privacy-pools --wallet testWallet --broadcast --amount-formatted 0.01
+kohaku shield --protocol tornado --wallet testWallet --amount-formatted 0.1 --broadcast
 ```
 
-You will confirm one or two steps: an ERC-20 **approval** only appears for tokens, not native ETH. Confirm the shield transaction when asked; spinners show mining status.
+Tornado shields must be exact multiples of 0.1 ETH. Confirm the shield transaction when asked; spinners show mining status.
 
-Check balances again — public ETH should drop and **Private — Privacy pools** should show the shielded amount:
+Check balances again — public ETH should drop and the Tornado private balance should show a 0.1 ETH note:
 
 ```bash
 kohaku balances --wallet testWallet
@@ -102,25 +102,25 @@ kohaku balances --wallet testWallet
 
 ### 5. Unshield to a fresh public address
 
-Withdraw private ETH back to public chain via the protocol relayer. Dry run builds the private operation JSON:
+Withdraw the private note back to the public chain. The dry run builds the private operation JSON:
 
 ```bash
-kohaku unshield --protocol privacy-pools --wallet testWallet
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1
 ```
 
-Interactively: choose **Generate next fresh public account** (recommended for a clean recipient), enter the amount (prompt shows max; Privacy Pools uses the **largest single note** per withdrawal). Then add `--broadcast` to submit through the relayer:
+`--next` selects a fresh public account from this wallet, which can sign the EIP-7702 delegation required by Tornado. Add `--broadcast` to submit through the paymaster:
 
 ```bash
-kohaku unshield --protocol privacy-pools --wallet testWallet --next --amount-formatted 0.01 --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
 ```
 
-Confirm the broadcast prompt (amount + recipient). The CLI syncs private state first, prepares the proof, then relays. A new address is printed via `--next` (same idea as `next-fresh-address`).
+Confirm the broadcast prompt (amount + recipient). The CLI syncs private state, prepares the proof, and submits the UserOperation. Tornado unshields currently consume exactly one note.
 
 ```bash
 kohaku balances --wallet testWallet
 ```
 
-You should see private Privacy Pools balance decrease and the new public account holding ETH — funds that left the pool on an address not used when you shielded.
+You should see the Tornado private balance decrease and the fresh public account receive the unshielded ETH minus the paymaster fee.
 
 ---
 
@@ -313,7 +313,7 @@ Move funds from a **public** account into a private protocol.
 
 | Option | Description |
 |--------|-------------|
-| `--protocol <railgun\|privacy-pools>` | **Required.** |
+| `--protocol <railgun\|privacy-pools\|tornado>` | **Required.** |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--from <address-or-index>` | Sender public account (address or HD index). |
@@ -333,11 +333,12 @@ Move funds from a **public** account into a private protocol.
 
 - **privacy-pools** — Native ETH shield; non-ETH tokens must be on the protocol whitelist for your chain.
 - **railgun** — ETH and ERC-20; non-ETH may need an approval transaction before shield.
+- **tornado** — ETH only; amount must be an exact multiple of 0.1 ETH (e.g. `1.3` OK, `1.35` not).
 
 **Examples:**
 
 ```bash
-kohaku shield --protocol privacy-pools --wallet testWallet --broadcast --amount-formatted 0.05
+kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --broadcast
 kohaku shield --protocol railgun --wallet testWallet --from 0 --token 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 --amount-formatted 10 --broadcast
 ```
 
@@ -349,7 +350,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 
 | Option | Description |
 |--------|-------------|
-| `--protocol <railgun\|privacy-pools>` | **Required.** |
+| `--protocol <railgun\|privacy-pools\|tornado>` | **Required.** |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--to <address>` | Recipient public address. |
@@ -357,18 +358,24 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount. |
+| `--amount-max` | Maximum spendable amount (Tornado / Privacy Pools: largest single note). |
+| `--tail-calls <target:calldata,...>` | Ordered zero-value calls appended after the Tornado payout call. Currently Tornado-only. |
 | `--rpc-url <url>` | RPC endpoint. |
-| `--broadcast` | Submit via Railgun Waku broadcaster or Privacy Pools relayer. **Omit** to print prepared private operation JSON only. |
+| `--broadcast` | Submit via the protocol broadcaster, relayer, or paymaster. **Omit** to print prepared private operation JSON only. |
 | `--non-interactive` | JSON; requires `--wallet`, `--password`, `--to` or `--next`, and an amount flag. |
 | `--dataDir <path>` | Data root. |
 
-**Interactive:** recipient menu (next fresh / custom address / existing account) → amount (shows max; Privacy Pools capped by largest note) → prepared op or broadcast confirmation.
+**Interactive:** recipient menu (next fresh / custom address / existing account) → amount (shows max; Privacy Pools and Tornado capped by largest single note) → prepared op or broadcast confirmation.
+
+**Tornado amounts:** shields must be an exact multiple of 0.1 ETH (e.g. `1.3` OK, `1.35` not). Unshields currently withdraw exactly one note denomination (`0.1` / `1` / `10` / `100` ETH depending on chain); amounts like `0.2` or `1.2` error.
 
 **Examples:**
 
 ```bash
-kohaku unshield --protocol privacy-pools --wallet testWallet
-kohaku unshield --protocol privacy-pools --wallet testWallet --next --amount-formatted 0.01 --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-max
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 1 --tail-calls 0x1111111111111111111111111111111111111111:0x1234,0x2222222222222222222222222222222222222222:0xabcd --broadcast
+kohaku unshield --protocol railgun --wallet testWallet --to 0xStoredWalletAddress --token USDC --amount-formatted 25 --broadcast
 ```
 
 ---

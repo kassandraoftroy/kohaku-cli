@@ -424,13 +424,26 @@ export function registerShieldCommand(program: Command): void {
               try {
                 const parsed = parseUnits(value.trim(), tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
-              } catch {
-                return `Invalid ${tokenMeta.symbol} amount format.`;
+                if (protocol === "tornado") {
+                  assertTornadoShieldAmount(chainId, parsed);
+                }
+              } catch (e) {
+                return e instanceof Error
+                  ? e.message
+                  : `Invalid ${tokenMeta.symbol} amount format.`;
               }
               return true;
             },
           });
           amount = parseUnits(amountFormattedInput.trim(), tokenMeta.decimals);
+          if (protocol === "tornado") {
+            try {
+              assertTornadoShieldAmount(chainId, amount);
+            } catch (e) {
+              cliErrorFromCaught(e);
+              return;
+            }
+          }
         }
         if (amount === null) {
           cliError("Amount is required.");

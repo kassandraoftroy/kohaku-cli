@@ -31,6 +31,7 @@ import {
   assertPpErc20TokenWhitelisted,
   assertTornadoEthOnly,
   assertTornadoPaymasterConfigured,
+  assertTornadoUnshieldAmount,
   countTornadoWithdrawals,
   configureRailgunForUnshield,
   createProtocolPlugin,
@@ -39,6 +40,7 @@ import {
   railgunNativeEthAssetAmount,
   SUPPORTED_PROTOCOLS_HELP,
   tornadoUnshieldOptions,
+  type UnshieldTailCall,
   type SupportedProtocol,
 } from "../utils/plugins";
 import { isRailgunFeeToken } from "../utils/railgun-unshield-max.js";
@@ -70,6 +72,7 @@ type UnshieldOpts = {
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
+  tailCalls?: string;
   dataDir?: string;
 };
 
@@ -80,6 +83,41 @@ function etherscanTxUrl(chainId: bigint, txHash: string): string {
 
 function as0xPrivateKey(priv: string): `0x${string}` {
   return (priv.startsWith("0x") ? priv : `0x${priv}`) as `0x${string}`;
+}
+
+function parseTailCalls(raw: string): UnshieldTailCall[] {
+  const entries = raw.split(",").map((entry) => entry.trim());
+  if (entries.length === 0 || entries.some((entry) => !entry)) {
+    throw new Error(
+      "--tail-calls must contain comma-separated TARGET:CALLDATA entries."
+    );
+  }
+
+  return entries.map((entry, index) => {
+    const separator = entry.indexOf(":");
+    if (separator < 0) {
+      throw new Error(
+        `Invalid tail call at index ${index}: expected TARGET:CALLDATA.`
+      );
+    }
+
+    const target = entry.slice(0, separator).trim();
+    const data = entry.slice(separator + 1).trim();
+    if (!isAddress(target)) {
+      throw new Error(`Invalid tail call target at index ${index}: ${target}`);
+    }
+    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data)) {
+      throw new Error(
+        `Invalid tail call calldata at index ${index}: expected 0x-prefixed, byte-aligned hex.`
+      );
+    }
+
+    return {
+      to: getAddress(target) as `0x${string}`,
+      data: data as `0x${string}`,
+      value: 0n,
+    };
+  });
 }
 
 /** Next fresh public account without advancing storage (persist after successful broadcast). */
@@ -106,13 +144,17 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option(
       "--amount-max",
-      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools: largest note; Tornado: full balance)"
+      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools / Tornado: largest single note)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option(
       "--broadcast",
       "Submit via protocol broadcaster (omit to print the prepared private operation only)"
+    )
+    .option(
+      "--tail-calls <target:calldata,...>",
+      "Ordered zero-value calls appended to the Tornado UserOperation"
     )
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: UnshieldOpts) => {
@@ -121,6 +163,26 @@ export function registerUnshieldCommand(program: Command): void {
         return;
       }
       const protocol = opts.protocol;
+
+      let tailCalls: UnshieldTailCall[] = [];
+      if (opts.tailCalls !== undefined) {
+        if (protocol === "privacy-pools") {
+          cliError("--tail-calls is not supported for privacy-pools.");
+          return;
+        }
+        if (protocol === "railgun") {
+          cliError(
+            "--tail-calls is not supported for railgun by the currently installed Railgun SDK."
+          );
+          return;
+        }
+        try {
+          tailCalls = parseTailCalls(opts.tailCalls);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
 
       const hasTo = !!opts.to?.trim();
       const hasNext = !!opts.next;
@@ -371,11 +433,12 @@ export function registerUnshieldCommand(program: Command): void {
           railgunGasEstimateFailed,
         } = await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
-        const maxPromptLabel = privacyPoolsLargestNote
-          ? "max (largest single note)"
-          : protocol === "railgun"
-            ? "max (after fees)"
-            : "max";
+        const maxPromptLabel =
+          privacyPoolsLargestNote || protocol === "tornado"
+            ? "max (largest single note)"
+            : protocol === "railgun"
+              ? "max (after fees)"
+              : "max";
         const maxCapLabel = isRailgunEth
           ? `WETH ${maxPromptLabel}`
           : maxPromptLabel;
@@ -416,7 +479,9 @@ export function registerUnshieldCommand(program: Command): void {
           amount > maxAmountHint
         ) {
           const scope = privacyPoolsLargestNote
-            ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
+            ? protocol === "tornado"
+              ? "largest Tornado note (one withdrawal uses one note)"
+              : "largest Privacy Pools note for this token (one withdrawal uses one note)"
             : protocol === "railgun"
               ? "max unshield after estimated fees for this token"
               : "shielded balance for this token";
@@ -432,7 +497,14 @@ export function registerUnshieldCommand(program: Command): void {
             validate: (value) => {
               if (!value.trim()) return "Amount is required.";
               try {
-                parseUnshieldAmount(value, tokenMeta.decimals, maxAmountHint);
+                const parsed = parseUnshieldAmount(
+                  value,
+                  tokenMeta.decimals,
+                  maxAmountHint
+                );
+                if (protocol === "tornado") {
+                  assertTornadoUnshieldAmount(chainId, parsed);
+                }
               } catch (e) {
                 return e instanceof Error ? e.message : String(e);
               }
@@ -465,6 +537,14 @@ export function registerUnshieldCommand(program: Command): void {
         if (amount <= 0n) {
           cliError("Amount must be greater than zero.");
           return;
+        }
+        if (protocol === "tornado") {
+          try {
+            assertTornadoUnshieldAmount(chainId, amount);
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
         }
 
         let asset: AssetAmount;
@@ -502,7 +582,9 @@ export function registerUnshieldCommand(program: Command): void {
             prepareUnshield: (
               a: AssetAmount,
               t: `0x${string}`,
-              options?: { mode: "paymaster" } | { mode: "relayer" }
+              options?:
+                | { mode: "paymaster" }
+                | { mode: "relayer" }
             ) => Promise<unknown>;
           }
         ).prepareUnshield.bind(plugin);
@@ -527,7 +609,8 @@ export function registerUnshieldCommand(program: Command): void {
                     amount,
                     tornadoMaxFeePerGas!,
                     recipientDerivationPath!,
-                    tornadoWithdrawalCount!
+                    tornadoWithdrawalCount!,
+                    tailCalls
                   )
                 )
               : prepareUnshield(asset, recipient),

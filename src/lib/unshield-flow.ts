@@ -13,10 +13,12 @@ import {
 } from "../utils/tokens-util.js";
 import {
   assertTornadoPaymasterConfigured,
+  assertTornadoUnshieldAmount,
   broadcastTornadoPrivateOp,
   countTornadoWithdrawals,
   configureRailgunForUnshield,
   ETH_AS_ERC20,
+  largestTornadoNoteAmount,
   PRIVACY_POOLS_BROADCASTER_URL,
   railgunNativeEthAssetAmount,
   tornadoUnshieldOptions,
@@ -136,6 +138,23 @@ export async function maxUnshieldAmountHint(
     return { cap: 0n, privacyPoolsLargestNote: false };
   }
 
+  // Tornado: temporary single-note unshield — max is the largest owned note.
+  if (protocol === "tornado") {
+    const asset = {
+      __type: "erc20" as const,
+      contract: ETH_AS_ERC20 as `0x${string}`,
+    };
+    try {
+      const largest = await largestTornadoNoteAmount(
+        plugin as AnyPlugin,
+        asset
+      );
+      return { cap: largest, privacyPoolsLargestNote: true };
+    } catch {
+      return { cap: 0n, privacyPoolsLargestNote: true };
+    }
+  }
+
   let sum = 0n;
   try {
     const balances: AssetAmount[] = await (
@@ -158,11 +177,6 @@ export async function maxUnshieldAmountHint(
     }
   } catch {
     // ignore
-  }
-
-  // Tornado / Privacy Pools: fees come out after withdrawal — max is full balance / note.
-  if (protocol === "tornado") {
-    return { cap: sum, privacyPoolsLargestNote: false };
   }
 
   if (sum > 0n) {
@@ -336,6 +350,7 @@ async function runUnshieldWithPlugin(
 
   if (opts.protocol === "tornado") {
     assertTornadoPaymasterConfigured(opts.chainId);
+    assertTornadoUnshieldAmount(opts.chainId, opts.amount);
   }
 
   let tornadoMaxFeePerGas: bigint | undefined;

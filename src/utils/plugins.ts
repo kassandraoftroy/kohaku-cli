@@ -125,10 +125,27 @@ export function pluginIdForProtocol(protocol: SupportedProtocol): PluginId {
   return "ppv1";
 }
 
-/** Smallest ETH pool denomination (deposits must be multiples of this). */
+/** Smallest ETH pool denomination (shield amounts must be multiples of this). */
 export const TORNADO_ETH_MIN_DENOMINATION_WEI: Record<string, bigint> = {
   "1": 100000000000000000n,
   "11155111": 100000000000000000n,
+};
+
+/**
+ * Fixed ETH pool denominations (wei). Unshield currently withdraws exactly one note,
+ * so the amount must match one of these values (and an owned note of that size).
+ */
+export const TORNADO_ETH_DENOMINATIONS_WEI: Record<string, readonly bigint[]> = {
+  "1": [
+    100000000000000000n, // 0.1
+    1000000000000000000n, // 1
+    10000000000000000000n, // 10
+    100000000000000000000n, // 100
+  ],
+  "11155111": [
+    100000000000000000n, // 0.1
+    1000000000000000000n, // 1
+  ],
 };
 
 export function assertTornadoEthOnly(isEth: boolean): void {
@@ -144,7 +161,29 @@ export function assertTornadoShieldAmount(chainId: bigint, amount: bigint): void
   }
   if (amount <= 0n || amount % min !== 0n) {
     throw new Error(
-      "Tornado shield amount must be a positive multiple of 0.1 ETH (fixed pool denominations)."
+      "Tornado shield amount must be a positive exact multiple of 0.1 ETH (e.g. 0.1, 1.3). Amounts like 1.35 ETH are not depositable."
+    );
+  }
+}
+
+export function assertTornadoUnshieldAmount(
+  chainId: bigint,
+  amount: bigint
+): void {
+  const dens = TORNADO_ETH_DENOMINATIONS_WEI[chainId.toString()];
+  if (!dens) {
+    throw new Error(`Tornado Cash is not configured for chainId ${chainId.toString()}.`);
+  }
+  if (!dens.includes(amount)) {
+    const labels = dens
+      .map((d) =>
+        d < 1000000000000000000n
+          ? `${(Number(d) / 1e18).toString()}`
+          : (d / 1000000000000000000n).toString()
+      )
+      .join(", ");
+    throw new Error(
+      `Tornado unshield currently supports a single note only. Amount must be exactly one pool denomination (${labels} ETH).`
     );
   }
 }
@@ -254,13 +293,20 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
   }
 }
 
+export type UnshieldTailCall = {
+  to: `0x${string}`;
+  data: `0x${string}`;
+  value: bigint;
+};
+
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
   recipient: `0x${string}`,
   amountWei: bigint,
   maxFeePerGas: bigint,
   delegationPath: string,
-  withdrawalCount: number
+  withdrawalCount: number,
+  tailCalls: readonly UnshieldTailCall[] = []
 ): TCPaymasterUnshieldOptions {
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
@@ -279,40 +325,53 @@ export function tornadoUnshieldOptions(
     delegation: { mode: "deterministic", path: delegationPath },
     tailCalls: async () => [
       { to: recipient, data: "0x", value: forwardValue },
+      ...tailCalls,
     ],
   };
 }
 
+/** Unspent Tornado notes for an asset (balance > 0). */
+export async function listTornadoUnspentNotes(
+  plugin: AnyPlugin,
+  asset: AssetAmount["asset"]
+): Promise<TCNote[]> {
+  if (!plugin.notes) {
+    throw new Error("Tornado plugin does not expose notes.");
+  }
+  const notes = (await plugin.notes([asset], false)) as TCNote[];
+  return notes.filter((n) => n.balance > 0n);
+}
+
+/** Largest owned unspent Tornado note amount (0 when none). */
+export async function largestTornadoNoteAmount(
+  plugin: AnyPlugin,
+  asset: AssetAmount["asset"]
+): Promise<bigint> {
+  let largest = 0n;
+  for (const note of await listTornadoUnspentNotes(plugin, asset)) {
+    if (note.amount > largest) largest = note.amount;
+  }
+  return largest;
+}
+
 /**
- * Mirrors Tornado's largest-denomination-first note selection so the tail call
- * reserves one paymaster fee for every UserOperation in the batch.
+ * Tornado unshield is temporarily single-note only: the amount must match
+ * exactly one owned unspent note. Returns 1 so paymaster fee reservation
+ * stays aligned with a single UserOperation.
  */
 export async function countTornadoWithdrawals(
   plugin: AnyPlugin,
   asset: AssetAmount,
   amount: bigint
 ): Promise<number> {
-  if (!plugin.notes) {
-    throw new Error("Tornado plugin does not expose notes.");
-  }
-  const notes = (await plugin.notes([asset.asset], false)) as TCNote[];
-  const sorted = [...notes].sort((a, b) =>
-    a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1
-  );
-  let selectedAmount = 0n;
-  let selectedCount = 0;
-  for (const note of sorted) {
-    if (selectedAmount + note.amount > amount) continue;
-    selectedAmount += note.amount;
-    selectedCount += 1;
-    if (selectedAmount === amount) break;
-  }
-  if (selectedAmount < amount) {
+  const notes = await listTornadoUnspentNotes(plugin, asset.asset);
+  const match = notes.find((n) => n.amount === amount);
+  if (!match) {
     throw new Error(
-      `Insufficient Tornado notes to spend exactly ${amount.toString()} wei.`
+      `No single Tornado note of exactly ${amount.toString()} wei. Multi-note withdrawals are temporarily disabled — unshield one note denomination at a time.`
     );
   }
-  return selectedCount;
+  return 1;
 }
 
 export async function prepareProtocolShield(
