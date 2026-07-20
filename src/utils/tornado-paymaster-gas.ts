@@ -156,14 +156,14 @@ function patchWorkerBaseGasLimits(file: string): void {
   for (const { old, new: replacement, label } of WORKER_GAS_PATCHES) {
     if (source.includes(replacement)) continue;
     if (!source.includes(old)) {
-      console.warn(
-        `[kohaku] Tornado ${label} patch skipped (constant missing in ${file})`
-      );
+      // console.warn(
+      //   `[kohaku] Tornado ${label} patch skipped (constant missing in ${file})`
+      // );
       continue;
     }
     source = source.replace(old, replacement);
     changed = true;
-    console.warn(`[kohaku] Patched Tornado ${label} in ${file}`);
+    // console.warn(`[kohaku] Patched Tornado ${label} in ${file}`);
   }
 
   if (changed) {
@@ -182,17 +182,17 @@ function patchWorkerCallGasLimit(file: string, callGasLimit: bigint): void {
   const re =
     /(verificationGasLimit:\s*\d+n,\s*)callGasLimit:\s*\d+n/;
   if (!re.test(source)) {
-    console.warn(
-      `[kohaku] Tornado callGasLimit patch skipped (pattern missing in ${file})`
-    );
+    // console.warn(
+    //   `[kohaku] Tornado callGasLimit patch skipped (pattern missing in ${file})`
+    // );
     return;
   }
   const updated = source.replace(re, `$1${next}`);
   if (updated !== source) {
     writeFileSync(file, updated);
-    console.warn(
-      `[kohaku] Patched Tornado callGasLimit to ${callGasLimit.toString()} in ${file}`
-    );
+    // console.warn(
+    //   `[kohaku] Patched Tornado callGasLimit to ${callGasLimit.toString()} in ${file}`
+    // );
   }
 }
 
