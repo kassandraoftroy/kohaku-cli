@@ -166,7 +166,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option(
       "--amount-max",
-      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools / Tornado: largest single note)"
+      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools: largest single note; Tornado: full note balance)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
@@ -472,8 +472,7 @@ export function registerUnshieldCommand(program: Command): void {
           railgunGasEstimateFailed,
         } = await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
-        const maxPromptLabel =
-          privacyPoolsLargestNote || protocol === "tornado"
+        const maxPromptLabel = privacyPoolsLargestNote
             ? "max (largest single note)"
             : protocol === "railgun"
               ? "max (after fees)"
@@ -518,9 +517,7 @@ export function registerUnshieldCommand(program: Command): void {
           amount > maxAmountHint
         ) {
           const scope = privacyPoolsLargestNote
-            ? protocol === "tornado"
-              ? "largest Tornado note (one withdrawal uses one note)"
-              : "largest Privacy Pools note for this token (one withdrawal uses one note)"
+            ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
             : protocol === "railgun"
               ? "max unshield after estimated fees for this token"
               : "shielded balance for this token";

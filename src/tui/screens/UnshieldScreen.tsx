@@ -258,7 +258,7 @@ export function UnshieldScreen({
         ? formatUnits(maxHint, tokenMeta.decimals)
         : "unknown";
     const maxHintText =
-      protocol === "tornado" || protocol === "privacy-pools"
+      protocol === "privacy-pools"
         ? `largest note ~${maxLabel}`
         : `max ~${maxLabel}`;
     return (

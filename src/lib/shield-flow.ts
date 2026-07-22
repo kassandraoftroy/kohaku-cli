@@ -321,9 +321,7 @@ export async function prepareShieldPlan(opts: {
               };
 
         const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
-        const shieldTxs = toShieldTxs(op, {
-          allowMultiple: protocol === "tornado",
-        });
+        const shieldTxs = toShieldTxs(op);
         const shieldTx = shieldTxs[0]!;
 
         let approve: { to: string; data: string; value: bigint } | null = null;

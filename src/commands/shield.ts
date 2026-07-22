@@ -548,7 +548,7 @@ export function registerShieldCommand(program: Command): void {
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         try {
           const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
-          shieldTxs = toShieldTxs(op, { allowMultiple: protocol === "tornado" });
+          shieldTxs = toShieldTxs(op);
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
           cliError(msg);
