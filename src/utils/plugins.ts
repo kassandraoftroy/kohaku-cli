@@ -22,9 +22,8 @@ import {
   type TCNote,
 } from "@kohaku-eth/tornado-cash";
 import {
-  ensureTornadoPaymasterGasPatched,
   estimateTornadoPaymasterFee,
-  TORNADO_BASE_CALL_GAS_LIMIT,
+  tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { railgunPimlicoBundlerUrl } from "./rpc";
@@ -289,26 +288,15 @@ export function tornadoUnshieldOptions(
   maxFeePerGas: bigint,
   delegationPath: string,
   withdrawalCount: number,
-  tailCalls: readonly UnshieldTailCall[] = [],
-  callGasLimit?: bigint
+  tailCalls: readonly UnshieldTailCall[] = []
 ): TCPaymasterUnshieldOptions {
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
   }
   const extraWithdrawals = Math.max(0, withdrawalCount - 1);
-  const batchCallGasLimit =
-    extraWithdrawals > 0
-      ? BigInt(extraWithdrawals) * 400_000n + TORNADO_BASE_CALL_GAS_LIMIT
-      : undefined;
-  const effectiveCallGasLimit =
-    batchCallGasLimit != null && callGasLimit != null
-      ? batchCallGasLimit > callGasLimit
-        ? batchCallGasLimit
-        : callGasLimit
-      : (callGasLimit ?? batchCallGasLimit);
+  const feeCallGasLimit = tornadoWithdrawalCallGasLimit(extraWithdrawals);
   const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas, {
-    hasTailCalls: true,
-    callGasLimit: effectiveCallGasLimit,
+    callGasLimit: feeCallGasLimit,
   });
   const afterFee = amountWei - estimatedFee;
   if (afterFee <= 0n) {
@@ -471,7 +459,6 @@ export async function createProtocolPlugin(
   }
 
   if (protocol === "tornado") {
-    ensureTornadoPaymasterGasPatched();
     const config = TornadoCashConfigs[Number(chainId) as 1 | 11155111];
     if (!config) {
       throw new Error(

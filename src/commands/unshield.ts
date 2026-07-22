@@ -52,11 +52,7 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
-import {
-  ensureTornadoPaymasterGasPatched,
-  estimateTornadoCallGasLimit,
-  resolveTornadoPrepareMaxFeePerGas,
-} from "../utils/tornado-paymaster-gas.js";
+import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -407,24 +403,7 @@ export function registerUnshieldCommand(program: Command): void {
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const spin = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
-      let tornadoCallGasLimit: bigint | undefined;
       try {
-        if (protocol === "tornado") {
-          // Patch worker callGasLimit before the Tornado worker is spawned.
-          const gasCalls = [
-            { to: recipient, data: "0x", value: 0n },
-            ...tailCalls,
-          ];
-          const callGasLimit = estimateTornadoCallGasLimit(gasCalls);
-          tornadoCallGasLimit = callGasLimit;
-          ensureTornadoPaymasterGasPatched({ callGasLimit });
-          if (!quiet && tailCalls.length > 0) {
-            log.info(
-              `Tornado UserOp callGasLimit set to ${callGasLimit.toString()} (heuristic from tail calls).`
-            );
-          }
-        }
-
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,
@@ -646,8 +625,7 @@ export function registerUnshieldCommand(program: Command): void {
                     tornadoMaxFeePerGas!,
                     recipientDerivationPath!,
                     tornadoWithdrawalCount!,
-                    tailCalls,
-                    tornadoCallGasLimit
+                    tailCalls
                   )
                 )
               : prepareUnshield(asset, recipient),
