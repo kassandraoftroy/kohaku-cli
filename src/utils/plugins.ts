@@ -25,6 +25,7 @@ import {
   estimateTornadoPaymasterFee,
   tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
+import type { TornadoTailCall } from "./tornado-tail-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
@@ -275,11 +276,7 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
   }
 }
 
-export type UnshieldTailCall = {
-  to: `0x${string}`;
-  data: `0x${string}`;
-  value: bigint;
-};
+export type UnshieldTailCall = TornadoTailCall;
 
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
@@ -288,13 +285,18 @@ export function tornadoUnshieldOptions(
   maxFeePerGas: bigint,
   delegationPath: string,
   withdrawalCount: number,
-  tailCalls: readonly UnshieldTailCall[] = []
+  tailCalls: readonly UnshieldTailCall[] = [],
+  /** Measured execution-tail gas for user `tailCalls` (SDK `tailCallsGasEstimate`). */
+  tailCallsGasEstimate?: bigint
 ): TCPaymasterUnshieldOptions {
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
   }
   const extraWithdrawals = Math.max(0, withdrawalCount - 1);
-  const feeCallGasLimit = tornadoWithdrawalCallGasLimit(extraWithdrawals);
+  const feeCallGasLimit = tornadoWithdrawalCallGasLimit(
+    extraWithdrawals,
+    tailCallsGasEstimate
+  );
   const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas, {
     callGasLimit: feeCallGasLimit,
   });
@@ -315,6 +317,9 @@ export function tornadoUnshieldOptions(
   return {
     mode: "paymaster",
     delegation: { mode: "deterministic", path: delegationPath },
+    ...(tailCallsGasEstimate !== undefined
+      ? { tailCallsGasEstimate }
+      : {}),
     tailCalls: async () => [
       ...(forwardValue > 0n
         ? [{ to: recipient, data: "0x" as const, value: forwardValue }]

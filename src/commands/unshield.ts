@@ -53,6 +53,7 @@ import {
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
+import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -607,8 +608,38 @@ export function registerUnshieldCommand(program: Command): void {
           assertTornadoPaymasterConfigured(chainId);
         }
         let tornadoMaxFeePerGas: bigint | undefined;
+        let tornadoTailCallsGasEstimate: bigint | undefined;
         if (protocol === "tornado") {
           tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(chainId);
+          if (tailCalls.length > 0) {
+            tornadoTailCallsGasEstimate = await runQuietSpinner(
+              quiet,
+              spin,
+              {
+                start: "Estimating Tornado tail-call gas (state override)…",
+                failure: "Tail-call gas estimate failed.",
+              },
+              () =>
+                resolveTornadoTailCallsGasEstimate({
+                  rpcUrl,
+                  account: recipient,
+                  amountWei: amount,
+                  maxFeePerGas: tornadoMaxFeePerGas!,
+                  extraWithdrawals: Math.max(0, (tornadoWithdrawalCount ?? 1) - 1),
+                  userTailCalls: tailCalls,
+                  asset: tokenMeta.isEth
+                    ? { kind: "native" }
+                    : {
+                        kind: "erc20",
+                        token: tokenMeta.tokenAddress as `0x${string}`,
+                      },
+                }),
+              (gas) =>
+                gas !== undefined
+                  ? `Tail-call gas estimate: ${gas.toString()}`
+                  : "No tail-call gas estimate needed."
+            );
+          }
         }
         const privateOp = await runQuietSpinner(
           quiet,
@@ -625,7 +656,8 @@ export function registerUnshieldCommand(program: Command): void {
                     tornadoMaxFeePerGas!,
                     recipientDerivationPath!,
                     tornadoWithdrawalCount!,
-                    tailCalls
+                    tailCalls,
+                    tornadoTailCallsGasEstimate
                   )
                 )
               : prepareUnshield(asset, recipient),

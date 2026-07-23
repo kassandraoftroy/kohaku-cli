@@ -6,25 +6,33 @@ const TORNADO_BASE_CALL_GAS_LIMIT = 300_000n;
 /** SDK `PER_DIRECT_WITHDRAW_GAS` (ETH pools). */
 const TORNADO_PER_DIRECT_WITHDRAW_GAS = 400_000n;
 
+/** SDK `PER_DIRECT_WITHDRAW_GAS_ERC20`. */
+const TORNADO_PER_DIRECT_WITHDRAW_GAS_ERC20 = 500_000n;
+
 const TORNADO_PAYMASTER_GAS_UNITS = {
   preVerificationGas: 80_000n,
   verificationGasLimit: 50_000n,
   paymasterVerificationGasLimit: 350_000n,
-  // PrivacyPaymaster postOp only refunds unused fee (ETH/ERC20); Tornado withdraw runs in
-  // TornadoFeeAdapter.collectFee during paymaster validation (see privacy-paymaster tests: 50k).
   paymasterPostOpGasLimit: 50_000n,
 } as const;
 
 const ERC20_TRANSFER_GAS = 100_000n;
 
 /**
- * Mirrors SDK `reasonableGasUnitsForBatch` callGasLimit (ETH, tailCalls present).
- * Used only to reserve paymaster fee before prepare when building `tailCalls` forward value.
+ * Mirrors SDK `reasonableGasUnitsForBatch` callGasLimit.
+ * `executionTail` is user `tailCalls` gas (SDK `tailCallsGasEstimate`); defaults to
+ * the static 300k baseline when omitted.
  */
-export function tornadoWithdrawalCallGasLimit(extraWithdrawals: number): bigint {
-  const withdrawalGas =
-    BigInt(Math.max(0, extraWithdrawals)) * TORNADO_PER_DIRECT_WITHDRAW_GAS;
-  return withdrawalGas + TORNADO_BASE_CALL_GAS_LIMIT;
+export function tornadoWithdrawalCallGasLimit(
+  extraWithdrawals: number,
+  executionTail?: bigint,
+  isERC20 = false
+): bigint {
+  const perWithdraw = isERC20
+    ? TORNADO_PER_DIRECT_WITHDRAW_GAS_ERC20
+    : TORNADO_PER_DIRECT_WITHDRAW_GAS;
+  const withdrawalGas = BigInt(Math.max(0, extraWithdrawals)) * perWithdraw;
+  return withdrawalGas + (executionTail ?? TORNADO_BASE_CALL_GAS_LIMIT);
 }
 
 /** Mirrors tornado-cash `computeMinimumViableFee` (incl. SDK 1.2× safety margin). */
