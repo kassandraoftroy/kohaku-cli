@@ -114,7 +114,7 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
 ```
 
-Confirm the broadcast prompt (amount + recipient). The CLI syncs private state, prepares the proof, and submits the UserOperation. Tornado unshields currently consume exactly one note.
+Confirm the broadcast prompt (amount + recipient). The CLI syncs private state, prepares the proof, and submits the UserOperation. One Tornado unshield can spend multiple notes in a single paymaster UserOp when the amount needs more than one denomination.
 
 ```bash
 kohaku balances --wallet testWallet
@@ -358,16 +358,16 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount. |
-| `--amount-max` | Maximum spendable amount (Tornado / Privacy Pools: largest single note). |
+| `--amount-max` | Maximum spendable amount (Privacy Pools: largest single note; Tornado: sum of unspent notes). |
 | `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the Tornado payout call. Optional third field is `msg.value` (hex or decimal wei). Currently Tornado-only. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol broadcaster, relayer, or paymaster. **Omit** to print prepared private operation JSON only. |
 | `--non-interactive` | JSON; requires `--wallet`, `--password`, `--to` or `--next`, and an amount flag. |
 | `--dataDir <path>` | Data root. |
 
-**Interactive:** recipient menu (next fresh / custom address / existing account) → amount (shows max; Privacy Pools and Tornado capped by largest single note) → prepared op or broadcast confirmation.
+**Interactive:** recipient menu (next fresh / custom address / existing account) → amount (shows max; Privacy Pools capped by largest single note; Tornado by total unspent notes) → prepared op or broadcast confirmation.
 
-**Tornado amounts:** shields must be an exact multiple of 0.1 ETH (e.g. `1.3` OK, `1.35` not). Unshields currently withdraw exactly one note denomination (`0.1` / `1` / `10` / `100` ETH depending on chain); amounts like `0.2` or `1.2` error.
+**Tornado amounts:** shields and unshields must be an exact multiple of 0.1 ETH (e.g. `1.3` OK, `1.35` not). Unshield can combine multiple notes in one UserOp to reach that total (e.g. `0.2` or `1.2`).
 
 **Examples:**
 
