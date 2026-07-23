@@ -22,9 +22,10 @@ import {
   type TCNote,
 } from "@kohaku-eth/tornado-cash";
 import {
-  ensureTornadoPaymasterGasPatched,
   estimateTornadoPaymasterFee,
+  tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
+import type { TornadoTailCall } from "./tornado-tail-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
@@ -131,10 +132,7 @@ export const TORNADO_ETH_MIN_DENOMINATION_WEI: Record<string, bigint> = {
   "11155111": 100000000000000000n,
 };
 
-/**
- * Fixed ETH pool denominations (wei). Unshield currently withdraws exactly one note,
- * so the amount must match one of these values (and an owned note of that size).
- */
+/** Fixed ETH pool denominations (wei) per chain. */
 export const TORNADO_ETH_DENOMINATIONS_WEI: Record<string, readonly bigint[]> = {
   "1": [
     100000000000000000n, // 0.1
@@ -170,22 +168,7 @@ export function assertTornadoUnshieldAmount(
   chainId: bigint,
   amount: bigint
 ): void {
-  const dens = TORNADO_ETH_DENOMINATIONS_WEI[chainId.toString()];
-  if (!dens) {
-    throw new Error(`Tornado Cash is not configured for chainId ${chainId.toString()}.`);
-  }
-  if (!dens.includes(amount)) {
-    const labels = dens
-      .map((d) =>
-        d < 1000000000000000000n
-          ? `${(Number(d) / 1e18).toString()}`
-          : (d / 1000000000000000000n).toString()
-      )
-      .join(", ");
-    throw new Error(
-      `Tornado unshield currently supports a single note only. Amount must be exactly one pool denomination (${labels} ETH).`
-    );
-  }
+  assertTornadoShieldAmount(chainId, amount);
 }
 
 /** Throws if the ERC-20 is not on the Privacy Pools whitelist for this chain (non-ETH tokens only). */
@@ -293,11 +276,15 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
   }
 }
 
-export type UnshieldTailCall = {
-  to: `0x${string}`;
-  data: `0x${string}`;
-  value: bigint;
-};
+export type UnshieldTailCall = TornadoTailCall;
+
+/**
+ * Extra pad on top of `estimateTornadoPaymasterFee` when the CLI must bake an
+ * ETH forward into user `tailCalls` (SDK will not run its own `forwardCalls`).
+ * Absorbs bundler gas refine making the proof fee higher than our pre-estimate.
+ */
+const TAIL_FORWARD_FEE_PAD_NUM = 23n;
+const TAIL_FORWARD_FEE_PAD_DEN = 20n;
 
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
@@ -307,20 +294,39 @@ export function tornadoUnshieldOptions(
   delegationPath: string,
   withdrawalCount: number,
   tailCalls: readonly UnshieldTailCall[] = [],
-  callGasLimit?: bigint
+  /** Measured execution-tail gas for user `tailCalls` (SDK `tailCallsGasEstimate`). */
+  tailCallsGasEstimate?: bigint
 ): TCPaymasterUnshieldOptions {
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
   }
-  const estimatedFee =
-    estimateTornadoPaymasterFee(maxFeePerGas, {
-      hasTailCalls: true,
-      callGasLimit,
-    }) * BigInt(withdrawalCount);
-  const afterFee = amountWei - estimatedFee;
+
+  const base: TCPaymasterUnshieldOptions = {
+    mode: "paymaster",
+    delegation: { mode: "deterministic", path: delegationPath },
+  };
+
+  // No user tails: omit `tailCalls` so the SDK forwards leftovers with the
+  // *actual* proof fee (`forwardCalls(fee)`). Baking our own forward here was
+  // the Sepolia ExecuteError(1) failure mode (pre-estimate fee < proof fee).
+  if (tailCalls.length === 0) {
+    return base;
+  }
+
+  const extraWithdrawals = Math.max(0, withdrawalCount - 1);
+  const feeCallGasLimit = tornadoWithdrawalCallGasLimit(
+    extraWithdrawals,
+    tailCallsGasEstimate
+  );
+  const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas, {
+    callGasLimit: feeCallGasLimit,
+  });
+  const feeReserve =
+    (estimatedFee * TAIL_FORWARD_FEE_PAD_NUM) / TAIL_FORWARD_FEE_PAD_DEN;
+  const afterFee = amountWei - feeReserve;
   if (afterFee <= 0n) {
     throw new Error(
-      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${estimatedFee.toString()} wei).`
+      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${feeReserve.toString()} wei).`
     );
   }
   const userTailValue = tailCalls.reduce((sum, call) => sum + call.value, 0n);
@@ -332,8 +338,10 @@ export function tornadoUnshieldOptions(
   const forwardValue = afterFee - userTailValue;
 
   return {
-    mode: "paymaster",
-    delegation: { mode: "deterministic", path: delegationPath },
+    ...base,
+    // Passed through to SDK prepareUnshield → paymasterWithdrawThunk as
+    // `tailCallsGasEstimate` (execution-tail baseline when bundler estimate fails).
+    ...(tailCallsGasEstimate !== undefined ? { tailCallsGasEstimate } : {}),
     tailCalls: async () => [
       ...(forwardValue > 0n
         ? [{ to: recipient, data: "0x" as const, value: forwardValue }]
@@ -355,22 +363,20 @@ export async function listTornadoUnspentNotes(
   return notes.filter((n) => n.balance > 0n);
 }
 
-/** Largest owned unspent Tornado note amount (0 when none). */
-export async function largestTornadoNoteAmount(
+/** Sum of all unspent Tornado note denominations (0 when none). */
+export async function totalTornadoUnspentBalance(
   plugin: AnyPlugin,
   asset: AssetAmount["asset"]
 ): Promise<bigint> {
-  let largest = 0n;
+  let sum = 0n;
   for (const note of await listTornadoUnspentNotes(plugin, asset)) {
-    if (note.amount > largest) largest = note.amount;
+    sum += note.amount;
   }
-  return largest;
+  return sum;
 }
 
 /**
- * Tornado unshield is temporarily single-note only: the amount must match
- * exactly one owned unspent note. Returns 1 so paymaster fee reservation
- * stays aligned with a single UserOperation.
+ * Number of Tornado notes consumed for this unshield amount (one paymaster UserOp).
  */
 export async function countTornadoWithdrawals(
   plugin: AnyPlugin,
@@ -378,13 +384,31 @@ export async function countTornadoWithdrawals(
   amount: bigint
 ): Promise<number> {
   const notes = await listTornadoUnspentNotes(plugin, asset.asset);
-  const match = notes.find((n) => n.amount === amount);
-  if (!match) {
+  const notesByDenom = new Map<bigint, number>();
+  for (const n of notes) {
+    notesByDenom.set(n.amount, (notesByDenom.get(n.amount) ?? 0) + 1);
+  }
+  const denominations = [...notesByDenom.keys()].sort((a, b) =>
+    a > b ? -1 : a < b ? 1 : 0
+  );
+
+  let amountToWithdraw = 0n;
+  let count = 0;
+  for (const denom of denominations) {
+    if (amountToWithdraw + denom > amount) continue;
+    let remaining = notesByDenom.get(denom)!;
+    while (remaining > 0 && amountToWithdraw + denom <= amount) {
+      count++;
+      amountToWithdraw += denom;
+      remaining--;
+    }
+  }
+  if (amountToWithdraw < amount) {
     throw new Error(
-      `No single Tornado note of exactly ${amount.toString()} wei. Multi-note withdrawals are temporarily disabled — unshield one note denomination at a time.`
+      `Insufficient Tornado balance to unshield ${amount.toString()} wei (notes cover ${amountToWithdraw.toString()} wei).`
     );
   }
-  return 1;
+  return count;
 }
 
 export async function prepareProtocolShield(
@@ -462,7 +486,6 @@ export async function createProtocolPlugin(
   }
 
   if (protocol === "tornado") {
-    ensureTornadoPaymasterGasPatched();
     const config = TornadoCashConfigs[Number(chainId) as 1 | 11155111];
     if (!config) {
       throw new Error(

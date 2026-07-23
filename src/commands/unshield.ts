@@ -52,11 +52,8 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
-import {
-  ensureTornadoPaymasterGasPatched,
-  estimateTornadoCallGasLimit,
-  resolveTornadoPrepareMaxFeePerGas,
-} from "../utils/tornado-paymaster-gas.js";
+import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
+import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -166,7 +163,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option(
       "--amount-max",
-      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools / Tornado: largest single note)"
+      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools: largest single note; Tornado: full note balance)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
@@ -407,24 +404,7 @@ export function registerUnshieldCommand(program: Command): void {
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const spin = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
-      let tornadoCallGasLimit: bigint | undefined;
       try {
-        if (protocol === "tornado") {
-          // Patch worker callGasLimit before the Tornado worker is spawned.
-          const gasCalls = [
-            { to: recipient, data: "0x", value: 0n },
-            ...tailCalls,
-          ];
-          const callGasLimit = estimateTornadoCallGasLimit(gasCalls);
-          tornadoCallGasLimit = callGasLimit;
-          ensureTornadoPaymasterGasPatched({ callGasLimit });
-          if (!quiet && tailCalls.length > 0) {
-            log.info(
-              `Tornado UserOp callGasLimit set to ${callGasLimit.toString()} (heuristic from tail calls).`
-            );
-          }
-        }
-
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,
@@ -472,8 +452,7 @@ export function registerUnshieldCommand(program: Command): void {
           railgunGasEstimateFailed,
         } = await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
-        const maxPromptLabel =
-          privacyPoolsLargestNote || protocol === "tornado"
+        const maxPromptLabel = privacyPoolsLargestNote
             ? "max (largest single note)"
             : protocol === "railgun"
               ? "max (after fees)"
@@ -518,9 +497,7 @@ export function registerUnshieldCommand(program: Command): void {
           amount > maxAmountHint
         ) {
           const scope = privacyPoolsLargestNote
-            ? protocol === "tornado"
-              ? "largest Tornado note (one withdrawal uses one note)"
-              : "largest Privacy Pools note for this token (one withdrawal uses one note)"
+            ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
             : protocol === "railgun"
               ? "max unshield after estimated fees for this token"
               : "shielded balance for this token";
@@ -631,8 +608,38 @@ export function registerUnshieldCommand(program: Command): void {
           assertTornadoPaymasterConfigured(chainId);
         }
         let tornadoMaxFeePerGas: bigint | undefined;
+        let tornadoTailCallsGasEstimate: bigint | undefined;
         if (protocol === "tornado") {
           tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(chainId);
+          if (tailCalls.length > 0) {
+            tornadoTailCallsGasEstimate = await runQuietSpinner(
+              quiet,
+              spin,
+              {
+                start: "Estimating Tornado tail-call gas (state override)…",
+                failure: "Tail-call gas estimate failed.",
+              },
+              () =>
+                resolveTornadoTailCallsGasEstimate({
+                  rpcUrl,
+                  account: recipient,
+                  amountWei: amount,
+                  maxFeePerGas: tornadoMaxFeePerGas!,
+                  extraWithdrawals: Math.max(0, (tornadoWithdrawalCount ?? 1) - 1),
+                  userTailCalls: tailCalls,
+                  asset: tokenMeta.isEth
+                    ? { kind: "native" }
+                    : {
+                        kind: "erc20",
+                        token: tokenMeta.tokenAddress as `0x${string}`,
+                      },
+                }),
+              (gas) =>
+                gas !== undefined
+                  ? `Tail-call gas estimate: ${gas.toString()}`
+                  : "No tail-call gas estimate needed."
+            );
+          }
         }
         const privateOp = await runQuietSpinner(
           quiet,
@@ -650,7 +657,7 @@ export function registerUnshieldCommand(program: Command): void {
                     recipientDerivationPath!,
                     tornadoWithdrawalCount!,
                     tailCalls,
-                    tornadoCallGasLimit
+                    tornadoTailCallsGasEstimate
                   )
                 )
               : prepareUnshield(asset, recipient),

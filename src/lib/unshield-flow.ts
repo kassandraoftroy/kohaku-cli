@@ -18,7 +18,7 @@ import {
   countTornadoWithdrawals,
   configureRailgunForUnshield,
   ETH_AS_ERC20,
-  largestTornadoNoteAmount,
+  totalTornadoUnspentBalance,
   PRIVACY_POOLS_BROADCASTER_URL,
   railgunNativeEthAssetAmount,
   tornadoUnshieldOptions,
@@ -138,20 +138,17 @@ export async function maxUnshieldAmountHint(
     return { cap: 0n, privacyPoolsLargestNote: false };
   }
 
-  // Tornado: temporary single-note unshield — max is the largest owned note.
+  // Tornado: max is the sum of all unspent notes for this asset.
   if (protocol === "tornado") {
     const asset = {
       __type: "erc20" as const,
       contract: ETH_AS_ERC20 as `0x${string}`,
     };
     try {
-      const largest = await largestTornadoNoteAmount(
-        plugin as AnyPlugin,
-        asset
-      );
-      return { cap: largest, privacyPoolsLargestNote: true };
+      const cap = await totalTornadoUnspentBalance(plugin as AnyPlugin, asset);
+      return { cap, privacyPoolsLargestNote: false };
     } catch {
-      return { cap: 0n, privacyPoolsLargestNote: true };
+      return { cap: 0n, privacyPoolsLargestNote: false };
     }
   }
 
