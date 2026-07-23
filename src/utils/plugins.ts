@@ -317,9 +317,9 @@ export function tornadoUnshieldOptions(
   return {
     mode: "paymaster",
     delegation: { mode: "deterministic", path: delegationPath },
-    ...(tailCallsGasEstimate !== undefined
-      ? { tailCallsGasEstimate }
-      : {}),
+    // Passed through to SDK prepareUnshield → paymasterWithdrawThunk as
+    // `tailCallsGasEstimate` (execution-tail baseline when bundler estimate fails).
+    ...(tailCallsGasEstimate !== undefined ? { tailCallsGasEstimate } : {}),
     tailCalls: async () => [
       ...(forwardValue > 0n
         ? [{ to: recipient, data: "0x" as const, value: forwardValue }]

@@ -34,8 +34,8 @@ const erc20Iface = new Interface(ERC20_ABI);
 const abiCoder = AbiCoder.defaultAbiCoder();
 
 /** ~10% headroom on measured execution-tail gas before feeding SDK fee math. */
-const TAIL_GAS_BUFFER_NUM = 11n;
-const TAIL_GAS_BUFFER_DEN = 10n;
+const TAIL_GAS_OVERHEAD_NUM = 11n;
+const TAIL_GAS_OVERHEAD_DEN = 10n;
 
 const MAX_REFINE_ITERS = 2;
 /** Max ERC-20 `_balances` mapping base slots to probe (OZ / USDC / etc.). */
@@ -77,6 +77,11 @@ function encodeAccountCalls(calls: readonly TornadoTailCall[]): `0x${string}` {
 
 function toHexQuantity(value: bigint): `0x${string}` {
   return `0x${value.toString(16)}`;
+}
+
+/** Apply the required 10% overhead on a raw eth_estimateGas measurement. */
+export function withTailCallsGasOverhead(measuredGas: bigint): bigint {
+  return (measuredGas * TAIL_GAS_OVERHEAD_NUM) / TAIL_GAS_OVERHEAD_DEN;
 }
 
 function toBytes32(value: bigint): `0x${string}` {
@@ -339,7 +344,7 @@ function buildSimulationPlan(opts: {
 /**
  * Resolve `tailCallsGasEstimate` for the SDK: simulate the forwarding + user
  * tail batch with injected post-unshield funds (ETH and/or ERC-20), refine
- * against the fee that depends on that estimate, then apply a small buffer.
+ * against the fee that depends on that estimate, then apply **10% overhead**.
  *
  * Returns `undefined` when there are no user-supplied tail calls (SDK uses its
  * static forward-only baseline).
@@ -360,7 +365,7 @@ export async function resolveTornadoTailCallsGasEstimate(opts: {
   const isERC20 = asset.kind === "erc20";
 
   let executionTail = tornadoWithdrawalCallGasLimit(0, undefined, isERC20);
-  let measured = executionTail;
+  let measured = 0n;
 
   for (let i = 0; i < MAX_REFINE_ITERS; i++) {
     const callGasLimit = tornadoWithdrawalCallGasLimit(
@@ -386,8 +391,9 @@ export async function resolveTornadoTailCallsGasEstimate(opts: {
       nativeBalanceWei: plan.nativeBalanceWei,
       erc20: plan.erc20,
     });
-    executionTail = (measured * TAIL_GAS_BUFFER_NUM) / TAIL_GAS_BUFFER_DEN;
+    // Feed the buffered value into the next fee/forward refine iteration.
+    executionTail = withTailCallsGasOverhead(measured);
   }
 
-  return executionTail;
+  return withTailCallsGasOverhead(measured);
 }
