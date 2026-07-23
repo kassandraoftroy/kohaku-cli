@@ -278,6 +278,14 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
 
 export type UnshieldTailCall = TornadoTailCall;
 
+/**
+ * Extra pad on top of `estimateTornadoPaymasterFee` when the CLI must bake an
+ * ETH forward into user `tailCalls` (SDK will not run its own `forwardCalls`).
+ * Absorbs bundler gas refine making the proof fee higher than our pre-estimate.
+ */
+const TAIL_FORWARD_FEE_PAD_NUM = 23n;
+const TAIL_FORWARD_FEE_PAD_DEN = 20n;
+
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
   recipient: `0x${string}`,
@@ -292,6 +300,19 @@ export function tornadoUnshieldOptions(
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
   }
+
+  const base: TCPaymasterUnshieldOptions = {
+    mode: "paymaster",
+    delegation: { mode: "deterministic", path: delegationPath },
+  };
+
+  // No user tails: omit `tailCalls` so the SDK forwards leftovers with the
+  // *actual* proof fee (`forwardCalls(fee)`). Baking our own forward here was
+  // the Sepolia ExecuteError(1) failure mode (pre-estimate fee < proof fee).
+  if (tailCalls.length === 0) {
+    return base;
+  }
+
   const extraWithdrawals = Math.max(0, withdrawalCount - 1);
   const feeCallGasLimit = tornadoWithdrawalCallGasLimit(
     extraWithdrawals,
@@ -300,10 +321,12 @@ export function tornadoUnshieldOptions(
   const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas, {
     callGasLimit: feeCallGasLimit,
   });
-  const afterFee = amountWei - estimatedFee;
+  const feeReserve =
+    (estimatedFee * TAIL_FORWARD_FEE_PAD_NUM) / TAIL_FORWARD_FEE_PAD_DEN;
+  const afterFee = amountWei - feeReserve;
   if (afterFee <= 0n) {
     throw new Error(
-      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${estimatedFee.toString()} wei).`
+      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${feeReserve.toString()} wei).`
     );
   }
   const userTailValue = tailCalls.reduce((sum, call) => sum + call.value, 0n);
@@ -315,8 +338,7 @@ export function tornadoUnshieldOptions(
   const forwardValue = afterFee - userTailValue;
 
   return {
-    mode: "paymaster",
-    delegation: { mode: "deterministic", path: delegationPath },
+    ...base,
     // Passed through to SDK prepareUnshield → paymasterWithdrawThunk as
     // `tailCallsGasEstimate` (execution-tail baseline when bundler estimate fails).
     ...(tailCallsGasEstimate !== undefined ? { tailCallsGasEstimate } : {}),
