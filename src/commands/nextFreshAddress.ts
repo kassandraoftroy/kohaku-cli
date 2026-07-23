@@ -14,6 +14,7 @@ import { readSeedKeystore } from "../utils/mnemonic";
 type NextFreshAddressOpts = {
   wallet?: string;
   password?: string;
+  peek?: boolean;
   nonInteractive?: boolean;
   dataDir?: string;
 };
@@ -24,6 +25,10 @@ export function registerNextFreshAddressCommand(program: Command): void {
     .description("Generate and persist the next public account address")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .option(
+      "--peek",
+      "Print the next fresh address without persisting it (useful for crafting payloads before --next)"
+    )
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: NextFreshAddressOpts) => {
@@ -61,7 +66,9 @@ export function registerNextFreshAddressCommand(program: Command): void {
       }
 
       const storage = makePublicAccountsStorage(walletDir, mnemonic, password);
-      const added = storage.addNextAccounts(1);
-      console.log(added[0]!.address);
+      const accounts = opts.peek
+        ? storage.peekNextAccounts(1)
+        : storage.addNextAccounts(1);
+      console.log(accounts[0]!.address);
     });
 }

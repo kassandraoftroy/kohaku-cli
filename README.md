@@ -176,12 +176,13 @@ List wallet names and network kind (mainnet / testnet).
 
 ### `next-fresh-address`
 
-Derive and persist the next HD public account; print its address.
+Derive the next HD public account and print its address. By default the account is also persisted; use `--peek` to inspect it without writing.
 
 | Option | Description |
 |--------|-------------|
 | `--wallet <name>` | Wallet (prompt if omitted). |
 | `--password <password>` | Unlock password. |
+| `--peek` | Print the next fresh address without persisting it (e.g. to craft `--tail-calls` before `unshield --next`). |
 | `--non-interactive` | Requires `--wallet` and `--password`; prints address only. |
 | `--dataDir <path>` | Data root. |
 
@@ -191,6 +192,7 @@ Derive and persist the next HD public account; print its address.
 
 ```bash
 kohaku next-fresh-address --wallet testWallet
+kohaku next-fresh-address --wallet testWallet --peek
 kohaku next-fresh-address --wallet testWallet --password "$WALLET_PW" --non-interactive
 ```
 
@@ -395,7 +397,7 @@ Files: `public-accounts.json`, `rg-storage.json`, `ppv1-storage.json`.
 ## Tips
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, and `unshield` default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
-- **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source.
+- **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
 - **Private key exports:** `export-private-key` prints raw key material to stdout. Avoid terminal logs, shell history, and shared environments.
 - **Agents:** Pass `--non-interactive --password … --wallet …` and parse JSON stdout; set `RPC_URL` in the environment to avoid repeating `--rpc-url`.
