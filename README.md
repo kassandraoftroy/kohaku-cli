@@ -14,7 +14,15 @@ npm run build
 npm run dev:prod -- <command> ...
 ```
 
-After build, the binary is `kohaku` (see `package.json`). Examples below use `kohaku`; swap in `npm run dev:prod --` if you have not built yet.
+After build, run via the bin launcher (registers an ESM resolve hook, then loads `dist/`):
+
+```bash
+npm start -- --version
+# or link onto PATH (point at bin/, not dist/):
+#   sudo ln -sf "$(pwd)/bin/kohaku.mjs" /usr/local/bin/kohaku
+```
+
+Examples below use `kohaku`; swap in `npm run dev:prod --` if you have not built yet.
 
 Set your RPC once per shell (Sepolia for `--testnet` wallets):
 
