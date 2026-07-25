@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > NOTICE: this CLI has **NOT BEEN AUDITED** and **IS UNDER ACTIVE DEVELOPMENT** and **HAS BEEN WRITTEN WITH HELP FROM CLAUDE** et al. **DO NOT USE ON MAINNET** without understanding **YOU RISK CATASTROPHIC LOSS OF FUNDS**.
 
-A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, [Railgun](https://railgun.org/) and [Privacy Pools](https://privacypools.com/). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
+A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, Railgun and Privacy Pools (V1). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
@@ -19,7 +19,7 @@ After build, run via the bin launcher (registers an ESM resolve hook, then loads
 ```bash
 npm start -- --version
 # or link onto PATH (point at bin/, not dist/):
-#   sudo ln -sf "$(pwd)/bin/kohaku.mjs" /usr/local/bin/kohaku
+#   ln -sf "$(pwd)/bin/kohaku.mjs" ~/.local/bin/kohaku
 ```
 
 Examples below use `kohaku`; swap in `npm run dev:prod --` if you have not built yet.
@@ -29,6 +29,14 @@ Set your RPC once per shell (Sepolia for `--testnet` wallets):
 ```bash
 export RPC_URL="https://sepolia.infura.io/v3/YOUR_KEY"
 ```
+
+Optionally set a default privacy protocol so `shield` / `unshield` can omit `--protocol`, and so `balances` includes that protocol’s private balances by default:
+
+```bash
+export DEFAULT_PRIVACY_PROTOCOL=tornado   # or railgun | privacy-pools
+```
+
+If unset (or set to anything else), `--protocol` is required on shield/unshield, and `balances` shows **public** balances only unless you pass `--include`.
 
 Some commands sync private state by calling `eth_getLogs` in chunks (default: up to **499** blocks per request). If your provider rejects large log ranges or times out, lower the chunk size:
 
@@ -67,15 +75,15 @@ Paste your 12- or 24-word phrase when prompted (masked). `--rpc-url` or `RPC_URL
 ### 2. See what you have
 
 ```bash
-kohaku balances
+kohaku balances --include tornado
 ```
 
-Pick `testWallet` if you have more than one wallet, enter the wallet password, then wait for the spinner. You should see **Public** totals (ETH + common ERC-20s on Sepolia) and private balances for the supported protocols.
+Pick `testWallet` if you have more than one wallet, enter the wallet password, then wait for the spinner. You should see **Public** totals (ETH + common ERC-20s on Sepolia) and Tornado private balances (`--include` selects which private protocols to sync; without it, only `DEFAULT_PRIVACY_PROTOCOL` is included, or none if that env is unset).
 
 To pin the wallet and get per-address detail:
 
 ```bash
-kohaku balances --wallet testWallet --verbose
+kohaku balances --wallet testWallet --include tornado --verbose
 ```
 
 ### 3. Get a deposit address
@@ -105,7 +113,7 @@ Tornado shields must be exact multiples of 0.1 ETH. Confirm the shield transacti
 Check balances again — public ETH should drop and the Tornado private balance should show a 0.1 ETH note:
 
 ```bash
-kohaku balances --wallet testWallet
+kohaku balances --wallet testWallet --include tornado
 ```
 
 ### 5. Unshield to a fresh public address
@@ -125,7 +133,7 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted
 Confirm the broadcast prompt (amount + recipient). The CLI syncs private state, prepares the proof, and submits the UserOperation. One Tornado unshield can spend multiple notes in a single paymaster UserOp when the amount needs more than one denomination.
 
 ```bash
-kohaku balances --wallet testWallet
+kohaku balances --wallet testWallet --include tornado
 ```
 
 You should see the Tornado private balance decrease and the fresh public account receive the unshielded ETH minus the paymaster fee.
@@ -139,6 +147,7 @@ Global behavior:
 | Topic | Detail |
 |--------|--------|
 | **RPC** | `--rpc-url <url>` or env `RPC_URL` (required for most commands except `create-wallet` without `--import`, and `list-wallets`). |
+| **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
 | **Data directory** | `--dataDir <path>` (default `~/.kohaku-cli`). |
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
 | **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
@@ -232,14 +241,17 @@ kohaku export-private-key --wallet testWallet --address 0xYourAddress
 
 ### `balances`
 
-Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus any private tokens discovered), and **private** balances for Railgun and Privacy Pools.
+Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus any private tokens discovered), and **private** balances for the protocols you select.
+
+By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (if set). Otherwise only public balances are shown, with a short warning. Pass `--include` to sync one or more protocols explicitly (required for multiple protocols at once, or for any private balance when the env is unset).
 
 | Option | Description |
 |--------|-------------|
 | `--wallet <name>` | Wallet (optional in interactive mode). |
 | `--password <password>` | Unlock password. |
 | `--rpc-url <url>` | RPC endpoint. |
-| `--verbose` | Human: per-address public breakdown + Privacy Pools note list. JSON: adds `public_account_indexes_by_address` and `private_notes`. |
+| `--include <protocols>` | Comma-separated private protocols to sync (`railgun`, `privacy-pools`, `tornado`). Default: `DEFAULT_PRIVACY_PROTOCOL` only, or none if unset. |
+| `--verbose` | Human: per-address public breakdown + private note list for included protocols. JSON: adds `public_account_indexes_by_address` and `private_notes`. |
 | `--tokensList <addrs>` | Extra ERC-20 addresses (comma- or space-separated), merged with chain defaults. |
 | `--non-interactive` | JSON only; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
@@ -251,8 +263,9 @@ Default Sepolia ERC-20s include USDC and WETH; mainnet adds USDC, USDT, DAI, WET
 **Examples:**
 
 ```bash
-kohaku balances --wallet testWallet
-kohaku balances --wallet testWallet --verbose --tokensList 0xYourToken
+kohaku balances --wallet testWallet --include tornado
+kohaku balances --wallet testWallet --include railgun,tornado --verbose
+kohaku balances --wallet testWallet --verbose --include privacy-pools --tokensList 0xYourToken
 ```
 
 ---
@@ -323,7 +336,7 @@ Move funds from a **public** account into a private protocol.
 
 | Option | Description |
 |--------|-------------|
-| `--protocol <railgun\|privacy-pools\|tornado>` | **Required.** |
+| `--protocol <railgun\|privacy-pools\|tornado>` | Required unless `DEFAULT_PRIVACY_PROTOCOL` is set to one of those values. |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--from <address-or-index>` | Sender public account (address or HD index). |
@@ -360,7 +373,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 
 | Option | Description |
 |--------|-------------|
-| `--protocol <railgun\|privacy-pools\|tornado>` | **Required.** |
+| `--protocol <railgun\|privacy-pools\|tornado>` | Required unless `DEFAULT_PRIVACY_PROTOCOL` is set to one of those values. |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--to <address>` | Recipient public address. |

@@ -15,8 +15,9 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import {
-  parseIncludeProtocols,
+  resolveIncludeProtocols,
   shouldIncludeProtocol,
+  SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
 } from "../utils/plugins";
 import {
@@ -200,7 +201,7 @@ function printHumanBalances(opts: {
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
-  includeProtocols: SupportedProtocol[] | null;
+  includeProtocols: SupportedProtocol[];
   verbose: boolean;
   privateNotes?: Partial<Record<SupportedProtocol, PrivateNoteRow[]>>;
 }): void {
@@ -216,6 +217,15 @@ function printHumanBalances(opts: {
   console.log();
 
   printAggregatedTotalsTable(opts.publicAggregated);
+
+  if (opts.includeProtocols.length === 0) {
+    console.log();
+    console.log(
+      chalk.yellow(
+        "  No private protocol balances shown. Pass --include <protocols> or set DEFAULT_PRIVACY_PROTOCOL."
+      )
+    );
+  }
 
   if (shouldIncludeProtocol("railgun", opts.includeProtocols)) {
     printPrivateProtocolSection("Private — Railgun", opts.privateRailgun, {
@@ -294,7 +304,7 @@ export function registerBalancesCommand(program: Command): void {
   program
     .command("balances")
     .description(
-      "Public + private balances: ETH, default/extra ERC20s, Railgun, Privacy pools & Tornado Cash"
+      "Public + private balances: ETH, default/extra ERC20s; private protocols via --include or DEFAULT_PRIVACY_PROTOCOL"
     )
     .option("--wallet <name>", cliOptions.walletBalancesOptional)
     .option("--password <password>", cliOptions.password)
@@ -305,7 +315,7 @@ export function registerBalancesCommand(program: Command): void {
     )
     .option(
       "--include <protocols>",
-      "Comma-separated private protocols to sync (default: all). e.g. railgun,tornado"
+      `Comma-separated private protocols to sync (default: DEFAULT_PRIVACY_PROTOCOL, or none). e.g. ${SUPPORTED_PROTOCOLS_HELP.replace(/ \| /g, ",")}`
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option(
@@ -370,9 +380,9 @@ export function registerBalancesCommand(program: Command): void {
         return;
       }
 
-      let includeProtocols: SupportedProtocol[] | null;
+      let includeProtocols: SupportedProtocol[];
       try {
-        includeProtocols = parseIncludeProtocols(opts.include);
+        includeProtocols = resolveIncludeProtocols(opts.include);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
