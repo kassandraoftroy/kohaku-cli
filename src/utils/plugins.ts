@@ -71,7 +71,39 @@ export function isSupportedProtocol(value: unknown): value is SupportedProtocol 
 }
 
 /**
- * Parses `--include railgun,tornado`. Returns `null` when omitted (all protocols).
+ * Reads `DEFAULT_PRIVACY_PROTOCOL` when it is one of
+ * {@link ALL_PRIVATE_PROTOCOLS}; otherwise returns `undefined`.
+ */
+export function resolveDefaultPrivacyProtocol(): SupportedProtocol | undefined {
+  const raw = process.env.DEFAULT_PRIVACY_PROTOCOL?.trim();
+  if (!raw) return undefined;
+  return isSupportedProtocol(raw) ? raw : undefined;
+}
+
+export type ResolveProtocolResult =
+  | { ok: true; protocol: SupportedProtocol }
+  | { ok: false; error: "invalid" | "missing" };
+
+/**
+ * Resolves `--protocol` for shield/unshield: flag wins, else
+ * {@link resolveDefaultPrivacyProtocol}.
+ */
+export function resolveProtocolOption(
+  flag: string | undefined
+): ResolveProtocolResult {
+  const trimmed = flag?.trim();
+  if (trimmed) {
+    if (isSupportedProtocol(trimmed)) return { ok: true, protocol: trimmed };
+    return { ok: false, error: "invalid" };
+  }
+  const def = resolveDefaultPrivacyProtocol();
+  if (def) return { ok: true, protocol: def };
+  return { ok: false, error: "missing" };
+}
+
+/**
+ * Parses `--include railgun,tornado`. Returns `null` when omitted
+ * (caller may apply env / empty defaults).
  */
 export function parseIncludeProtocols(
   raw: string | undefined
@@ -100,6 +132,21 @@ export function parseIncludeProtocols(
   }
 
   return out;
+}
+
+/**
+ * Resolves which private protocols `balances` should sync:
+ * - explicit `--include` → those protocols
+ * - else `DEFAULT_PRIVACY_PROTOCOL` when set → that one protocol
+ * - else → none (`[]`)
+ */
+export function resolveIncludeProtocols(
+  raw: string | undefined
+): SupportedProtocol[] {
+  const parsed = parseIncludeProtocols(raw);
+  if (parsed) return parsed;
+  const def = resolveDefaultPrivacyProtocol();
+  return def ? [def] : [];
 }
 
 export function shouldIncludeProtocol(

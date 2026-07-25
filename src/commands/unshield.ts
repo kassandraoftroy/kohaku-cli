@@ -35,9 +35,9 @@ import {
   countTornadoWithdrawals,
   configureRailgunForUnshield,
   createProtocolPlugin,
-  isSupportedProtocol,
   pluginIdForProtocol,
   railgunNativeEthAssetAmount,
+  resolveProtocolOption,
   SUPPORTED_PROTOCOLS_HELP,
   tornadoUnshieldOptions,
   type UnshieldTailCall,
@@ -61,7 +61,7 @@ import {
 } from "../utils/wallets-util";
 
 type UnshieldOpts = {
-  protocol?: SupportedProtocol;
+  protocol?: string;
   wallet?: string;
   password?: string;
   to?: string;
@@ -150,7 +150,10 @@ export function registerUnshieldCommand(program: Command): void {
   program
     .command("unshield")
     .description("Unshield private balance to a public address (via protocol relayer/broadcaster)")
-    .requiredOption("--protocol <protocol>", `Protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
+    .option(
+      "--protocol <protocol>",
+      `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
+    )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .option("--to <address>", "Public recipient address")
@@ -177,11 +180,16 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: UnshieldOpts) => {
-      if (!isSupportedProtocol(opts.protocol)) {
-        cliError(`--protocol must be "${SUPPORTED_PROTOCOLS_HELP}".`);
+      const resolvedProtocol = resolveProtocolOption(opts.protocol);
+      if (!resolvedProtocol.ok) {
+        cliError(
+          resolvedProtocol.error === "invalid"
+            ? `--protocol must be "${SUPPORTED_PROTOCOLS_HELP}".`
+            : `--protocol is required (or set DEFAULT_PRIVACY_PROTOCOL to ${SUPPORTED_PROTOCOLS_HELP}).`
+        );
         return;
       }
-      const protocol = opts.protocol;
+      const protocol = resolvedProtocol.protocol;
 
       let tailCalls: UnshieldTailCall[] = [];
       if (opts.tailCalls !== undefined) {

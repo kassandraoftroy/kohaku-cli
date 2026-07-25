@@ -44,15 +44,15 @@ import {
   assertTornadoShieldAmount,
   createProtocolPlugin,
   ETH_AS_ERC20,
-  isSupportedProtocol,
   pluginIdForProtocol,
   prepareProtocolShield,
+  resolveProtocolOption,
   SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
 } from "../utils/plugins";
 
 type ShieldOpts = {
-  protocol?: SupportedProtocol;
+  protocol?: string;
   wallet?: string;
   password?: string;
   from?: string;
@@ -243,7 +243,10 @@ export function registerShieldCommand(program: Command): void {
   program
     .command("shield")
     .description("Shield public funds into a privacy protocol")
-    .requiredOption("--protocol <protocol>", `Protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
+    .option(
+      "--protocol <protocol>",
+      `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
+    )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .option("--from <address-or-index>", "Public sender address or public-account index")
@@ -264,11 +267,16 @@ export function registerShieldCommand(program: Command): void {
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ShieldOpts) => {
-      if (!isSupportedProtocol(opts.protocol)) {
-        cliError(`--protocol must be "${SUPPORTED_PROTOCOLS_HELP}".`);
+      const resolvedProtocol = resolveProtocolOption(opts.protocol);
+      if (!resolvedProtocol.ok) {
+        cliError(
+          resolvedProtocol.error === "invalid"
+            ? `--protocol must be "${SUPPORTED_PROTOCOLS_HELP}".`
+            : `--protocol is required (or set DEFAULT_PRIVACY_PROTOCOL to ${SUPPORTED_PROTOCOLS_HELP}).`
+        );
         return;
       }
-      const protocol = opts.protocol;
+      const protocol = resolvedProtocol.protocol;
 
       if (opts.amountWei && opts.amountFormatted) {
         cliError("Provide only one of --amount-wei or --amount-formatted.");
