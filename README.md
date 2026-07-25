@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > NOTICE: this CLI has **NOT BEEN AUDITED** and **IS UNDER ACTIVE DEVELOPMENT** and **HAS BEEN WRITTEN WITH HELP FROM CLAUDE** et al. **DO NOT USE ON MAINNET** without understanding **YOU RISK CATASTROPHIC LOSS OF FUNDS**.
 
-A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, [Railgun](https://railgun.org/) and [Privacy Pools](https://privacypools.com/). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
+A terminal wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, Railgun and Privacy Pools (V1). The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
@@ -19,7 +19,7 @@ After build, run via the bin launcher (registers an ESM resolve hook, then loads
 ```bash
 npm start -- --version
 # or link onto PATH (point at bin/, not dist/):
-#   sudo ln -sf "$(pwd)/bin/kohaku.mjs" /usr/local/bin/kohaku
+#   ln -sf "$(pwd)/bin/kohaku.mjs" ~/.local/bin/kohaku
 ```
 
 Examples below use `kohaku`; swap in `npm run dev:prod --` if you have not built yet.
