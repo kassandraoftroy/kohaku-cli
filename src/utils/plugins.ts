@@ -25,6 +25,7 @@ import {
   estimateTornadoPaymasterFee,
   tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
+import { createTorAwarePaymasterBroadcaster } from "./tornado-paymaster-broadcaster.js";
 import type { TornadoTailCall } from "./tornado-tail-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { railgunPimlicoBundlerUrl } from "./rpc";
@@ -588,6 +589,10 @@ export async function broadcastTornadoPrivateOp(
     ...(paymasterConfig
       ? { paymasterConfig: paymasterConfig as never }
       : {}),
+    // Viem's default 10s HTTP timeout + retries double-submits over Tor
+    // (Pimlico "Already known"). Use a Tor-aware client instead.
+    paymasterClientFactory: () =>
+      createTorAwarePaymasterBroadcaster(chainId) as never,
   });
 
   return await broadcaster.broadcast(operation as never);

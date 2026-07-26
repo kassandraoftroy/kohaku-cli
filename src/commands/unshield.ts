@@ -428,6 +428,9 @@ export function registerUnshieldCommand(program: Command): void {
             },
           },
           async () => {
+        // Tor onStatus leaves the spinner running; stop before prompts / work.
+        if (spin.active) spin.stop("Tor ready.");
+
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,

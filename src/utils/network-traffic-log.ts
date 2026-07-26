@@ -2,7 +2,8 @@
  * Per-wallet NDJSON network traffic log for anonymity / risk review.
  *
  * Written under `<walletDir>/network-traffic.ndjson`. URLs are redacted so
- * API keys in paths/queries are not persisted.
+ * API keys in paths/queries are not persisted (Pimlico and local/loopback RPC
+ * URLs are left intact — they are keyless).
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -90,10 +91,27 @@ export function redactUrl(raw: string): string {
     return raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
   }
 
-  // Infura / Alchemy style: /v3/<key>, /v2/<key>
+  const host = url.hostname.toLowerCase();
+  // Public Pimlico bundler is keyless (`/v2/<chainId>/rpc`); never redact it.
+  if (host === "public.pimlico.io" || host.endsWith(".pimlico.io")) {
+    return url.toString();
+  }
+  // Local / loopback RPC (Anvil, Hardhat, local node) — no API key in the URL.
+  if (
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host === "::1" ||
+    host === "[::1]" ||
+    host.endsWith(".localhost")
+  ) {
+    return url.toString();
+  }
+
+  // Infura / Alchemy style: /v3/<key>, /v2/<key> — but not decimal chain ids.
   url.pathname = url.pathname.replace(
     /(\/v[23]\/)([A-Za-z0-9_-]{8,})/g,
-    "$1<redacted>"
+    (full, prefix: string, seg: string) =>
+      /^\d+$/.test(seg) ? full : `${prefix}<redacted>`
   );
   // Generic long hex/base58 path segments
   url.pathname = url.pathname.replace(
