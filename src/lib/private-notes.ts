@@ -8,6 +8,8 @@ export type PrivateNoteRow = {
   balance_raw: string;
   balance_formatted: string;
   asset_address: string;
+  /** Known token symbol when address maps to ETH / defaults / loaded ERC-20 meta. */
+  asset_symbol?: string;
   status?: string;
   /** Privacy pools note label (decimal string). */
   label?: string;
@@ -22,6 +24,8 @@ export type PrivateNoteRow = {
   blinded_commitment?: string;
   memo?: string;
   railgun_address?: string;
+  /** Unix seconds (Tornado deposit event timestamp only). */
+  deposit_timestamp?: string;
 };
 
 export function bigIntishToString(value: unknown): string {
@@ -37,6 +41,26 @@ export function bigIntishToString(value: unknown): string {
     }
   }
   return "";
+}
+
+/** Format unix-seconds deposit timestamp for human tables (UTC ISO-8601, no ms). */
+export function formatDepositTimestampIso(
+  unixSeconds: string | undefined
+): string {
+  if (!unixSeconds?.trim()) return "---";
+  try {
+    const sec = BigInt(unixSeconds);
+    const ms = Number(sec * 1000n);
+    if (!Number.isFinite(ms)) return unixSeconds;
+    return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  } catch {
+    return unixSeconds;
+  }
+}
+
+/** Prefer known symbol; fall back to the asset address. */
+export function formatNoteAssetLabel(n: PrivateNoteRow): string {
+  return n.asset_symbol ?? n.asset_address;
 }
 
 export function addressishToHex(value: unknown): string {
@@ -75,6 +99,22 @@ function noteBalanceRaw(note: Record<string, unknown>): string {
   return value || "0";
 }
 
+function resolveNoteAssetSymbol(
+  assetAddress: string,
+  tokenMeta: Map<string, { symbol: string; decimals: number }>
+): string | undefined {
+  if (isPrivateBalanceNativeEth(assetAddress)) return "ETH";
+  let key = assetAddress.toLowerCase();
+  try {
+    if (isAddress(assetAddress)) {
+      key = getAddress(assetAddress).toLowerCase();
+    }
+  } catch {
+    // keep lowercased raw address
+  }
+  return tokenMeta.get(key)?.symbol;
+}
+
 function formatNoteAmount(
   raw: string,
   assetAddress: string,
@@ -111,6 +151,7 @@ export function mapPrivacyPoolsNotes(
       balance_raw: balanceRaw,
       balance_formatted: formatNoteAmount(balanceRaw, assetAddress, tokenMeta),
       asset_address: assetAddress,
+      asset_symbol: resolveNoteAssetSymbol(assetAddress, tokenMeta),
       approved: typeof n.approved === "boolean" ? n.approved : undefined,
       precommitment: precommitment || undefined,
       status:
@@ -138,15 +179,18 @@ export function mapTornadoNotes(
       n.leafIndex != null
         ? String(n.leafIndex)
         : bigIntishToString(n.leafIndex);
+    const depositTimestamp = bigIntishToString(n.timestamp);
     return {
       protocol: "tornado",
       balance_raw: balanceRaw,
       balance_formatted: formatNoteAmount(balanceRaw, assetAddress, tokenMeta),
       asset_address: assetAddress,
+      asset_symbol: resolveNoteAssetSymbol(assetAddress, tokenMeta),
       pool: addressishToHex(n.pool),
       commitment: commitment || undefined,
       leaf_index: leafIndex || undefined,
       deposit_index: bigIntishToString(n.depositIndex) || undefined,
+      deposit_timestamp: depositTimestamp || undefined,
       status: balanceRaw === "0" ? "spent" : "spendable",
     };
   });
@@ -170,6 +214,7 @@ export function mapRailgunNotes(
       balance_raw: balanceRaw,
       balance_formatted: formatNoteAmount(balanceRaw, assetAddress, tokenMeta),
       asset_address: assetAddress,
+      asset_symbol: resolveNoteAssetSymbol(assetAddress, tokenMeta),
       tree_number:
         n.treeNumber != null ? String(n.treeNumber) : undefined,
       leaf_index:

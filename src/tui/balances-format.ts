@@ -1,5 +1,9 @@
 import type { BalancesSnapshot, PrivateBalancesSnapshot } from "../lib/balances-snapshot.js";
-import type { PrivateNoteRow } from "../lib/private-notes.js";
+import {
+  formatDepositTimestampIso,
+  formatNoteAssetLabel,
+  type PrivateNoteRow,
+} from "../lib/private-notes.js";
 import type { SupportedProtocol } from "../utils/plugins.js";
 import type { ScrollLine } from "./components/ScrollableLines.js";
 
@@ -75,9 +79,13 @@ export function formatPrivateBalanceLines(
 }
 
 function formatNoteDetailLines(note: PrivateNoteRow): ScrollLine[] {
+  const assetLabel = formatNoteAssetLabel(note);
+  const assetDisplay =
+    note.asset_symbol ??
+    (assetLabel.length > 14 ? shortenAddr(assetLabel) : assetLabel);
   const lines: ScrollLine[] = [
     {
-      text: `  amount: ${note.balance_formatted} · asset: ${shortenAddr(note.asset_address)}`,
+      text: `  amount: ${note.balance_formatted} · asset: ${assetDisplay}`,
       dim: true,
     },
   ];
@@ -101,6 +109,9 @@ function formatNoteDetailLines(note: PrivateNoteRow): ScrollLine[] {
       lines.unshift({ text: `  deposit #${note.deposit_index}`, dim: true });
     }
     const extras = [
+      note.deposit_timestamp
+        ? `deposited ${formatDepositTimestampIso(note.deposit_timestamp)}`
+        : null,
       note.leaf_index ? `leaf ${note.leaf_index}` : null,
       note.pool ? `pool ${shortenAddr(note.pool)}` : null,
       note.status,

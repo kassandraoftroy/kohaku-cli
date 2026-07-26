@@ -163,6 +163,7 @@ Create a BIP-39 seed wallet encrypted on disk.
 |--------|-------------|
 | `--testnet` | Tag wallet for Sepolia instead of mainnet. |
 | `--import` | Restore from mnemonic instead of generating a new one. |
+| `--long-seed` | Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit). Ignored with `--import`. |
 | `--rpc-url <url>` | Required with `--import` (or `RPC_URL`) to scan used addresses. |
 | `--mnemonic <phrase>` | Mnemonic (required with `--non-interactive --import`). |
 | `--password <password>` | Encryption password (required with `--non-interactive`). |
@@ -175,6 +176,7 @@ Create a BIP-39 seed wallet encrypted on disk.
 
 ```bash
 kohaku create-wallet myWallet --testnet
+kohaku create-wallet myWallet24 --testnet --long-seed
 kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL"
 ```
 
