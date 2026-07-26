@@ -17,6 +17,7 @@ import { cliOptions } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   logCliJson,
+  manageSpinner,
   quietNonInteractive,
   runQuietSpinner,
 } from "../utils/cli-quiet";
@@ -51,6 +52,10 @@ import {
   railgunPimlicoBundlerUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
+import {
+  protocolUsesPimlicoBundler,
+  withPimlicoTor,
+} from "../utils/pimlico-tor.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
@@ -73,6 +78,7 @@ type UnshieldOpts = {
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
+  withoutTor?: boolean;
   tailCalls?: string;
   dataDir?: string;
 };
@@ -178,6 +184,7 @@ export function registerUnshieldCommand(program: Command): void {
       "--tail-calls <target:calldata[:value],...>",
       "Ordered calls appended to the Tornado UserOperation (optional value in hex or decimal wei)"
     )
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: UnshieldOpts) => {
       const resolvedProtocol = resolveProtocolOption(opts.protocol);
@@ -410,9 +417,19 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       const rpcForHost = await makeEthersProvider(rpcUrl);
-      const spin = spinner();
+      const spin = manageSpinner(spinner(), quietNonInteractive(opts.nonInteractive));
       const quiet = quietNonInteractive(opts.nonInteractive);
+      const useTor =
+        protocolUsesPimlicoBundler(protocol) && !opts.withoutTor;
       try {
+        await withPimlicoTor(
+          useTor,
+          {
+            onStatus: (message) => {
+              spin.start(message);
+            },
+          },
+          async () => {
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,
@@ -726,6 +743,8 @@ export function registerUnshieldCommand(program: Command): void {
         }
 
         if (!opts.nonInteractive) {
+          // Blank line so @inquirer confirm is not drawn over the clack stop line.
+          console.log();
           const ok = await confirm({
             message:
               `Broadcast this unshield via ${via}?\n` +
@@ -785,7 +804,10 @@ export function registerUnshieldCommand(program: Command): void {
                 : "Bundler response did not include a userOpHash or tx hash.";
           console.log(chalk.dim(noHashMsg));
         }
+          }
+        );
       } catch (e) {
+        if (spin.active) spin.stop("Failed.", 1);
         cliErrorFromCaught(e);
         return;
       } finally {

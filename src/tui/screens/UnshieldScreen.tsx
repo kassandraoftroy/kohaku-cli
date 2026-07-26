@@ -122,6 +122,7 @@ export function UnshieldScreen({
           mnemonic: session.mnemonic,
           chainId: session.chainId,
           tokenMeta,
+          withoutTor: session.withoutTor,
         });
         if (!cancelled) setMaxHint(hint.cap);
       } catch {
@@ -339,6 +340,7 @@ export function UnshieldScreen({
           amount,
           recipient,
           recipientPriv,
+          withoutTor: session.withoutTor,
           onStatus: setStatus,
         });
         if (persistNextAccount) {
@@ -364,6 +366,7 @@ export function UnshieldScreen({
           amount,
           recipient,
           recipientPriv,
+          withoutTor: session.withoutTor,
           onStatus: setStatus,
         });
       }

@@ -16,5 +16,9 @@ export default defineConfig({
     "@kohaku-eth/plugins",
     "@kohaku-eth/provider",
     "@kohaku-eth/provider/ethers",
+    // Keep tor-js out of the bundle so wasm-file can resolve tor_js_bg.wasm
+    // next to the package on disk.
+    "tor-js",
+    /^tor-js\//,
   ],
 });

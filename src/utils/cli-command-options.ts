@@ -17,4 +17,6 @@ export const cliOptions = {
     "Agent mode: no prompts or spinners; requires --password and --wallet",
   nonInteractiveListWallets:
     "Agent mode: print JSON instead of human-readable output (no prompts)",
+  withoutTor:
+    "Disable Tor for Pimlico bundler requests (default: Tor on for railgun/tornado unshield)",
 } as const;

@@ -16,6 +16,41 @@ export type QuietSpinner = {
 };
 
 /**
+ * Wraps a clack spinner so repeated `start()` calls update the message instead
+ * of leaking intervals. Clack's `start()` does not `clearInterval` the previous
+ * tick, which leaves frames rewriting the last line over later prompts.
+ */
+export function manageSpinner(
+  spin: QuietSpinner,
+  quiet: boolean
+): QuietSpinner & { readonly active: boolean } {
+  let active = false;
+  return {
+    get active() {
+      return active;
+    },
+    start(msg?: string) {
+      if (quiet) return;
+      if (active) {
+        spin.message?.(msg);
+        return;
+      }
+      spin.start(msg);
+      active = true;
+    },
+    message(msg?: string) {
+      if (quiet || !active) return;
+      spin.message?.(msg);
+    },
+    stop(msg?: string, code?: number) {
+      if (quiet || !active) return;
+      spin.stop(msg, code);
+      active = false;
+    },
+  };
+}
+
+/**
  * Runs `fn` with optional spinner start/stop when not in quiet (non-interactive) mode.
  * On failure: stops with `labels.failure` and exit code 1, then rethrows.
  */
