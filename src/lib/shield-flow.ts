@@ -11,6 +11,7 @@ import {
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeEthersProvider } from "../utils/rpc";
+import { withTor } from "../utils/tor";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
@@ -267,6 +268,7 @@ export async function prepareShieldPlan(opts: {
   amount: bigint;
   fromValue: string;
   allowDeriveFromMnemonic?: boolean;
+  withoutTor?: boolean;
 }): Promise<ShieldPlan> {
   const {
     protocol,
@@ -279,6 +281,7 @@ export async function prepareShieldPlan(opts: {
     amount,
     fromValue,
     allowDeriveFromMnemonic = false,
+    withoutTor,
   } = opts;
 
   const { senderAddress, senderPrivateKey: _pk } = resolveShieldSender({
@@ -295,9 +298,10 @@ export async function prepareShieldPlan(opts: {
     assertTornadoShieldAmount(chainId, amount);
   }
 
-  return withProtocolRuntime(
-    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-    async (_host, plugin) => {
+  return withTor(!withoutTor, { rpcUrl, walletDir }, () =>
+    withProtocolRuntime(
+      { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+      async (_host, plugin) => {
       const { rpc, dispose } = await rpcForWalletOps({
         protocol,
         rpcUrl,
@@ -358,6 +362,7 @@ export async function prepareShieldPlan(opts: {
         dispose();
       }
     }
+    )
   );
 }
 
@@ -377,8 +382,12 @@ export async function broadcastShield(opts: {
   amount: bigint;
   fromValue: string;
   allowDeriveFromMnemonic?: boolean;
+  withoutTor?: boolean;
 }): Promise<BroadcastShieldResult> {
-  const plan = await prepareShieldPlan({ ...opts, allowDeriveFromMnemonic: opts.allowDeriveFromMnemonic ?? true });
+  const plan = await prepareShieldPlan({
+    ...opts,
+    allowDeriveFromMnemonic: opts.allowDeriveFromMnemonic ?? true,
+  });
   const { senderAddress, approve, shieldTx, shieldTxs } = plan;
 
   const sender = resolveShieldSender({

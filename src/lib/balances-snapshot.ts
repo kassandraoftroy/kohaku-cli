@@ -2,6 +2,7 @@ import type { AssetAmount } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, isAddress } from "ethers";
 
 import { makeEthersProvider } from "../utils/rpc";
+import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
   ERC20_ABI,
@@ -211,6 +212,9 @@ export type LoadBalancesSnapshotOptions = {
   includeProtocols?: SupportedProtocol[] | null;
   verbose?: boolean;
   onWarning?: (message: string) => void;
+  /** Skip Tor for privacy HTTP (default: Tor on when private protocols sync). */
+  withoutTor?: boolean;
+  onTorStatus?: (message: string) => void;
 };
 
 export type PrivateBalancesSnapshot = {
@@ -223,6 +227,13 @@ type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
   erc20FromPrivate: `0x${string}`[];
   protocolAvailable: Partial<Record<SupportedProtocol, boolean>>;
 };
+
+function willSyncPrivateProtocols(
+  includeProtocols: SupportedProtocol[] | null
+): boolean {
+  // null = sync all private protocols (TUI / callers that omit the filter)
+  return includeProtocols === null || includeProtocols.length > 0;
+}
 
 async function resolvePrivateBalanceItems(
   opts: Pick<
@@ -354,10 +365,18 @@ export async function loadPrivateBalancesOnly(
     | "chainId"
     | "includeProtocols"
     | "onWarning"
+    | "withoutTor"
+    | "onTorStatus"
   >
 ): Promise<PrivateBalancesSnapshot> {
-  const { privateRailgun, privatePrivacyPools, privateTornado } =
-    await resolvePrivateBalanceItems(opts);
+  const includeProtocols = opts.includeProtocols ?? null;
+  const useTor =
+    !opts.withoutTor && willSyncPrivateProtocols(includeProtocols);
+  const { privateRailgun, privatePrivacyPools, privateTornado } = await withTor(
+    useTor,
+    { rpcUrl: opts.rpcUrl, onStatus: opts.onTorStatus, walletDir: opts.walletDir },
+    () => resolvePrivateBalanceItems(opts)
+  );
   const [pricedRailgun, pricedPrivacyPools, pricedTornado] =
     await attachUsdValuesToRowsLists(
       [privateRailgun, privatePrivacyPools, privateTornado],
@@ -373,6 +392,14 @@ export async function loadPrivateBalancesOnly(
 export async function loadBalancesSnapshot(
   opts: LoadBalancesSnapshotOptions
 ): Promise<BalancesSnapshot> {
+  return runWithWalletTrafficLog(opts.walletDir, () =>
+    loadBalancesSnapshotInner(opts)
+  );
+}
+
+async function loadBalancesSnapshotInner(
+  opts: LoadBalancesSnapshotOptions
+): Promise<BalancesSnapshot> {
   const {
     rpcUrl,
     walletDir,
@@ -383,8 +410,12 @@ export async function loadBalancesSnapshot(
     includeProtocols = null,
     verbose = false,
     onWarning,
+    withoutTor,
+    onTorStatus,
   } = opts;
   const chainIdString = chainId.toString();
+
+  const useTor = !withoutTor && willSyncPrivateProtocols(includeProtocols);
 
   const {
     privateRailgun,
@@ -392,16 +423,20 @@ export async function loadBalancesSnapshot(
     privateTornado,
     erc20FromPrivate,
     protocolAvailable,
-  } =
-    await resolvePrivateBalanceItems({
-      rpcUrl,
-      walletDir,
-      password,
-      mnemonic,
-      chainId,
-      includeProtocols,
-      onWarning,
-    });
+  } = await withTor(
+    useTor,
+    { rpcUrl, onStatus: onTorStatus, walletDir },
+    () =>
+      resolvePrivateBalanceItems({
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId,
+        includeProtocols,
+        onWarning,
+      })
+  );
 
   const { erc20Addresses: tokenAddresses, knownMetaByLower } =
     mergeDefaultAndExtraErc20s(chainIdString, [

@@ -62,6 +62,7 @@ export function BalancesProvider({
           mnemonic: session.mnemonic,
           chainId: session.chainId,
           verbose: true,
+          withoutTor: session.withoutTor,
           onWarning: (msg) => {
             if (!cancelled) setWarnings((w) => [...w, msg]);
           },

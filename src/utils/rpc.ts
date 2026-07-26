@@ -2,7 +2,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { JsonRpcProvider, type Network } from "ethers";
 
-import { resolvePimlicoBundlerUrl } from "./pimlico-tor.js";
+import { appendNetworkTraffic, redactUrl } from "./network-traffic-log.js";
+import { resolvePimlicoBundlerUrl } from "./tor.js";
 import { expectedChainIdStringFromWalletDir } from "./wallets-util";
 
 /**
@@ -25,11 +26,52 @@ async function detectNetworkOrThrow(rpcUrl: string): Promise<Network> {
   }
 }
 
+function wrapProviderTrafficLog(
+  provider: JsonRpcProvider,
+  rpcUrl: string
+): JsonRpcProvider {
+  const originalSend = provider.send.bind(provider);
+  provider.send = async (method: string, params: Array<any> | Record<string, any>) => {
+    const started = Date.now();
+    try {
+      const result = await originalSend(method, params);
+      appendNetworkTraffic({
+        kind: "rpc",
+        method: "POST",
+        url: rpcUrl,
+        via: "clearnet",
+        clearnetReason: "rpc",
+        category: "rpc",
+        ok: true,
+        durationMs: Date.now() - started,
+        rpcMethod: method,
+      });
+      return result;
+    } catch (err) {
+      appendNetworkTraffic({
+        kind: "rpc",
+        method: "POST",
+        url: rpcUrl,
+        via: "clearnet",
+        clearnetReason: "rpc",
+        category: "rpc",
+        ok: false,
+        durationMs: Date.now() - started,
+        rpcMethod: method,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  };
+  return provider;
+}
+
 export async function makeEthersProvider(rpcUrl: string): Promise<JsonRpcProvider> {
   const network = await detectNetworkOrThrow(rpcUrl);
-  return new JsonRpcProvider(rpcUrl, network, {
+  const provider = new JsonRpcProvider(rpcUrl, network, {
     staticNetwork: network,
   });
+  return wrapProviderTrafficLog(provider, redactUrl(rpcUrl));
 }
 
 /** Default Kohaku data root: `~/.kohaku-cli`. */
@@ -43,7 +85,7 @@ export function resolveRpcUrl(optsRpcUrl?: string): string {
   return optsRpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
 }
 
-/** Pimlico public ERC-4337 bundler (no API key). Uses Tor proxy when active. */
+/** Pimlico public ERC-4337 bundler (no API key). Uses Tor localhost proxy when a Tor session is active. */
 export function railgunPimlicoBundlerUrl(chainId: bigint): string {
   return resolvePimlicoBundlerUrl(chainId);
 }

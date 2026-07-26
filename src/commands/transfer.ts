@@ -31,6 +31,7 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
+import { runWithWalletTrafficLog } from "../utils/tor";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
 import {
   estimateEthTransferGasReserveWei,
@@ -484,6 +485,7 @@ export function registerTransferCommand(program: Command): void {
       }
 
       const tx = buildTransferTx(tokenMeta, recipient, amount);
+      await runWithWalletTrafficLog(walletDir, async () => {
       const rpc = await makeEthersProvider(rpcUrl);
       const txSpinner = spinner();
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
@@ -594,5 +596,6 @@ export function registerTransferCommand(program: Command): void {
       } finally {
         rpc.destroy();
       }
+      });
     });
 }

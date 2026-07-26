@@ -6,10 +6,7 @@ import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import { Contract, formatUnits, getAddress, parseUnits } from "ethers";
 
 import { makeEthersProvider, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
-import {
-  protocolUsesPimlicoBundler,
-  withPimlicoTor,
-} from "../utils/pimlico-tor.js";
+import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
   isPendingPrivateBalanceRow,
@@ -423,38 +420,40 @@ async function runUnshieldWithPlugin(
 export async function prepareUnshieldOperation(
   opts: UnshieldRuntimeOpts
 ): Promise<UnshieldPrepared> {
-  const useTor =
-    protocolUsesPimlicoBundler(opts.protocol) && !opts.withoutTor;
-  return (await withPimlicoTor(useTor, { onStatus: opts.onStatus }, () =>
-    withProtocolRuntime(
-      {
-        protocol: opts.protocol,
-        rpcUrl: opts.rpcUrl,
-        walletDir: opts.walletDir,
-        password: opts.password,
-        mnemonic: opts.mnemonic,
-        chainId: opts.chainId,
-      },
-      (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "prepare")
-    )
+  return (await withTor(
+    !opts.withoutTor,
+    { onStatus: opts.onStatus, rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
+    () =>
+      withProtocolRuntime(
+        {
+          protocol: opts.protocol,
+          rpcUrl: opts.rpcUrl,
+          walletDir: opts.walletDir,
+          password: opts.password,
+          mnemonic: opts.mnemonic,
+          chainId: opts.chainId,
+        },
+        (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "prepare")
+      )
   )) as UnshieldPrepared;
 }
 
 export async function broadcastUnshield(opts: UnshieldRuntimeOpts): Promise<unknown> {
-  const useTor =
-    protocolUsesPimlicoBundler(opts.protocol) && !opts.withoutTor;
-  return withPimlicoTor(useTor, { onStatus: opts.onStatus }, () =>
-    withProtocolRuntime(
-      {
-        protocol: opts.protocol,
-        rpcUrl: opts.rpcUrl,
-        walletDir: opts.walletDir,
-        password: opts.password,
-        mnemonic: opts.mnemonic,
-        chainId: opts.chainId,
-      },
-      (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "broadcast")
-    )
+  return withTor(
+    !opts.withoutTor,
+    { onStatus: opts.onStatus, rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
+    () =>
+      withProtocolRuntime(
+        {
+          protocol: opts.protocol,
+          rpcUrl: opts.rpcUrl,
+          walletDir: opts.walletDir,
+          password: opts.password,
+          mnemonic: opts.mnemonic,
+          chainId: opts.chainId,
+        },
+        (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "broadcast")
+      )
   );
 }
 
@@ -525,9 +524,7 @@ export async function maxUnshieldAmountHintForWallet(opts: {
   tokenMeta: ResolvedTokenMeta;
   withoutTor?: boolean;
 }): Promise<MaxUnshieldAmountHint> {
-  const useTor =
-    protocolUsesPimlicoBundler(opts.protocol) && !opts.withoutTor;
-  return withPimlicoTor(useTor, {}, () =>
+  return withTor(!opts.withoutTor, { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir }, () =>
     withProtocolRuntime(
       {
         protocol: opts.protocol,

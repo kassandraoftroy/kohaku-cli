@@ -3,6 +3,7 @@ import type { JsonRpcProvider } from "ethers";
 
 import { makeHost } from "../host/makeHost.js";
 import { makeEthersProvider } from "../utils/rpc.js";
+import { runWithWalletTrafficLog } from "../utils/tor.js";
 import {
   createProtocolPlugin,
   pluginIdForProtocol,
@@ -28,32 +29,34 @@ export async function withProtocolRuntime<T>(
   ctx: ProtocolRuntimeContext,
   fn: (host: Host, plugin: AnyPlugin) => Promise<T>
 ): Promise<T> {
-  if (ctx.protocol === "railgun") {
-    const { host, plugin } = await acquireRailgunSession({
-      rpcUrl: ctx.rpcUrl,
-      walletDir: ctx.walletDir,
-      password: ctx.password,
-      mnemonic: ctx.mnemonic,
-      chainId: ctx.chainId,
-    });
-    return fn(host, plugin);
-  }
+  return runWithWalletTrafficLog(ctx.walletDir, async () => {
+    if (ctx.protocol === "railgun") {
+      const { host, plugin } = await acquireRailgunSession({
+        rpcUrl: ctx.rpcUrl,
+        walletDir: ctx.walletDir,
+        password: ctx.password,
+        mnemonic: ctx.mnemonic,
+        chainId: ctx.chainId,
+      });
+      return fn(host, plugin);
+    }
 
-  const rpc = await makeEthersProvider(ctx.rpcUrl);
-  try {
-    const host = await makeHost({
-      rpc,
-      walletDir: ctx.walletDir,
-      password: ctx.password,
-      mnemonic: ctx.mnemonic,
-      pluginId: pluginIdForProtocol(ctx.protocol),
-      chainId: ctx.chainId,
-    });
-    const plugin = await createProtocolPlugin(ctx.protocol, host, ctx.chainId);
-    return await fn(host, plugin);
-  } finally {
-    rpc.destroy();
-  }
+    const rpc = await makeEthersProvider(ctx.rpcUrl);
+    try {
+      const host = await makeHost({
+        rpc,
+        walletDir: ctx.walletDir,
+        password: ctx.password,
+        mnemonic: ctx.mnemonic,
+        pluginId: pluginIdForProtocol(ctx.protocol),
+        chainId: ctx.chainId,
+      });
+      const plugin = await createProtocolPlugin(ctx.protocol, host, ctx.chainId);
+      return await fn(host, plugin);
+    } finally {
+      rpc.destroy();
+    }
+  });
 }
 
 /** Public-chain RPC for approvals / sends; reuses the Railgun session provider when active. */

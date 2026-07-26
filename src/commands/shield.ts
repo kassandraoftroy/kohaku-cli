@@ -21,7 +21,12 @@ import {
   shieldTransactionConfirmMessage,
 } from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
-import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
+import {
+  logCliJson,
+  manageSpinner,
+  quietNonInteractive,
+  runQuietSpinner,
+} from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
@@ -30,6 +35,7 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
+import { withTor } from "../utils/tor";
 import { ERC20_ABI, resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -65,6 +71,7 @@ type ShieldOpts = {
   priorityFeeGwei?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
+  withoutTor?: boolean;
   dataDir?: string;
 };
 
@@ -85,8 +92,15 @@ function parseFromIndex(fromValue: string): number | null {
   return parsed;
 }
 
-async function maybeConfirm(nonInteractive: boolean, message: string): Promise<void> {
+async function maybeConfirm(
+  nonInteractive: boolean,
+  message: string,
+  spin?: { active: boolean; stop: (msg?: string, code?: number) => void }
+): Promise<void> {
   if (nonInteractive) return;
+  // Stop any clack spinner before @inquirer draws (same as unshield).
+  if (spin?.active) spin.stop();
+  console.log();
   const ok = await confirm({ message, default: false });
   if (!ok) {
     throw new Error("Cancelled by user.");
@@ -265,6 +279,7 @@ export function registerShieldCommand(program: Command): void {
     .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ShieldOpts) => {
       const resolvedProtocol = resolveProtocolOption(opts.protocol);
@@ -525,10 +540,26 @@ export function registerShieldCommand(program: Command): void {
       }
 
       const rpcForHost = await makeEthersProvider(rpcUrl);
-      const txSpinner = spinner();
+      const txSpinner = manageSpinner(
+        spinner(),
+        quietNonInteractive(opts.nonInteractive)
+      );
       const quiet = quietNonInteractive(opts.nonInteractive);
       const broadcastTransactions: BroadcastTxResultJson[] = [];
       try {
+        await withTor(
+          !opts.withoutTor,
+          {
+            rpcUrl,
+            walletDir,
+            onStatus: (message) => {
+              txSpinner.start(message);
+            },
+          },
+          async () => {
+        // Tor onStatus leaves the spinner running; stop before prepare / prompts.
+        if (txSpinner.active) txSpinner.stop("Tor ready.");
+
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,
@@ -604,6 +635,7 @@ export function registerShieldCommand(program: Command): void {
           if (opts.nonInteractive) {
             logCliJson({ transactions });
           } else {
+            if (txSpinner.active) txSpinner.stop();
             printShieldDryRunInteractive(shieldTxs, approve, tokenMeta, senderAddress);
             console.log(chalk.green("✔ Shield dry run complete."));
           }
@@ -639,7 +671,8 @@ export function registerShieldCommand(program: Command): void {
             );
             await maybeConfirm(
               !!opts.nonInteractive,
-              `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} (from ${senderAddress})?`
+              `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} (from ${senderAddress})?`,
+              txSpinner
             );
             const approveTx = await runQuietSpinner(
               quiet,
@@ -672,7 +705,8 @@ export function registerShieldCommand(program: Command): void {
               shieldTxs,
               tokenMeta,
               senderAddress,
-            })
+            }),
+            txSpinner
           );
           await simulateTransactionOrThrow(
             rpcForHost,
@@ -712,7 +746,10 @@ export function registerShieldCommand(program: Command): void {
           logCliJson({ transactions: broadcastTransactions });
           return;
         }
+          }
+        );
       } catch (e) {
+        if (txSpinner.active) txSpinner.stop("Failed.", 1);
         cliErrorFromCaught(e);
         return;
       } finally {

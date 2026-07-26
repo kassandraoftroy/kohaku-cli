@@ -18,5 +18,5 @@ export const cliOptions = {
   nonInteractiveListWallets:
     "Agent mode: print JSON instead of human-readable output (no prompts)",
   withoutTor:
-    "Disable Tor for Pimlico bundler requests (default: Tor on for railgun/tornado unshield)",
+    "Disable Tor for non-RPC HTTP (default: Tor on for private-protocol sync / shield / unshield). RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
 } as const;

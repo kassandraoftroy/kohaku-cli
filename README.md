@@ -152,6 +152,7 @@ Global behavior:
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
 | **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
 | **`--password`** | Wallet unlock password. In non-interactive mode, required where the wallet is encrypted. Value can be a literal string or a path to a file containing the password. |
+| **`--without-tor`** | On `balances`, `shield`, and `unshield`: disable Tor for non-RPC HTTP (default: Tor on). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
 
 ---
 
@@ -274,6 +275,7 @@ By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (i
 | `--include <protocols>` | Comma-separated private protocols to sync (`railgun`, `privacy-pools`, `tornado`). Default: `DEFAULT_PRIVACY_PROTOCOL` only, or none if unset. |
 | `--verbose` | Human: per-address public breakdown + private note list for included protocols. JSON: adds `public_account_indexes_by_address` and `private_notes`. |
 | `--tokensList <addrs>` | Extra ERC-20 addresses (comma- or space-separated), merged with chain defaults. |
+| `--without-tor` | Disable Tor for privacy HTTP when syncing private protocols (default: Tor on). Covers Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, etc. RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON only; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
 
@@ -287,6 +289,7 @@ Default Sepolia ERC-20s include USDC and WETH; mainnet adds USDC, USDT, DAI, WET
 kohaku balances --wallet testWallet --include tornado
 kohaku balances --wallet testWallet --include railgun,tornado --verbose
 kohaku balances --wallet testWallet --verbose --include privacy-pools --tokensList 0xYourToken
+kohaku balances --wallet testWallet --include tornado --without-tor
 ```
 
 ---
@@ -368,6 +371,7 @@ Move funds from a **public** account into a private protocol.
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and send on-chain. **Omit** for dry-run (transaction JSON only). |
 | `--base-fee-gwei`, `--priority-fee-gwei` | Optional fee overrides (reserved; auto fees used today). |
+| `--without-tor` | Disable Tor for privacy HTTP (Subsquid / PPOI / saga / ASP / etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, and an amount flag. |
 | `--dataDir <path>` | Data root. |
 
@@ -384,6 +388,7 @@ Move funds from a **public** account into a private protocol.
 ```bash
 kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --broadcast
 kohaku shield --protocol railgun --wallet testWallet --from 0 --token 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 --amount-formatted 10 --broadcast
+kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --without-tor
 ```
 
 ---
@@ -406,7 +411,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 | `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the Tornado payout call. Optional third field is `msg.value` (hex or decimal wei). Currently Tornado-only. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol broadcaster, relayer, or paymaster. **Omit** to print prepared private operation JSON only. |
-| `--without-tor` | Disable Tor for Pimlico bundler traffic (railgun / tornado). **Default: Tor on** — a local proxy forwards Pimlico JSON-RPC through [tor-js](https://github.com/privacy-ethereum/tor-js). Privacy Pools is unaffected (uses fastrelay). First Tor bootstrap may take several seconds. |
+| `--without-tor` | Disable Tor for non-RPC HTTP (default: **Tor on** for all private-protocol network calls). Covers Pimlico (via local reverse proxy), Railgun Subsquid/PPOI, Tornado saga CDN + proving artifacts, Privacy Pools ASP/fastrelay, and other `fetch` traffic. Ethereum RPC stays on clearnet. First Tor bootstrap may take several seconds. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON; requires `--wallet`, `--password`, `--to` or `--next`, and an amount flag. |
 | `--dataDir <path>` | Data root. |
 
@@ -421,6 +426,37 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-max
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 1 --tail-calls 0x1111111111111111111111111111111111111111:0x1234,0x2222222222222222222222222222222222222222:0xabcd:0x2386f26fc10000 --broadcast
 kohaku unshield --protocol railgun --wallet testWallet --to 0xStoredWalletAddress --token USDC --amount-formatted 25 --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --without-tor
+```
+
+---
+
+### `view-network-traffic`
+
+Browse the per-wallet network traffic log (what the CLI contacted, when, and whether the request went over Tor). Useful for reviewing anonymity risk.
+
+Traffic is appended to `<dataDir>/<wallet>/network-traffic.ndjson` while you use the wallet (`balances` / `shield` / `unshield` / `transfer` / …). API keys in URLs are redacted before write. Ethereum RPC is always logged as clearnet.
+
+| Option | Description |
+|--------|-------------|
+| `--wallet <name>` | Wallet (optional interactive picker). |
+| `--tor-only` / `--clearnet-only` | Filter by path. |
+| `--category <name>` | `pimlico` \| `subsquid` \| `ppoi` \| `saga` \| `asp` \| `fastrelay` \| `artifacts` \| `rpc` \| `other`. |
+| `--limit <n>` | Last N events only. |
+| `--json` | Print JSON (`summary` + `entries`). |
+| `--non-interactive` | Dump the log to stdout (no scroll UI). |
+| `--clear` | Delete this wallet's traffic log. |
+| `--dataDir <path>` | Data root. |
+
+**Interactive (TTY):** scrollable viewer — `j`/`k` or arrows, space/PgDn, `g`/`G` top/bottom, `q` quit. Tor rows are green; clearnet yellow; errors red.
+
+**Examples:**
+
+```bash
+kohaku view-network-traffic --wallet testWallet
+kohaku view-network-traffic --wallet testWallet --clearnet-only
+kohaku view-network-traffic --wallet testWallet --category rpc --json
+kohaku view-network-traffic --wallet testWallet --clear
 ```
 
 ---
@@ -440,7 +476,7 @@ Files: `public-accounts.json`, `rg-storage.json`, `ppv1-storage.json`.
 ## Tips
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, and `unshield` default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
-- **Pimlico + Tor:** Railgun and Tornado unshields talk to `public.pimlico.io` over Tor by default (local reverse proxy + tor-js). Use `--without-tor` only if you accept sending those requests from your clearnet IP. Set `KOHAKU_TOR_DEBUG=1` for Tor client logs.
+- **Tor (all-but-RPC):** Private-protocol HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, and `unshield`. Ethereum RPC stays clearnet (ethers does not use `fetch`; the RPC hostname is also allowlisted for ox/USD quotes). Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. Set `KOHAKU_TOR_DEBUG=1` for Tor client logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review what was contacted with `view-network-traffic --wallet <name>`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
 - **Private key / seed exports:** `export-private-key` and `reveal-seed-phrase` print raw key material to stdout. Avoid terminal logs, shell history, and shared environments.
