@@ -239,6 +239,25 @@ kohaku export-private-key --wallet testWallet --address 0xYourAddress
 
 ---
 
+### `reveal-seed-phrase`
+
+Decrypt and print the wallet’s BIP-39 seed phrase. Interactive mode asks you to confirm **twice** before printing (both default to No).
+
+| Option | Description |
+|--------|-------------|
+| `--wallet <name>` | Wallet (prompt if omitted). |
+| `--password <password>` | Unlock password. |
+| `--non-interactive` | Skip both reveal confirmations; requires `--wallet` and `--password`. Prints the phrase only (no box). |
+| `--dataDir <path>` | Data root. |
+
+**Examples:**
+
+```bash
+kohaku reveal-seed-phrase --wallet testWallet
+```
+
+---
+
 ### `balances`
 
 Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus any private tokens discovered), and **private** balances for the protocols you select.
@@ -420,5 +439,5 @@ Files: `public-accounts.json`, `rg-storage.json`, `ppv1-storage.json`.
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, and `unshield` default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
-- **Private key exports:** `export-private-key` prints raw key material to stdout. Avoid terminal logs, shell history, and shared environments.
+- **Private key / seed exports:** `export-private-key` and `reveal-seed-phrase` print raw key material to stdout. Avoid terminal logs, shell history, and shared environments.
 - **Agents:** Pass `--non-interactive --password … --wallet …` and parse JSON stdout; set `RPC_URL` in the environment to avoid repeating `--rpc-url`.
