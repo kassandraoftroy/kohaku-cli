@@ -5,7 +5,11 @@ import { getAddress, isAddress } from "ethers";
 
 import type { BalanceItem } from "../lib/balances-snapshot";
 import { loadBalancesSnapshot } from "../lib/balances-snapshot";
-import type { PrivateNoteRow } from "../lib/private-notes";
+import {
+  formatDepositTimestampIso,
+  formatNoteAssetLabel,
+  type PrivateNoteRow,
+} from "../lib/private-notes";
 import { cliOptions } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -170,17 +174,18 @@ function printPrivateProtocolSection(
 }
 
 function printPrivateNoteRow(n: PrivateNoteRow): void {
+  const asset = formatNoteAssetLabel(n);
   if (n.protocol === "privacy-pools") {
     const label = n.label ? chalk.cyan(`label ${n.label}`) : chalk.cyan("note");
     console.log(
-      `  ${label}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.approved ? "approved" : "pending"}`
+      `  ${label}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${n.approved ? "approved" : "pending"}`
     );
     return;
   }
   if (n.protocol === "tornado") {
     const id = n.deposit_index ? `deposit #${n.deposit_index}` : "note";
     console.log(
-      `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.status ?? ""}`
+      `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${padCell(formatDepositTimestampIso(n.deposit_timestamp), 22)}  ${n.status ?? ""}`
     );
     return;
   }
@@ -188,7 +193,7 @@ function printPrivateNoteRow(n: PrivateNoteRow): void {
     ? shortenAddr(n.railgun_address)
     : `tree ${n.tree_number ?? "?"}`;
   console.log(
-    `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(n.asset_address, 44)}  ${n.status ?? ""}`
+    `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${n.status ?? ""}`
   );
 }
 

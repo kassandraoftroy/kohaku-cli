@@ -27,6 +27,7 @@ type CreateWalletOpts = {
   mnemonic?: string;
   rpcUrl?: string;
   testnet?: boolean;
+  longSeed?: boolean;
   dataDir?: string;
 };
 
@@ -94,10 +95,19 @@ export function registerCreateWalletCommand(program: Command): void {
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
     .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL)")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
+    .option(
+      "--long-seed",
+      "Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit)"
+    )
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (name: string, opts: CreateWalletOpts) => {
       if (!opts.nonInteractive) {
         intro(chalk.bold("kohaku-cli — create wallet"));
+      }
+
+      if (opts.import && opts.longSeed) {
+        cliError("--long-seed only applies when generating a new mnemonic (omit --import).");
+        return;
       }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
@@ -142,7 +152,7 @@ export function registerCreateWalletCommand(program: Command): void {
           return;
         }
       } else {
-        mnemonicPhrase = generateMnemonic();
+        mnemonicPhrase = generateMnemonic(opts.longSeed ? 256 : 128);
         if (!opts.nonInteractive) {
           printMnemonicBox(mnemonicPhrase);
         }

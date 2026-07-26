@@ -106,8 +106,8 @@ export function readSeedKeystore(password: string, walletDir: string): string {
   return phrase;
 }
 
-export function generateMnemonic(): string {
-  return Mnemonic.generate();
+export function generateMnemonic(strength: 128 | 256 = 128): string {
+  return Mnemonic.generate(strength);
 }
 
 export function peekAddressesFromMnemonic(
