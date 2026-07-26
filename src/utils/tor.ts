@@ -248,6 +248,25 @@ async function loggedFetch(
 }
 
 /**
+ * tor-js builds Responses via `new Response(...)`, so `.url` is always "".
+ * Railgun's reqwest-wasm parses `response.url()` after fetch and throws
+ * "url parse" on the empty string. Stamp the request URL onto the instance.
+ */
+function withRequestUrl(res: Response, requestUrl: string): Response {
+  if (res.url) return res;
+  try {
+    Object.defineProperty(res, "url", {
+      value: requestUrl,
+      configurable: true,
+      enumerable: true,
+    });
+  } catch {
+    // Non-configurable in some environments; caller still gets the body.
+  }
+  return res;
+}
+
+/**
  * Fetch that uses Tor when a session is active (except loopback / allowlisted
  * RPC hosts). Safe to bind as `Host.network.fetch` — always checks live session.
  * Always records traffic when a wallet log context is active.
@@ -286,7 +305,8 @@ export async function kohakuFetch(
       url,
       requestBytes: estimateBodyBytes(torInit.body),
     },
-    () => activeSession!.client.fetch(url, torInit)
+    async () =>
+      withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
   );
 }
 
