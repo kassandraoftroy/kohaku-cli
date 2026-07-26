@@ -8,6 +8,7 @@ import { registerCreateWalletCommand } from "./commands/createWallet";
 import { registerExportPrivateKeyCommand } from "./commands/exportPrivateKey";
 import { registerListWalletsCommand } from "./commands/listWallets";
 import { registerNextFreshAddressCommand } from "./commands/nextFreshAddress";
+import { registerRevealSeedPhraseCommand } from "./commands/revealSeedPhrase";
 import { registerSeeDecryptedStorageCommand } from "./commands/seeDecryptedStorage";
 import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
 
   registerCreateWalletCommand(program);
   registerExportPrivateKeyCommand(program);
+  registerRevealSeedPhraseCommand(program);
   registerListWalletsCommand(program);
   registerNextFreshAddressCommand(program);
   registerShieldCommand(program);
