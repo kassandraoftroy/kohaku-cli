@@ -8,6 +8,7 @@ type TuiOpts = {
   password?: string;
   rpcUrl?: string;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 export function registerTuiCommand(program: Command): void {
@@ -19,6 +20,7 @@ export function registerTuiCommand(program: Command): void {
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TuiOpts) => {
       const { runTui } = await import("../tui/run.js");
@@ -27,6 +29,7 @@ export function registerTuiCommand(program: Command): void {
         wallet: opts.wallet,
         password: opts.password,
         rpcUrl: opts.rpcUrl,
+        withoutTor: opts.withoutTor,
       });
     });
 }

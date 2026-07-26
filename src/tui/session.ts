@@ -12,6 +12,7 @@ export type TuiSession = {
   mnemonic: string;
   rpcUrl: string;
   chainId: bigint;
+  withoutTor?: boolean;
 };
 
 export type TuiBootstrapInput = {
@@ -19,6 +20,7 @@ export type TuiBootstrapInput = {
   walletName: string;
   password: string;
   rpcUrl: string;
+  withoutTor?: boolean;
 };
 
 export async function buildTuiSession(input: TuiBootstrapInput): Promise<TuiSession> {
@@ -33,6 +35,7 @@ export async function buildTuiSession(input: TuiBootstrapInput): Promise<TuiSess
     mnemonic,
     rpcUrl: input.rpcUrl,
     chainId,
+    withoutTor: input.withoutTor,
   };
 }
 

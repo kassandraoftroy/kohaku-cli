@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { JsonRpcProvider, type Network } from "ethers";
 
+import { resolvePimlicoBundlerUrl } from "./pimlico-tor.js";
 import { expectedChainIdStringFromWalletDir } from "./wallets-util";
 
 /**
@@ -42,9 +43,9 @@ export function resolveRpcUrl(optsRpcUrl?: string): string {
   return optsRpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
 }
 
-/** Pimlico public ERC-4337 bundler (no API key). */
+/** Pimlico public ERC-4337 bundler (no API key). Uses Tor proxy when active. */
 export function railgunPimlicoBundlerUrl(chainId: bigint): string {
-  return `https://public.pimlico.io/v2/${chainId.toString()}/rpc`;
+  return resolvePimlicoBundlerUrl(chainId);
 }
 
 /**

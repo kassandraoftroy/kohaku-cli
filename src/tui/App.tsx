@@ -27,6 +27,7 @@ export type TuiLaunchOptions = {
   wallet?: string;
   password?: string;
   rpcUrl?: string;
+  withoutTor?: boolean;
 };
 
 type Route =
@@ -82,6 +83,7 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
           walletName,
           password,
           rpcUrl,
+          withoutTor: options.withoutTor,
         });
         if (!cancelled) setRoute({ name: "main", session });
       } catch (e) {

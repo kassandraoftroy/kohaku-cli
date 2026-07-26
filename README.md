@@ -406,6 +406,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 | `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the Tornado payout call. Optional third field is `msg.value` (hex or decimal wei). Currently Tornado-only. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol broadcaster, relayer, or paymaster. **Omit** to print prepared private operation JSON only. |
+| `--without-tor` | Disable Tor for Pimlico bundler traffic (railgun / tornado). **Default: Tor on** — a local proxy forwards Pimlico JSON-RPC through [tor-js](https://github.com/privacy-ethereum/tor-js). Privacy Pools is unaffected (uses fastrelay). First Tor bootstrap may take several seconds. |
 | `--non-interactive` | JSON; requires `--wallet`, `--password`, `--to` or `--next`, and an amount flag. |
 | `--dataDir <path>` | Data root. |
 
@@ -439,6 +440,7 @@ Files: `public-accounts.json`, `rg-storage.json`, `ppv1-storage.json`.
 ## Tips
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, and `unshield` default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
+- **Pimlico + Tor:** Railgun and Tornado unshields talk to `public.pimlico.io` over Tor by default (local reverse proxy + tor-js). Use `--without-tor` only if you accept sending those requests from your clearnet IP. Set `KOHAKU_TOR_DEBUG=1` for Tor client logs.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
 - **Private key / seed exports:** `export-private-key` and `reveal-seed-phrase` print raw key material to stdout. Avoid terminal logs, shell history, and shared environments.
