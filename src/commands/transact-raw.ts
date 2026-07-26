@@ -21,6 +21,7 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
+import { runWithWalletTrafficLog } from "../utils/tor";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -326,6 +327,7 @@ export function registerTransactRawCommand(program: Command): void {
       }
 
       const rawTxs = buildRawTransactions(targets, payloads, values);
+      await runWithWalletTrafficLog(walletDir, async () => {
       const rpc = await makeEthersProvider(rpcUrl);
       const txSpinner = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
@@ -425,5 +427,6 @@ export function registerTransactRawCommand(program: Command): void {
       } finally {
         rpc.destroy();
       }
+      });
     });
 }

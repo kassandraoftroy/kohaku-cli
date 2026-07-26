@@ -352,6 +352,7 @@ export function ShieldScreen({
           amount,
           fromValue: fromAddress,
           allowDeriveFromMnemonic: false,
+          withoutTor: session.withoutTor,
         });
         setResult(txs.map((t) => `${t.type}: ${t.hash}`));
       } else {
@@ -365,6 +366,7 @@ export function ShieldScreen({
           tokenMeta,
           amount,
           fromValue: fromAddress,
+          withoutTor: session.withoutTor,
         });
         setResult(
           plan.transactions.map(

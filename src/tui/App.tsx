@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { buildTuiSession, type TuiSession } from "./session.js";
 import { resolveWalletDir } from "../utils/wallets-util.js";
 import { resolveRpcUrl, DEFAULT_DATA_DIR } from "../utils/rpc.js";
+import { addTorClearnetHosts, hostnameFromUrl } from "../utils/tor.js";
 import { BootScreen, PasswordScreen, RpcScreen } from "./screens/OnboardingScreens.js";
 import {
   formatWalletRpcMismatchBrief,
@@ -85,6 +86,8 @@ export default function App({ options }: { options: TuiLaunchOptions }) {
           rpcUrl,
           withoutTor: options.withoutTor,
         });
+        const rpcHost = hostnameFromUrl(session.rpcUrl);
+        if (rpcHost) addTorClearnetHosts([rpcHost]);
         if (!cancelled) setRoute({ name: "main", session });
       } catch (e) {
         if (cancelled) return;

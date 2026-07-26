@@ -14,6 +14,7 @@ import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
 import { registerTransferCommand } from "./commands/transfer";
 import { registerTransactRawCommand } from "./commands/transact-raw";
+import { registerViewNetworkTrafficCommand } from "./commands/viewNetworkTraffic";
 // import { registerTuiCommand } from "./commands/tui";
 import { cliErrorFromCaught } from "./utils/cli-errors";
 
@@ -36,6 +37,7 @@ async function main(): Promise<void> {
   registerTransferCommand(program);
   registerTransactRawCommand(program);
   registerSeeDecryptedStorageCommand(program);
+  registerViewNetworkTrafficCommand(program);
   // registerTuiCommand(program);
 
   await program.parseAsync(process.argv);

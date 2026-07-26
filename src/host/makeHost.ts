@@ -6,6 +6,7 @@ import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
 import { makeStorage, type PluginId } from "./storage";
 import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
+import { kohakuFetch } from "../utils/tor";
 
 export type MakeHostOptions = {
   rpc: JsonRpcProvider;
@@ -18,15 +19,16 @@ export type MakeHostOptions = {
 };
 
 function makeNetwork(): Host["network"] {
-  const fetchFn: typeof fetch | undefined = globalThis.fetch;
-  if (!fetchFn) {
+  if (typeof globalThis.fetch !== "function") {
     throw new Error(
       "global fetch is not available in this Node runtime; cannot satisfy Host.network"
     );
   }
 
+  // Always use kohakuFetch so an active Tor session is picked up dynamically
+  // (Host may be created before or during withTor).
   return {
-    fetch: fetchFn.bind(globalThis),
+    fetch: kohakuFetch,
   };
 }
 

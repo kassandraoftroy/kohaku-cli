@@ -30,6 +30,7 @@ import {
   makeEthersProvider,
   resolveRpcUrl,
 } from "../utils/rpc";
+import { withTor } from "../utils/tor";
 import { ERC20_ABI, resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -65,6 +66,7 @@ type ShieldOpts = {
   priorityFeeGwei?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
+  withoutTor?: boolean;
   dataDir?: string;
 };
 
@@ -265,6 +267,7 @@ export function registerShieldCommand(program: Command): void {
     .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ShieldOpts) => {
       const resolvedProtocol = resolveProtocolOption(opts.protocol);
@@ -529,6 +532,16 @@ export function registerShieldCommand(program: Command): void {
       const quiet = quietNonInteractive(opts.nonInteractive);
       const broadcastTransactions: BroadcastTxResultJson[] = [];
       try {
+        await withTor(
+          !opts.withoutTor,
+          {
+            rpcUrl,
+            walletDir,
+            onStatus: (message) => {
+              if (!quiet) txSpinner.start(message);
+            },
+          },
+          async () => {
         const host = await makeHost({
           rpc: rpcForHost,
           walletDir,
@@ -712,6 +725,8 @@ export function registerShieldCommand(program: Command): void {
           logCliJson({ transactions: broadcastTransactions });
           return;
         }
+          }
+        );
       } catch (e) {
         cliErrorFromCaught(e);
         return;

@@ -40,6 +40,7 @@ type BalancesOpts = {
   rpcUrl?: string;
   tokensList?: string;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 function stringifyBalancesJson(payload: unknown): string {
@@ -327,6 +328,7 @@ export function registerBalancesCommand(program: Command): void {
       "--tokensList <addrs>",
       "Extra ERC20 addresses (comma/space); merged with chain defaults, deduped"
     )
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: BalancesOpts) => {
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
@@ -410,6 +412,10 @@ export function registerBalancesCommand(program: Command): void {
               extraTokenAddresses,
               includeProtocols,
               verbose: !!opts.verbose,
+              withoutTor: opts.withoutTor,
+              onTorStatus: (message) => {
+                if (!quiet) loading.start(message);
+              },
               onWarning: (msg) => {
                 if (!quiet) {
                   log.warn(chalk.yellow(msg));

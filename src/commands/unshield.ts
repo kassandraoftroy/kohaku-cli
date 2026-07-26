@@ -52,10 +52,7 @@ import {
   railgunPimlicoBundlerUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
-import {
-  protocolUsesPimlicoBundler,
-  withPimlicoTor,
-} from "../utils/pimlico-tor.js";
+import { withTor } from "../utils/tor.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
@@ -419,12 +416,13 @@ export function registerUnshieldCommand(program: Command): void {
       const rpcForHost = await makeEthersProvider(rpcUrl);
       const spin = manageSpinner(spinner(), quietNonInteractive(opts.nonInteractive));
       const quiet = quietNonInteractive(opts.nonInteractive);
-      const useTor =
-        protocolUsesPimlicoBundler(protocol) && !opts.withoutTor;
+      const useTor = !opts.withoutTor;
       try {
-        await withPimlicoTor(
+        await withTor(
           useTor,
           {
+            rpcUrl,
+            walletDir,
             onStatus: (message) => {
               spin.start(message);
             },
