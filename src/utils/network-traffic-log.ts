@@ -30,7 +30,9 @@ export type TrafficClearnetReason =
   | "loopback"
   | "rpc-allowlist"
   | "tor-disabled"
-  | "rpc";
+  | "rpc"
+  /** Tor failed for a GitHub proving-artifact download; retried on clearnet. */
+  | "artifact-fallback";
 
 export type TrafficCategory =
   | "pimlico"

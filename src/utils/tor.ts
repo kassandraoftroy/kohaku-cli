@@ -10,6 +10,10 @@
  *    fetches the configured bundler URL. Pointing that URL at 127.0.0.1 covers
  *    both. Loopback requests stay on clearnet (they hit this proxy).
  *
+ * GitHub proving-artifact GETs try Tor first; on Tor failure (throw or non-2xx,
+ * including unfollowed 302s) they fall back to clearnet and log
+ * `clearnetReason: "artifact-fallback"`.
+ *
  * Ethereum RPC stays clearnet: ethers uses Node http/https (not fetch). Hosts
  * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
  */
@@ -19,6 +23,7 @@ import { TorClient } from "tor-js/wasm-file";
 
 import {
   appendNetworkTraffic,
+  categorizeUrl,
   runWithTrafficLogWallet,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
@@ -266,10 +271,39 @@ function withRequestUrl(res: Response, requestUrl: string): Response {
   return res;
 }
 
+/** GitHub-hosted proving artifacts (Railgun / Tornado keys) — Tor-hostile / redirecty. */
+function isGithubArtifactUrl(urlStr: string): boolean {
+  try {
+    const host = new URL(urlStr).hostname.toLowerCase();
+    const isGithub =
+      host === "github.com" ||
+      host === "raw.githubusercontent.com" ||
+      host.endsWith(".githubusercontent.com");
+    return isGithub && categorizeUrl(urlStr) === "artifacts";
+  } catch {
+    return false;
+  }
+}
+
+function resolveRequestMethod(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): string {
+  const method =
+    init?.method ??
+    (typeof Request !== "undefined" && input instanceof Request
+      ? input.method
+      : "GET");
+  return method.toUpperCase();
+}
+
 /**
  * Fetch that uses Tor when a session is active (except loopback / allowlisted
  * RPC hosts). Safe to bind as `Host.network.fetch` — always checks live session.
  * Always records traffic when a wallet log context is active.
+ *
+ * GitHub artifact GETs: Tor first, then clearnet fallback on failure (logged as
+ * `artifact-fallback`).
  */
 export async function kohakuFetch(
   input: RequestInfo | URL,
@@ -297,16 +331,55 @@ export async function kohakuFetch(
   }
 
   const torInit = await toTorInit(input, init);
+  const requestBytes = estimateBodyBytes(torInit.body);
+  const method = resolveRequestMethod(input, init);
+  const allowArtifactFallback =
+    isGithubArtifactUrl(url) && (method === "GET" || method === "HEAD");
+
+  if (!allowArtifactFallback) {
+    return loggedFetch(
+      input,
+      init,
+      {
+        via: "tor",
+        url,
+        requestBytes,
+      },
+      async () =>
+        withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
+    );
+  }
+
+  let torRes: Response | undefined;
+  try {
+    torRes = await loggedFetch(
+      input,
+      init,
+      {
+        via: "tor",
+        url,
+        requestBytes,
+      },
+      async () =>
+        withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
+    );
+  } catch {
+    // Logged as Tor failure; fall through to clearnet.
+  }
+
+  // Non-2xx includes unfollowed GitHub 302s (empty body → brotli EOF upstream).
+  if (torRes?.ok) return torRes;
+
   return loggedFetch(
     input,
     init,
     {
-      via: "tor",
+      via: "clearnet",
+      clearnetReason: "artifact-fallback",
       url,
-      requestBytes: estimateBodyBytes(torInit.body),
+      requestBytes,
     },
-    async () =>
-      withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
+    () => clearnetFetch(input, init)
   );
 }
 
