@@ -7,6 +7,10 @@ A terminal wallet for moving funds between **public** Ethereum accounts (derived
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
+See [Kohaku CLI Wiki](https://tatsumaki.gwei.domains) for a practical guide to using kohaku-cli as a wallet solution "in real life"
+
+See README below for quick testnet demo and other technical details.
+
 ```bash
 npm install
 npm run build
