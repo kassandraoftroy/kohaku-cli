@@ -7,7 +7,7 @@ import {
   peekAddressesFromMnemonic,
   writeSeedKeystore,
 } from "../utils/mnemonic.js";
-import { makeEthersProvider } from "../utils/rpc.js";
+import { makePublicClient, disposePublicClient } from "../utils/rpc.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import {
   resolveWalletDir,
@@ -18,7 +18,7 @@ export async function findLastTouchedPublicIndex(
   mnemonic: string,
   rpcUrl: string
 ): Promise<number> {
-  const provider = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   try {
     let start = 0;
     let lastTouched = -1;
@@ -28,7 +28,7 @@ export async function findLastTouchedPublicIndex(
       const indexes = Array.from({ length: WINDOW_SIZE }, (_, i) => start + i);
       const addresses = peekAddressesFromMnemonic(mnemonic, indexes);
       const touched = await Promise.all(
-        addresses.map((address) => isAddressUsed(address, provider))
+        addresses.map((address) => isAddressUsed(address, client))
       );
 
       for (let i = 0; i < touched.length; i += 1) {
@@ -43,7 +43,7 @@ export async function findLastTouchedPublicIndex(
       start += WINDOW_SIZE;
     }
   } finally {
-    provider.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -70,16 +70,16 @@ export async function createWalletOnDisk(
 
   let lastTouchedIndex = -1;
   if (input.rpcUrl) {
-    const provider = await makeEthersProvider(input.rpcUrl);
+    const client = await makePublicClient(input.rpcUrl);
     try {
-      const network = await provider.getNetwork();
-      if (network.chainId !== expectedChainId) {
+      const chainId = BigInt(await client.getChainId());
+      if (chainId !== expectedChainId) {
         throw new Error(
-          `RPC chain ID ${network.chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
+          `RPC chain ID ${chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
         );
       }
     } finally {
-      provider.destroy();
+      disposePublicClient(client);
     }
     lastTouchedIndex = await findLastTouchedPublicIndex(mnemonicPhrase, input.rpcUrl);
   }

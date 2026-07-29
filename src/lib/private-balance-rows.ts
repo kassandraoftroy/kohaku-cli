@@ -1,5 +1,5 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
-import { formatUnits, getAddress, isAddress } from "ethers";
+import { formatUnits, getAddress, isAddress } from "viem";
 
 import type { BalanceItem } from "./balances-snapshot.js";
 import { USD_VALUE_UNAVAILABLE } from "./usd-values.js";

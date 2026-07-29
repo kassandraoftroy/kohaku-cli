@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { loadStore, saveStore } from "./aes-storage";
 import { Mnemonic } from "derive-railgun-keys";
-import { ethers } from "ethers";
+import { getAddress } from "viem";
+import { addressFromPrivateKey } from "./viem-tx.js";
 
 function accountsStorePathForWallet(walletDir: string): string {
   return join(walletDir, "public-accounts.json");
@@ -46,7 +47,7 @@ export function findPublicAccountByAddress(
   storage: PublicAccountsStorage,
   address: string
 ): PublicAccount | undefined {
-  const lower = ethers.getAddress(address).toLowerCase();
+  const lower = getAddress(address).toLowerCase();
   return storage.getAccounts().find((a) => a.address.toLowerCase() === lower);
 }
 
@@ -60,7 +61,7 @@ export function publicAccountDerivationPath(index: number): string {
 
 function derivePublicAccountAtIndex(mnemonic: string, index: number): PublicAccount {
   const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
-  const address = ethers.computeAddress(priv);
+  const address = addressFromPrivateKey(priv);
   return {
     address,
     index,

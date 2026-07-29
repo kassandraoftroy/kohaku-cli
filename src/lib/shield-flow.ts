@@ -1,16 +1,8 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
-import {
-  Contract,
-  Interface,
-  Wallet,
-  formatUnits,
-  getAddress,
-  isAddress,
-  parseUnits,
-} from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 import { Mnemonic } from "derive-railgun-keys";
 
-import { makeEthersProvider } from "../utils/rpc";
+import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc";
 import { withTor } from "../utils/tor";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
@@ -24,6 +16,13 @@ import {
 } from "../utils/plugins";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+import {
+  addressFromPrivateKey,
+  encodeContractCall,
+  makeWalletClient,
+  simulateCallOrThrow,
+  sendTransactionAndWait,
+} from "../utils/viem-tx.js";
 
 export type PublicAccountWithBalance = {
   index: number;
@@ -126,16 +125,21 @@ export async function listPublicAccountsWithBalance(
 ): Promise<PublicAccountWithBalance[]> {
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
   const allPublicAccounts = publicStorage.getAccounts();
-  const rpc = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   try {
     const withBalances: PublicAccountWithBalance[] = [];
     for (const acct of allPublicAccounts) {
-      const ethBalance = await rpc.getBalance(acct.address);
+      const ethBalance = await client.getBalance({
+        address: acct.address as `0x${string}`,
+      });
       const bal = tokenMeta.isEth
         ? ethBalance
-        : await new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc).balanceOf(
-            acct.address
-          );
+        : await client.readContract({
+            address: tokenMeta.tokenAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [acct.address as `0x${string}`],
+          });
       withBalances.push({
         index: acct.index,
         address: acct.address,
@@ -146,7 +150,7 @@ export async function listPublicAccountsWithBalance(
     }
     return withBalances;
   } finally {
-    rpc.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -155,8 +159,7 @@ function encodeErc20ApproveTx(
   spender: string,
   amount: bigint
 ): { to: string; data: string; value: bigint } {
-  const iface = new Interface(ERC20_ABI);
-  const data = iface.encodeFunctionData("approve", [spender, amount]);
+  const data = encodeContractCall(ERC20_ABI, "approve", [spender, amount]);
   return { to: tokenAddress, data, value: 0n };
 }
 
@@ -194,22 +197,21 @@ function toShieldTxs(
 }
 
 export async function simulateTransactionOrThrow(
-  rpc: Awaited<ReturnType<typeof makeEthersProvider>>,
+  client: KohakuPublicClient,
   tx: { to: string; from: string; data: string; value: bigint; gasLimit?: bigint },
   stepLabel: string
 ): Promise<void> {
-  try {
-    await rpc.call({
+  await simulateCallOrThrow(
+    client,
+    {
       to: tx.to,
       from: tx.from,
       data: tx.data,
       value: tx.value,
-      gasLimit: tx.gasLimit,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${stepLabel} simulation failed: ${msg}`);
-  }
+      gas: tx.gasLimit,
+    },
+    stepLabel
+  );
 }
 
 export function resolveShieldSender(opts: {
@@ -233,7 +235,7 @@ export function resolveShieldSender(opts: {
     }
     if (opts.allowDeriveFromMnemonic || opts.dryRun) {
       const priv = Mnemonic.to0xPrivateKeyByIndex(opts.mnemonic, fromIndex);
-      return { senderAddress: new Wallet(priv).address, senderPrivateKey: priv };
+      return { senderAddress: addressFromPrivateKey(priv), senderPrivateKey: priv };
     }
     throw new Error(
       `Public account index ${fromIndex} not found. Derive from mnemonic is not enabled.`
@@ -332,8 +334,12 @@ export async function prepareShieldPlan(opts: {
 
         let approve: { to: string; data: string; value: bigint } | null = null;
         if (!tokenMeta.isEth) {
-          const erc20Read = new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc);
-          const allowance: bigint = await erc20Read.allowance(senderAddress, shieldTx.to);
+          const allowance = await rpc.readContract({
+            address: tokenMeta.tokenAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "allowance",
+            args: [senderAddress as `0x${string}`, shieldTx.to as `0x${string}`],
+          });
           if (allowance < amount) {
             approve = encodeErc20ApproveTx(tokenMeta.tokenAddress, shieldTx.to, amount);
           }
@@ -415,7 +421,7 @@ export async function broadcastShield(opts: {
   const { rpc, dispose } = await rpcForWalletOps(ctx);
   const results: BroadcastShieldResult = [];
   try {
-    const signer = new Wallet(sender.senderPrivateKey, rpc);
+    const walletClient = makeWalletClient(sender.senderPrivateKey, rpc, opts.rpcUrl);
 
     if (approve && !opts.tokenMeta.isEth) {
       await simulateTransactionOrThrow(
@@ -428,10 +434,16 @@ export async function broadcastShield(opts: {
         },
         "Approval transaction"
       );
-      const erc20 = new Contract(opts.tokenMeta.tokenAddress, ERC20_ABI, signer);
-      const t = await erc20.approve(shieldTx.to, opts.amount);
-      await t.wait();
-      results.push({ type: "approval", hash: t.hash });
+      const approvalHash = await walletClient.writeContract({
+        account: walletClient.account!,
+        chain: walletClient.chain,
+        address: opts.tokenMeta.tokenAddress as `0x${string}`,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [shieldTx.to as `0x${string}`, opts.amount],
+      });
+      await rpc.waitForTransactionReceipt({ hash: approvalHash });
+      results.push({ type: "approval", hash: approvalHash });
     }
 
     for (let i = 0; i < shieldTxs.length; i++) {
@@ -449,14 +461,13 @@ export async function broadcastShield(opts: {
           ? `Shield transaction (${i + 1}/${shieldTxs.length})`
           : "Shield transaction"
       );
-      const s = await signer.sendTransaction({
+      const hash = await sendTransactionAndWait(walletClient, rpc, {
         to: tx.to,
         data: tx.data,
         value: tx.value,
-        gasLimit: 2000000,
+        gas: 2000000n,
       });
-      await s.wait();
-      results.push({ type: "shield", hash: s.hash });
+      results.push({ type: "shield", hash });
     }
     return results;
   } finally {

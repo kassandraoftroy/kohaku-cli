@@ -2,15 +2,7 @@ import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
-import {
-  Contract,
-  Interface,
-  Wallet,
-  formatUnits,
-  getAddress,
-  isAddress,
-  parseUnits,
-} from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import {
   formatPublicAccountBalanceLabel,
@@ -28,11 +20,13 @@ import { readSeedKeystore } from "../utils/mnemonic";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  makeEthersProvider,
+  makePublicClient,
+  disposePublicClient,
   resolveRpcUrl,
 } from "../utils/rpc";
 import { runWithWalletTrafficLog } from "../utils/tor";
 import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
+import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
 import {
   estimateEthTransferGasReserveWei,
@@ -67,9 +61,7 @@ type TxPayloadJson = {
   value: string;
 };
 
-const ERC20_TRANSFER_ABI = [
-  "function transfer(address to, uint256 amount) returns (bool)",
-] as const;
+const ERC20_TRANSFER_ABI = ERC20_ABI;
 
 function etherscanTxUrl(chainId: bigint, txHash: string): string {
   const host = chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
@@ -92,10 +84,9 @@ function buildTransferTx(
   if (tokenMeta.isEth) {
     return { to: recipient, data: "0x", value: amount };
   }
-  const iface = new Interface(ERC20_TRANSFER_ABI);
   return {
     to: tokenMeta.tokenAddress,
-    data: iface.encodeFunctionData("transfer", [recipient, amount]),
+    data: encodeContractCall(ERC20_ABI, "transfer", [recipient, amount]),
     value: 0n,
   };
 }
@@ -501,14 +492,14 @@ export function registerTransferCommand(program: Command): void {
 
       const tx = buildTransferTx(tokenMeta, recipient, amount);
       await runWithWalletTrafficLog(walletDir, async () => {
-      const rpc = await makeEthersProvider(rpcUrl);
+      const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
       try {
         if (dryRun) {
           await simulateTransactionOrThrow(
-            rpc,
+            client,
             {
               to: tx.to,
               from: senderAddress,
@@ -554,7 +545,7 @@ export function registerTransferCommand(program: Command): void {
         }
 
         await simulateTransactionOrThrow(
-          rpc,
+          client,
           {
             to: tx.to,
             from: senderAddress,
@@ -569,25 +560,30 @@ export function registerTransferCommand(program: Command): void {
           `Send transfer: ${amountPreview} from ${senderAddress} to ${recipient}?`
         );
 
-        const signer = new Wallet(senderPrivateKey, rpc);
+        const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
         const sent = await runQuietSpinner(
           quiet,
           txSpinner,
           { start: "Sending transfer...", failure: "Transfer failed." },
           async () => {
             if (tokenMeta.isEth) {
-              const t = await signer.sendTransaction({
+              const hash = await sendTransactionAndWait(walletClient, client, {
                 to: recipient,
                 value: amount,
                 data: "0x",
               });
-              await t.wait();
-              return t;
+              return { hash };
             }
-            const erc20 = new Contract(tokenMeta.tokenAddress, ERC20_ABI, signer);
-            const t = await erc20.transfer(recipient, amount);
-            await t.wait();
-            return t;
+            const hash = await walletClient.writeContract({
+              account: walletClient.account!,
+              chain: walletClient.chain,
+              address: tokenMeta.tokenAddress as `0x${string}`,
+              abi: ERC20_ABI,
+              functionName: "transfer",
+              args: [recipient as `0x${string}`, amount],
+            });
+            await client.waitForTransactionReceipt({ hash });
+            return { hash };
           },
           (t) => `Transfer mined: ${t.hash}`
         );
@@ -609,7 +605,7 @@ export function registerTransferCommand(program: Command): void {
       } catch (e) {
         cliErrorFromCaught(e);
       } finally {
-        rpc.destroy();
+        disposePublicClient(client);
       }
       });
     });

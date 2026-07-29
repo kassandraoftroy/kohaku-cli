@@ -1,4 +1,4 @@
-import { formatUnits, getAddress, isAddress } from "ethers";
+import { formatUnits, getAddress, isAddress } from "viem";
 
 import type { SupportedProtocol } from "../utils/plugins.js";
 import { isPrivateBalanceNativeEth } from "../utils/tokens-util.js";

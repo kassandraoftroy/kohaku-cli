@@ -1,7 +1,7 @@
 import { confirm } from "@inquirer/prompts";
 import { Mnemonic } from "derive-railgun-keys";
 import type { Command } from "commander";
-import { computeAddress, getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 
 import { readSeedKeystore } from "../utils/mnemonic";
 import { findPublicAccountByAddress, makePublicAccountsStorage } from "../utils/public-accounts";
@@ -9,6 +9,7 @@ import { DEFAULT_DATA_DIR, resolveRpcUrl } from "../utils/rpc";
 import { cliOptions } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
+import { addressFromPrivateKey } from "../utils/viem-tx.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -106,7 +107,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
           } else {
             // Allow exporting by derivation index even if not persisted yet.
             privateKey = Mnemonic.to0xPrivateKeyByIndex(mnemonic, idx);
-            address = getAddress(computeAddress(privateKey));
+            address = addressFromPrivateKey(privateKey);
           }
           indexLabel = idx.toString();
         } else {

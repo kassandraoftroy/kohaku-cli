@@ -1,7 +1,7 @@
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 
 import type { BalanceItem } from "../lib/balances-snapshot";
 import { loadBalancesSnapshot } from "../lib/balances-snapshot";

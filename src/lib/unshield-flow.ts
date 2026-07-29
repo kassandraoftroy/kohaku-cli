@@ -3,9 +3,9 @@ import {
   PrivacyPoolsV1_0xBow,
 } from "@kohaku-eth/privacy-pools";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
-import { Contract, formatUnits, getAddress, parseUnits } from "ethers";
+import { formatUnits, getAddress, parseAbi, parseUnits } from "viem";
 
-import { makeEthersProvider, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
+import { makePublicClient, disposePublicClient, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
@@ -36,9 +36,9 @@ import { withProtocolRuntime } from "./protocol-runtime.js";
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
 
-const PP_ENTRYPOINT_ASSET_CONFIG_ABI = [
+const PP_ENTRYPOINT_ASSET_CONFIG_ABI = parseAbi([
   "function assetConfig(address _asset) view returns (address pool, uint256 minimumDepositAmount, uint256 vettingFeeBPS, uint256 maxRelayFeeBPS)",
-] as const;
+]);
 
 type PpPreparedOp = {
   rawData?: {
@@ -57,19 +57,19 @@ async function fetchPrivacyPoolsMaxRelayFeeBps(
 ): Promise<bigint | null> {
   const deployment = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
   if (!deployment) return null;
-  const provider = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   try {
-    const entrypoint = new Contract(
-      deployment.entrypoint.entrypointAddress,
-      PP_ENTRYPOINT_ASSET_CONFIG_ABI,
-      provider
-    );
-    const cfg = await entrypoint.assetConfig(ETH_AS_ERC20);
-    return BigInt(cfg.maxRelayFeeBPS);
+    const cfg = await client.readContract({
+      address: deployment.entrypoint.entrypointAddress as `0x${string}`,
+      abi: PP_ENTRYPOINT_ASSET_CONFIG_ABI,
+      functionName: "assetConfig",
+      args: [ETH_AS_ERC20 as `0x${string}`],
+    });
+    return BigInt(cfg[3]);
   } catch {
     return null;
   } finally {
-    provider.destroy();
+    disposePublicClient(client);
   }
 }
 

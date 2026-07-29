@@ -1,4 +1,4 @@
-import { makeEthersProvider } from "./rpc.js";
+import { makePublicClient } from "./rpc.js";
 
 /** Standard EIP-1559 simple ETH transfer. */
 export const ETH_TRANSFER_GAS_LIMIT = 21_000n;
@@ -10,28 +10,24 @@ export const ETH_TRANSFER_GAS_LIMIT = 21_000n;
 export async function estimateEthTransferGasReserveWei(
   rpcUrl: string
 ): Promise<bigint> {
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const latest = await rpc.getBlock("latest");
-    const base = latest?.baseFeePerGas ?? 0n;
-    let maxFeePerGas = (base * 110n) / 100n;
+  const client = await makePublicClient(rpcUrl);
+  const latest = await client.getBlock({ blockTag: "latest" });
+  const base = latest.baseFeePerGas ?? 0n;
+  let maxFeePerGas = (base * 110n) / 100n;
 
-    const feeData = await rpc.getFeeData();
-    if (feeData.maxFeePerGas != null && feeData.maxFeePerGas > maxFeePerGas) {
-      maxFeePerGas = feeData.maxFeePerGas;
-    }
-    if (maxFeePerGas === 0n && feeData.gasPrice != null) {
-      maxFeePerGas = feeData.gasPrice;
-    }
-    if (maxFeePerGas === 0n) {
-      throw new Error(
-        "Could not determine gas price to compute ETH --amount-max."
-      );
-    }
-    return (ETH_TRANSFER_GAS_LIMIT * maxFeePerGas * 12n) / 10n;
-  } finally {
-    rpc.destroy();
+  const feeData = await client.estimateFeesPerGas();
+  if (feeData.maxFeePerGas != null && feeData.maxFeePerGas > maxFeePerGas) {
+    maxFeePerGas = feeData.maxFeePerGas;
   }
+  if (maxFeePerGas === 0n && feeData.gasPrice != null) {
+    maxFeePerGas = feeData.gasPrice;
+  }
+  if (maxFeePerGas === 0n) {
+    throw new Error(
+      "Could not determine gas price to compute ETH --amount-max."
+    );
+  }
+  return (ETH_TRANSFER_GAS_LIMIT * maxFeePerGas * 12n) / 10n;
 }
 
 /** Max transferable amount from a public balance (ETH reserves gas; ERC-20 is full balance). */

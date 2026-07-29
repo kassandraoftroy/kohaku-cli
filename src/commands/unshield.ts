@@ -3,7 +3,7 @@ import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
-import { formatUnits, getAddress, isAddress, parseUnits } from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import { makeHost } from "../host/makeHost";
 import {
@@ -49,7 +49,8 @@ import { isRailgunFeeToken } from "../utils/railgun-unshield-max.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  makeEthersProvider,
+  makePublicClient,
+  disposePublicClient,
   railgunPimlicoBundlerUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
@@ -422,7 +423,7 @@ export function registerUnshieldCommand(program: Command): void {
         );
       }
 
-      const rpcForHost = await makeEthersProvider(rpcUrl);
+      const rpcForHost = await makePublicClient(rpcUrl);
       const spin = manageSpinner(spinner(), quietNonInteractive(opts.nonInteractive));
       const quiet = quietNonInteractive(opts.nonInteractive);
       const useTor = !opts.withoutTor;
@@ -821,7 +822,7 @@ export function registerUnshieldCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       } finally {
-        rpcForHost.destroy();
+        disposePublicClient(rpcForHost);
       }
 
       if (!opts.nonInteractive) {

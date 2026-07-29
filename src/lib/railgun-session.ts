@@ -1,9 +1,8 @@
 import type { Host } from "@kohaku-eth/plugins";
-import type { JsonRpcProvider } from "ethers";
 import { createRailgunPlugin } from "@kohaku-eth/railgun";
 
 import { makeHost } from "../host/makeHost.js";
-import { makeEthersProvider } from "../utils/rpc.js";
+import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc.js";
 import { railgunPluginOptions, type AnyPlugin } from "../utils/plugins.js";
 
 export type RailgunSessionKey = `${string}:${string}`;
@@ -15,7 +14,7 @@ export function railgunSessionKey(walletDir: string, chainId: bigint): RailgunSe
 type RailgunSession = {
   host: Host;
   plugin: AnyPlugin;
-  rpc: JsonRpcProvider;
+  rpc: KohakuPublicClient;
 };
 
 const sessions = new Map<RailgunSessionKey, RailgunSession>();
@@ -37,7 +36,7 @@ export async function acquireRailgunSession(opts: {
     return existing;
   }
 
-  const rpc = await makeEthersProvider(opts.rpcUrl);
+  const rpc = await makePublicClient(opts.rpcUrl);
   try {
     const host = await makeHost({
       rpc,
@@ -54,7 +53,7 @@ export async function acquireRailgunSession(opts: {
     sessions.set(key, session);
     return session;
   } catch (e) {
-    rpc.destroy();
+    disposePublicClient(rpc);
     throw e;
   }
 }
@@ -70,13 +69,13 @@ export function disposeRailgunSession(walletDir: string, chainId: bigint): void 
   const key = railgunSessionKey(walletDir, chainId);
   const session = sessions.get(key);
   if (!session) return;
-  session.rpc.destroy();
+  disposePublicClient(session.rpc);
   sessions.delete(key);
 }
 
 export function disposeAllRailgunSessions(): void {
   for (const session of sessions.values()) {
-    session.rpc.destroy();
+    disposePublicClient(session.rpc);
   }
   sessions.clear();
 }
