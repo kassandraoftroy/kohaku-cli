@@ -1,15 +1,15 @@
 import type { Host } from "@kohaku-eth/plugins";
-import { ethers as kohakuEthersProvider } from "@kohaku-eth/provider/ethers";
-import type { JsonRpcProvider } from "ethers";
+import { viem as kohakuViemProvider } from "@kohaku-eth/provider/viem";
 
 import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
 import { makeStorage, type PluginId } from "./storage";
 import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 import { kohakuFetch } from "../utils/tor";
+import type { KohakuPublicClient } from "../utils/rpc.js";
 
 export type MakeHostOptions = {
-  rpc: JsonRpcProvider;
+  rpc: KohakuPublicClient;
   walletDir: string;
   password: string;
   mnemonic: string;
@@ -44,7 +44,7 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
   } = options;
 
   const provider = withChunkedGetLogs(
-    withTransactionCount(kohakuEthersProvider(rpc))
+    withTransactionCount(kohakuViemProvider(rpc))
   );
 
   const keystore = pluginId === "rg" ? makeRailgunKeystore(mnemonic) : makeKeystore(mnemonic);

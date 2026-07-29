@@ -12,7 +12,7 @@
  * transaction.
  */
 
-import { getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 import { createEthereumNames } from "@1001-digital/ethereum-names";
 
 const SUPPORTED_TLDS = [".eth", ".gwei", ".wei"] as const;

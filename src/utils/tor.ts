@@ -14,7 +14,7 @@
  * including unfollowed 302s) they fall back to clearnet and log
  * `clearnetReason: "artifact-fallback"`.
  *
- * Ethereum RPC stays clearnet: ethers uses Node http/https (not fetch). Hosts
+ * Ethereum RPC stays clearnet: viem http transport uses fetch (not Tor by default). Hosts
  * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
  */
 import http from "node:http";

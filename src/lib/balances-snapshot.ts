@@ -1,7 +1,7 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
-import { Contract, formatUnits, getAddress, isAddress } from "ethers";
+import { formatUnits, getAddress, isAddress } from "viem";
 
-import { makeEthersProvider } from "../utils/rpc";
+import { makePublicClient, disposePublicClient } from "../utils/rpc";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
@@ -187,17 +187,26 @@ export async function loadTornadoPrivateBalances(
 }
 
 async function loadErc20Meta(
-  provider: Awaited<ReturnType<typeof makeEthersProvider>>,
+  client: Awaited<ReturnType<typeof makePublicClient>>,
   token: `0x${string}`
 ): Promise<{ symbol: string; decimals: number }> {
-  const c = new Contract(token, ERC20_ABI, provider);
   let decimals: number;
   try {
-    decimals = Number(await c.decimals());
+    decimals = Number(
+      await client.readContract({
+        address: token,
+        abi: ERC20_ABI,
+        functionName: "decimals",
+      })
+    );
   } catch {
     throw new Error(`Failed to read decimals() for token ${token}`);
   }
-  const symbol = await c.symbol().catch(() => "UNKNOWN");
+  const symbol = await client.readContract({
+    address: token,
+    abi: ERC20_ABI,
+    functionName: "symbol",
+  }).catch(() => "UNKNOWN");
   return { symbol, decimals };
 }
 
@@ -324,7 +333,7 @@ async function resolvePrivateBalanceItems(
   const { erc20Addresses: tokenAddresses, knownMetaByLower } =
     mergeDefaultAndExtraErc20s(chainIdString, erc20FromPrivate);
 
-  const rpc = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
   try {
     for (const token of tokenAddresses) {
@@ -333,7 +342,7 @@ async function resolvePrivateBalanceItems(
       if (known) {
         tokenMeta.set(key, known);
       } else {
-        tokenMeta.set(key, await loadErc20Meta(rpc, token));
+        tokenMeta.set(key, await loadErc20Meta(client, token));
       }
     }
 
@@ -351,7 +360,7 @@ async function resolvePrivateBalanceItems(
       protocolAvailable,
     };
   } finally {
-    rpc.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -458,7 +467,7 @@ async function loadBalancesSnapshotInner(
     aggregatedByToken.set(t.toLowerCase(), 0n);
   }
 
-  const rpcForPublic = await makeEthersProvider(rpcUrl);
+  const rpcForPublic = await makePublicClient(rpcUrl);
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
   let privateNotes: PrivateNotesByProtocol | undefined;
   try {
@@ -514,7 +523,9 @@ async function loadBalancesSnapshotInner(
     const updatedAccounts: typeof publicAccounts = [];
 
     for (const acct of publicAccounts) {
-      const ethBalance = await rpcForPublic.getBalance(acct.address);
+      const ethBalance = await rpcForPublic.getBalance({
+        address: acct.address as `0x${string}`,
+      });
       aggregatedEth.push(ethBalance);
 
       const erc20Balances = { ...acct.erc20Balances };
@@ -531,8 +542,12 @@ async function loadBalancesSnapshotInner(
 
       for (const token of tokenAddresses) {
         const key = token.toLowerCase();
-        const c = new Contract(token, ERC20_ABI, rpcForPublic);
-        const bal: bigint = await c.balanceOf(acct.address);
+        const bal = await rpcForPublic.readContract({
+          address: token,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [acct.address as `0x${string}`],
+        });
         erc20Balances[key] = bal.toString();
         aggregatedByToken.set(key, (aggregatedByToken.get(key) ?? 0n) + bal);
         const meta = tokenMeta.get(key)!;
@@ -560,7 +575,7 @@ async function loadBalancesSnapshotInner(
       publicStorage.setAccounts(updatedAccounts);
     }
   } finally {
-    rpcForPublic.destroy();
+    disposePublicClient(rpcForPublic);
   }
 
   const totalPublicEth = aggregatedEth.reduce((a, b) => a + b, 0n);

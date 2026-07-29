@@ -2,7 +2,7 @@ import { confirm, select } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { Wallet, getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 
 import {
   formatPublicAccountBalanceLabel,
@@ -19,11 +19,13 @@ import { readSeedKeystore } from "../utils/mnemonic";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  makeEthersProvider,
+  makePublicClient,
+  disposePublicClient,
   resolveRpcUrl,
 } from "../utils/rpc";
 import { runWithWalletTrafficLog } from "../utils/tor";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
+import { makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -339,7 +341,7 @@ export function registerTransactRawCommand(program: Command): void {
 
       const rawTxs = buildRawTransactions(targets, payloads, values);
       await runWithWalletTrafficLog(walletDir, async () => {
-      const rpc = await makeEthersProvider(rpcUrl);
+      const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
 
@@ -354,7 +356,7 @@ export function registerTransactRawCommand(program: Command): void {
         for (let i = 0; i < rawTxs.length; i++) {
           const tx = rawTxs[i]!;
           await simulateTransactionOrThrow(
-            rpc,
+            client,
             {
               to: tx.to,
               from: senderAddress,
@@ -382,7 +384,7 @@ export function registerTransactRawCommand(program: Command): void {
           return;
         }
 
-        const signer = new Wallet(senderPrivateKey, rpc);
+        const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
         const broadcastResults: Array<{ index: number; hash: string }> = [];
 
         for (let i = 0; i < rawTxs.length; i++) {
@@ -401,13 +403,12 @@ export function registerTransactRawCommand(program: Command): void {
               failure: `Transaction ${step} failed.`,
             },
             async () => {
-              const t = await signer.sendTransaction({
+              const hash = await sendTransactionAndWait(walletClient, client, {
                 to: tx.to,
                 data: tx.data,
                 value: tx.value,
               });
-              await t.wait();
-              return t;
+              return { hash };
             },
             (t) => `Transaction ${step} mined: ${t.hash}`
           );
@@ -436,7 +437,7 @@ export function registerTransactRawCommand(program: Command): void {
       } catch (e) {
         cliErrorFromCaught(e);
       } finally {
-        rpc.destroy();
+        disposePublicClient(client);
       }
       });
     });

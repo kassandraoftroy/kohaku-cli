@@ -9,7 +9,7 @@ import {
   uniswapV3Discoverer,
   type Router,
 } from "eth-prices";
-import { getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 import { from as providerFrom } from "ox/Provider";
 import { fromHttp } from "ox/RpcTransport";
 

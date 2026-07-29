@@ -3,15 +3,7 @@ import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
-import {
-  Contract,
-  Interface,
-  Wallet,
-  formatUnits,
-  getAddress,
-  isAddress,
-  parseUnits,
-} from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
@@ -29,12 +21,21 @@ import {
 } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
+import {
+  addressFromPrivateKey,
+  encodeContractCall,
+  makeWalletClient,
+  sendTransactionAndWait,
+  simulateCallOrThrow,
+} from "../utils/viem-tx.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  makeEthersProvider,
+  makePublicClient,
+  disposePublicClient,
   resolveRpcUrl,
+  type KohakuPublicClient,
 } from "../utils/rpc";
 import { withTor } from "../utils/tor";
 import { ERC20_ABI, resolveTokenMeta } from "../utils/tokens-util";
@@ -115,15 +116,15 @@ async function computeFees(rpcUrl: string, opts: ShieldOpts): Promise<FeeOverrid
     return { maxFeePerGas: base + priority, maxPriorityFeePerGas: priority };
   }
 
-  const rpc = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   try {
-    const latest = await rpc.getBlock("latest");
-    const base = latest?.baseFeePerGas ?? 0n;
+    const latest = await client.getBlock({ blockTag: "latest" });
+    const base = latest.baseFeePerGas ?? 0n;
     const priority = 0n;
     const maxFee = (base * 110n) / 100n + priority;
     return { maxFeePerGas: maxFee, maxPriorityFeePerGas: priority };
   } finally {
-    rpc.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -132,8 +133,7 @@ function encodeErc20ApproveTx(
   spender: string,
   amount: bigint
 ): { to: string; data: string; value: bigint } {
-  const iface = new Interface(ERC20_ABI);
-  const data = iface.encodeFunctionData("approve", [spender, amount]);
+  const data = encodeContractCall(ERC20_ABI, "approve", [spender, amount]);
   return { to: tokenAddress, data, value: 0n };
 }
 
@@ -150,18 +150,22 @@ type BroadcastTxResultJson = {
 };
 
 async function simulateTransactionOrThrow(
-  rpc: Awaited<ReturnType<typeof makeEthersProvider>>,
+  client: KohakuPublicClient,
   tx: { to: string; from: string; data: string; value: bigint; gasLimit?: bigint },
   stepLabel: string
 ): Promise<void> {
   try {
-    await rpc.call({
-      to: tx.to,
-      from: tx.from,
-      data: tx.data,
-      value: tx.value,
-      gasLimit: tx.gasLimit,
-    });
+    await simulateCallOrThrow(
+      client,
+      {
+        to: tx.to,
+        from: tx.from,
+        data: tx.data,
+        value: tx.value,
+        gas: tx.gasLimit,
+      },
+      stepLabel
+    );
   } catch (e) {
     const msg =
       e instanceof Error
@@ -523,7 +527,7 @@ export function registerShieldCommand(program: Command): void {
           senderAddress = account.address;
         } else if (opts.fromPriv || dryRun) {
           senderPrivateKey = Mnemonic.to0xPrivateKeyByIndex(mnemonic, fromIndex);
-          senderAddress = new Wallet(senderPrivateKey).address;
+          senderAddress = addressFromPrivateKey(senderPrivateKey);
         } else {
           cliError(
             `Public account index ${fromIndex} not found. Use --from-priv with --broadcast to derive from mnemonic, or omit --broadcast for a dry-run.`
@@ -550,7 +554,7 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      const rpcForHost = await makeEthersProvider(rpcUrl);
+      const rpcForHost = await makePublicClient(rpcUrl);
       const txSpinner = manageSpinner(
         spinner(),
         quietNonInteractive(opts.nonInteractive)
@@ -609,15 +613,12 @@ export function registerShieldCommand(program: Command): void {
         if (dryRun) {
           let approve: { to: string; data: string; value: bigint } | null = null;
           if (!tokenMeta.isEth) {
-            const erc20Read = new Contract(
-              tokenMeta.tokenAddress,
-              ERC20_ABI,
-              rpcForHost
-            );
-            const allowance: bigint = await erc20Read.allowance(
-              senderAddress,
-              tx.to
-            );
+            const allowance = await rpcForHost.readContract({
+              address: tokenMeta.tokenAddress as `0x${string}`,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [senderAddress as `0x${string}`, tx.to as `0x${string}`],
+            });
             if (allowance < amount) {
               approve = encodeErc20ApproveTx(
                 tokenMeta.tokenAddress,
@@ -660,14 +661,18 @@ export function registerShieldCommand(program: Command): void {
           return;
         }
 
-        const signer = new Wallet(senderPrivateKey, rpcForHost);
+        const walletClient = makeWalletClient(senderPrivateKey, rpcForHost, rpcUrl);
         // const feeOverrides = await computeFees(rpcUrl, opts);
         const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
         let hasApproval = false;
         if (!tokenMeta.isEth) {
-          const erc20 = new Contract(tokenMeta.tokenAddress, ERC20_ABI, signer);
-          const allowance: bigint = await erc20.allowance(senderAddress, tx.to);
+          const allowance = await rpcForHost.readContract({
+            address: tokenMeta.tokenAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "allowance",
+            args: [senderAddress as `0x${string}`, tx.to as `0x${string}`],
+          });
           if (allowance < amount) {
             hasApproval = true;
             await simulateTransactionOrThrow(
@@ -690,9 +695,16 @@ export function registerShieldCommand(program: Command): void {
               txSpinner,
               { start: "Sending approval 1/2...", failure: "Approval failed." },
               async () => {
-                const t = await erc20.approve(tx.to, amount/*, feeOverrides*/);
-                await t.wait();
-                return t;
+                const hash = await walletClient.writeContract({
+                  account: walletClient.account!,
+                  chain: walletClient.chain,
+                  address: tokenMeta.tokenAddress as `0x${string}`,
+                  abi: ERC20_ABI,
+                  functionName: "approve",
+                  args: [tx.to as `0x${string}`, amount],
+                });
+                await rpcForHost.waitForTransactionReceipt({ hash });
+                return { hash };
               },
               (t) => `Approval mined (1/2): ${t.hash}`
             );
@@ -740,14 +752,13 @@ export function registerShieldCommand(program: Command): void {
               failure: "Shield transaction failed.",
             },
             async () => {
-              const s = await signer.sendTransaction({
+              const hash = await sendTransactionAndWait(walletClient, rpcForHost, {
                 to: stx.to,
                 data: stx.data,
                 value: stx.value,
-                gasLimit: 2000000,
+                gas: 2000000n,
               });
-              await s.wait();
-              return s;
+              return { hash };
             },
             (s) => `Shield tx mined (${shieldStep}): ${s.hash}`
           );
@@ -764,7 +775,7 @@ export function registerShieldCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       } finally {
-        rpcForHost.destroy();
+        disposePublicClient(rpcForHost);
       }
 
       if (!opts.nonInteractive) {
