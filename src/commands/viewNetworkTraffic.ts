@@ -1,10 +1,8 @@
-import React from "react";
-import { render } from "ink";
 import chalk from "chalk";
 import type { Command } from "commander";
 
 import {
-  NetworkTrafficViewer,
+  runNetworkTrafficPager,
   summarizeNetworkTraffic,
 } from "./NetworkTrafficViewer.js";
 import { cliOptions } from "../utils/cli-command-options.js";
@@ -13,6 +11,7 @@ import { logCliJson } from "../utils/cli-quiet.js";
 import {
   clearNetworkTrafficLog,
   formatTrafficEntryLine,
+  isLocalEntry,
   networkTrafficLogPath,
   readNetworkTrafficLog,
   type NetworkTrafficEntry,
@@ -55,6 +54,13 @@ function filterEntries(
     out = out.slice(out.length - opts.limit);
   }
   return out;
+}
+
+function colorLine(entry: NetworkTrafficEntry, line: string): string {
+  if (entry.via === "tor") return chalk.green(line);
+  if (isLocalEntry(entry)) return chalk.greenBright(line);
+  if (entry.ok === false || entry.error) return chalk.red(line);
+  return chalk.yellow(line);
 }
 
 export function registerViewNetworkTrafficCommand(program: Command): void {
@@ -149,7 +155,12 @@ export function registerViewNetworkTrafficCommand(program: Command): void {
         console.log(chalk.bold(`Network traffic · ${walletName}`));
         console.log(chalk.dim(logPath));
         console.log(
-          `${summary.total} events · ${chalk.green(`${summary.tor} tor`)} · ${chalk.yellow(`${summary.clearnet} clearnet`)}`
+          `${summary.total} events · ` +
+            chalk.green(`${summary.tor} tor`) +
+            ` · ` +
+            chalk.greenBright(`${summary.local} local`) +
+            ` · ` +
+            chalk.yellow(`${summary.clearnet} clearnet`)
         );
         console.log(chalk.dim("─".repeat(72)));
         if (entries.length === 0) {
@@ -160,22 +171,12 @@ export function registerViewNetworkTrafficCommand(program: Command): void {
           );
           return;
         }
-        for (const e of entries) {
-          const line = formatTrafficEntryLine(e);
-          if (e.via === "tor") console.log(chalk.green(line));
-          else if (e.ok === false || e.error) console.log(chalk.red(line));
-          else console.log(chalk.yellow(line));
+        for (let i = 0; i < entries.length; i++) {
+          console.log(colorLine(entries[i]!, formatTrafficEntryLine(entries[i]!)));
         }
         return;
       }
 
-      const instance = render(
-        <NetworkTrafficViewer
-          walletName={walletName}
-          logPath={logPath}
-          entries={entries}
-        />
-      );
-      await instance.waitUntilExit();
+      await runNetworkTrafficPager(walletName, logPath, entries);
     });
 }

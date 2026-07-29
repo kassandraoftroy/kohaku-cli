@@ -15,6 +15,7 @@ import {
 } from "../lib/unshield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import {
   logCliJson,
   manageSpinner,
@@ -329,11 +330,12 @@ export function registerUnshieldCommand(program: Command): void {
         persistFreshAccountAfterBroadcast = true;
       } else if (hasTo) {
         const raw = opts.to!.trim();
-        if (!isAddress(raw)) {
-          cliError(`Invalid --to address: ${raw}`);
+        try {
+          recipient = await resolveAddressOrName(raw, rpcUrl) as `0x${string}`;
+        } catch (e) {
+          cliErrorFromCaught(e);
           return;
         }
-        recipient = getAddress(raw) as `0x${string}`;
         const acct = findPublicAccountByAddress(publicStorage, recipient);
         recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
         recipientDerivationPath = acct
@@ -375,13 +377,20 @@ export function registerUnshieldCommand(program: Command): void {
           persistFreshAccountAfterBroadcast = true;
         } else if (chosen === CUSTOM_ADDR) {
           const addr = await input({
-            message: "Enter recipient address (0x...):",
+            message: "Enter recipient address or name (.eth/.gwei/.wei):",
             validate: (value) => {
-              if (!isAddress(value.trim())) return "Invalid Ethereum address.";
+              const v = value.trim();
+              if (!isAddress(v) && !looksLikeName(v))
+                return "Enter a valid Ethereum address or a name ending in .eth, .gwei, or .wei.";
               return true;
             },
           });
-          recipient = getAddress(addr.trim()) as `0x${string}`;
+          try {
+            recipient = await resolveAddressOrName(addr.trim(), rpcUrl) as `0x${string}`;
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
         } else {
           recipient = getAddress(chosen) as `0x${string}`;
           const acct = findPublicAccountByAddress(publicStorage, recipient);
@@ -459,8 +468,8 @@ export function registerUnshieldCommand(program: Command): void {
           const sync = (plugin as { sync: () => Promise<void> }).sync;
           const syncLabel =
             protocol === "tornado"
-              ? "Syncing Tornado Cash state…"
-              : "Syncing private state…";
+              ? "Syncing Tornado Cash state"
+              : "Syncing private state";
           await runQuietSpinner(
             quiet,
             spin,
@@ -614,10 +623,10 @@ export function registerUnshieldCommand(program: Command): void {
 
         const prepareLabel =
           protocol === "railgun"
-            ? "Building Railgun unshield (proof + broadcaster selection)…"
+            ? "Building Railgun unshield (proof + broadcaster selection)"
             : protocol === "tornado"
-              ? "Building Tornado Cash unshield (proof + paymaster)…"
-              : "Building Privacy Pools unshield (proof + relayer quote)…";
+              ? "Building Tornado Cash unshield (proof + paymaster)"
+              : "Building Privacy Pools unshield (proof + relayer quote)";
 
         const prepareUnshield = (
           plugin as unknown as {
@@ -642,7 +651,7 @@ export function registerUnshieldCommand(program: Command): void {
               quiet,
               spin,
               {
-                start: "Estimating Tornado tail-call gas (state override)…",
+                start: "Estimating Tornado tail-call gas (state override)",
                 failure: "Tail-call gas estimate failed.",
               },
               () =>

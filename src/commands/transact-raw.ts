@@ -7,6 +7,7 @@ import { Wallet, getAddress, isAddress } from "ethers";
 import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
+  parseFromIndex,
   resolveShieldSender,
   simulateTransactionOrThrow,
 } from "../lib/shield-flow.js";
@@ -22,6 +23,7 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { runWithWalletTrafficLog } from "../utils/tor";
+import { resolveAddressOrName } from "../utils/resolve-name.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -256,6 +258,15 @@ export function registerTransactRawCommand(program: Command): void {
       const broadcast = !!opts.broadcast;
       const dryRun = !broadcast;
       let fromValue = opts.from ?? "";
+
+      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+        try {
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
 
       if (!fromValue && opts.nonInteractive) {
         cliError("Missing --from in non-interactive mode.");

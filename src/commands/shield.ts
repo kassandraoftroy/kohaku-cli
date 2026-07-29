@@ -28,6 +28,7 @@ import {
   runQuietSpinner,
 } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import { resolveAddressOrName } from "../utils/resolve-name.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
   DEFAULT_DATA_DIR,
@@ -500,6 +501,16 @@ export function registerShieldCommand(program: Command): void {
       } catch (e) {
         cliErrorFromCaught(e);
         return;
+      }
+
+      // Resolve ENS / GNS / WNS names to addresses before the index/address branch.
+      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+        try {
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
       }
 
       const fromIndex = parseFromIndex(fromValue);

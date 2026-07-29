@@ -320,7 +320,7 @@ async function runUnshieldWithPlugin(
     (opts.protocol === "privacy-pools" || opts.protocol === "tornado") &&
     typeof maybeSync.sync === "function"
   ) {
-    opts.onStatus?.("Syncing private state…");
+    opts.onStatus?.("Syncing private state");
     await maybeSync.sync.call(plugin);
   }
 
@@ -368,12 +368,12 @@ async function runUnshieldWithPlugin(
 
   opts.onStatus?.(
     mode === "broadcast"
-      ? "Preparing unshield…"
+      ? "Preparing unshield"
       : opts.protocol === "railgun"
-        ? "Building Railgun unshield…"
+        ? "Building Railgun unshield"
         : opts.protocol === "tornado"
-          ? "Building Tornado Cash unshield…"
-          : "Building Privacy Pools unshield…"
+          ? "Building Tornado Cash unshield"
+          : "Building Privacy Pools unshield"
   );
 
   const privateOp =
@@ -407,7 +407,7 @@ async function runUnshieldWithPlugin(
     };
   }
 
-  opts.onStatus?.("Broadcasting unshield…");
+  opts.onStatus?.("Broadcasting unshield");
   return await broadcastPreparedPrivateOp(
     opts.protocol,
     host,

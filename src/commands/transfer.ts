@@ -32,6 +32,7 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { runWithWalletTrafficLog } from "../utils/tor";
+import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
 import {
   estimateEthTransferGasReserveWei,
@@ -289,6 +290,16 @@ export function registerTransferCommand(program: Command): void {
       let fromValue = opts.from ?? "";
       let toValue = opts.to ?? "";
 
+      // Resolve names to addresses early so downstream index/address logic sees plain 0x… values.
+      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+        try {
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
       if (!fromValue && opts.nonInteractive) {
         cliError("Missing --from in non-interactive mode.");
         return;
@@ -441,10 +452,12 @@ export function registerTransferCommand(program: Command): void {
 
         if (!toValue) {
           toValue = await input({
-            message: "Recipient address:",
+            message: "Recipient address or name (.eth/.gwei/.wei):",
             validate: (value) => {
-              if (!value.trim()) return "Recipient is required.";
-              if (!isAddress(value.trim())) return "Invalid Ethereum address.";
+              const v = value.trim();
+              if (!v) return "Recipient is required.";
+              if (!isAddress(v) && !looksLikeName(v))
+                return "Enter a valid Ethereum address or a name ending in .eth, .gwei, or .wei.";
               return true;
             },
           });
@@ -455,11 +468,13 @@ export function registerTransferCommand(program: Command): void {
         return;
       }
 
-      if (!isAddress(toValue)) {
-        cliError("--to must be a valid Ethereum address.");
+      let recipient: string;
+      try {
+        recipient = await resolveAddressOrName(toValue, rpcUrl);
+      } catch (e) {
+        cliErrorFromCaught(e);
         return;
       }
-      const recipient = getAddress(toValue);
 
       let senderAddress: string;
       let senderPrivateKey: string | undefined;

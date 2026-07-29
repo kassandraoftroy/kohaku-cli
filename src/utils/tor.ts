@@ -566,14 +566,14 @@ async function withTorInner<T>(
     return fn();
   }
 
-  opts.onStatus?.("Starting Tor…");
+  opts.onStatus?.("Starting Tor");
   const client = process.env.KOHAKU_TOR_DEBUG
     ? new TorClient({ logLevel: "info" })
     : new TorClient();
 
   try {
     await client.ready();
-    opts.onStatus?.("Tor ready; routing non-RPC HTTP via Tor…");
+    opts.onStatus?.("Tor ready; routing non-RPC HTTP via Tor");
     const { baseUrl, server } = await startPimlicoProxy(client);
 
     const clearnetHosts = new Set<string>();
