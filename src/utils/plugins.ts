@@ -200,6 +200,10 @@ export function assertTornadoEthOnly(isEth: boolean): void {
   }
 }
 
+/**
+ * @deprecated Prefer {@link assertTornadoDepositAmount} from tornado-pools
+ * (saga-backed, supports ERC-20). Kept for ETH-only call sites mid-migration.
+ */
 export function assertTornadoShieldAmount(chainId: bigint, amount: bigint): void {
   const min = TORNADO_ETH_MIN_DENOMINATION_WEI[chainId.toString()];
   if (!min) {
@@ -466,7 +470,8 @@ export async function prepareProtocolShield(
 ): Promise<unknown> {
   if (protocol === "tornado") {
     return plugin.prepareShield(asset, {
-      strategy: DepositStrategy.MaxAnonimitySet,
+      // Prefer larger denominations first (fewer deposits / aggregated approvals).
+      strategy: DepositStrategy.MinFee,
     });
   }
   return plugin.prepareShield(asset);

@@ -331,7 +331,10 @@ kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --token USDC --amo
 
 ### `transact-raw`
 
-Simulate or submit one or more raw contract calls from a public account. Calls are processed sequentially in the order supplied.
+Simulate or submit one or more raw contract calls from a public account.
+
+- **One call:** processed as a normal EOA transaction.
+- **Two or more calls:** batched into a **single EIP-7702 UserOperation** (Simple7702Account `executeBatch`) and submitted via Pimlico. If the sender is not already delegated to `0xe6Cae83BdE06E4c305530e199D7217f42808555B`, the EIP-7702 authorization is included in that same UserOp.
 
 | Option | Description |
 |--------|-------------|
@@ -343,7 +346,7 @@ Simulate or submit one or more raw contract calls from a public account. Calls a
 | `--from <address-or-index>` | Sender public account address or HD index. |
 | `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
 | `--rpc-url <url>` | RPC endpoint. |
-| `--broadcast` | Sign and submit each call on-chain. Omit to simulate and print transaction payloads. |
+| `--broadcast` | Sign and submit on-chain (single EOA tx, or one batched UserOp for 2+ calls). Omit to simulate and print payloads. |
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, and `--from`. |
 | `--dataDir <path>` | Data root. |
 
@@ -384,8 +387,10 @@ Move funds from a **public** account into a private protocol.
 **Protocols:**
 
 - **privacy-pools** — Native ETH shield; non-ETH tokens must be on the protocol whitelist for your chain.
-- **railgun** — ETH and ERC-20; non-ETH may need an approval transaction before shield.
-- **tornado** — ETH only; amount must be an exact multiple of 0.1 ETH (e.g. `1.3` OK, `1.35` not).
+- **railgun** — ETH and ERC-20; non-ETH may need an approval. Approval + shield (2+ calls) are submitted as **one EIP-7702 UserOp** via Pimlico.
+- **tornado** — ETH and ERC-20 tokens in the static pool catalog (`src/utils/tornado-pools.ts`; mainnet and Sepolia differ). Amount must be an exact multiple of the smallest pool denomination for that asset. Multi-denomination deposits (and any ERC-20 approvals) are batched into **one EIP-7702 UserOp**. Approvals are aggregated per pool (e.g. 2×1000 + 5×100 → approve 2000 and 500, not seven separate approves).
+
+When a shield needs more than one on-chain call, the CLI uses EIP-7702 Simple7702Account (`0xe6Cae83B…855B`) the same way as `transact-raw`.
 
 **Examples:**
 
@@ -421,7 +426,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 
 **Interactive:** recipient menu (next fresh / custom address / existing account) → amount (shows max; Privacy Pools capped by largest single note; Tornado by total unspent notes) → prepared op or broadcast confirmation.
 
-**Tornado amounts:** shields and unshields must be an exact multiple of 0.1 ETH (e.g. `1.3` OK, `1.35` not). Unshield can combine multiple notes in one UserOp to reach that total (e.g. `0.2` or `1.2`).
+**Tornado amounts:** shields must be an exact multiple of the smallest denomination for that asset (ETH: 0.1; DAI Sepolia: 100; etc.). Unshield can combine multiple notes in one paymaster UserOp (including ERC-20: fee taken from the first note via `quoteWeiInToken`, remaining notes withdrawn in the execution phase). `--tail-calls` remains ETH-only for Tornado.
 
 **Examples:**
 
@@ -429,10 +434,10 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-max
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 1 --tail-calls 0x1111111111111111111111111111111111111111:0x1234,0x2222222222222222222222222222222222222222:0xabcd:0x2386f26fc10000 --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --token DAI --amount-formatted 100 --broadcast
 kohaku unshield --protocol railgun --wallet testWallet --to 0xStoredWalletAddress --token USDC --amount-formatted 25 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --without-tor
 ```
-
 ---
 
 ### `view-network-traffic`

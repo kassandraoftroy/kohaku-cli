@@ -6,6 +6,7 @@ import {
 } from "viem";
 
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "./rpc.js";
+import { SIMPLE_7702_IMPLEMENTATION } from "./simple-7702.js";
 import {
   estimateTornadoPaymasterFee,
   tornadoWithdrawalCallGasLimit,
@@ -18,8 +19,7 @@ export type TornadoTailCall = {
 };
 
 /** Same EIP-7702 SimpleAccount impl the Tornado paymaster SDK delegates to. */
-export const TORNADO_SIMPLE_7702_IMPLEMENTATION =
-  "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
+export const TORNADO_SIMPLE_7702_IMPLEMENTATION = SIMPLE_7702_IMPLEMENTATION;
 
 /**
  * ETH left on the simulating account when the unshielded asset is an ERC-20.

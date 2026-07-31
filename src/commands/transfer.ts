@@ -15,6 +15,11 @@ import {
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import {
+  estimateEoaTxFeePreview,
+  feeConfirmLine,
+  printFeePreview,
+} from "../utils/fee-preview.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import { readSeedKeystore } from "../utils/mnemonic";
 import {
@@ -509,6 +514,17 @@ export function registerTransferCommand(program: Command): void {
             "Transfer transaction"
           );
 
+          const fees = await estimateEoaTxFeePreview(
+            client,
+            {
+              to: tx.to,
+              from: senderAddress,
+              data: tx.data,
+              value: tx.value,
+            },
+            tokenMeta.isEth ? 21_000n : 65_000n
+          );
+
           const payload: TxPayloadJson = {
             data: tx.data,
             to: tx.to,
@@ -522,6 +538,7 @@ export function registerTransferCommand(program: Command): void {
               amount: amount.toString(),
               token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
               transaction: payload,
+              fees,
             });
           } else {
             printTransferDryRunInteractive(
@@ -532,6 +549,7 @@ export function registerTransferCommand(program: Command): void {
               amount,
               tokenMeta.decimals
             );
+            printFeePreview(fees);
             console.log(chalk.green("✔ Transfer simulation succeeded."));
           }
           return;
@@ -555,9 +573,20 @@ export function registerTransferCommand(program: Command): void {
           "Transfer transaction"
         );
 
+        const fees = await estimateEoaTxFeePreview(
+          client,
+          {
+            to: tx.to,
+            from: senderAddress,
+            data: tx.data,
+            value: tx.value,
+          },
+          tokenMeta.isEth ? 21_000n : 65_000n
+        );
+
         await maybeConfirm(
           !!opts.nonInteractive,
-          `Send transfer: ${amountPreview} from ${senderAddress} to ${recipient}?`
+          `Send transfer: ${amountPreview} from ${senderAddress} to ${recipient}?\n  ${feeConfirmLine(fees)}`
         );
 
         const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);

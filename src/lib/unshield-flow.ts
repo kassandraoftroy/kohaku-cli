@@ -14,7 +14,6 @@ import {
 } from "../utils/tokens-util.js";
 import {
   assertTornadoPaymasterConfigured,
-  assertTornadoUnshieldAmount,
   broadcastTornadoPrivateOp,
   countTornadoWithdrawals,
   configureRailgunForUnshield,
@@ -32,6 +31,9 @@ import {
   railgunUnshieldFeeBps,
 } from "../utils/railgun-unshield-max.js";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
+import {
+  assertTornadoUnshieldAmountForToken,
+} from "../utils/tornado-pools.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
@@ -49,6 +51,19 @@ type PpPreparedOp = {
 function relayFeeBpsFromPreparedOp(prepared: unknown): bigint | null {
   const raw = (prepared as PpPreparedOp)?.rawData?.relayData?.relayFeeBps;
   return raw != null ? BigInt(raw) : null;
+}
+
+/** Relayer fee in token units from a prepared Privacy Pools unshield. */
+export function privacyPoolsRelayerFeeWei(
+  prepared: unknown,
+  amountWei: bigint
+): { relayFeeBps: bigint; feeWei: bigint } | null {
+  const relayFeeBps = relayFeeBpsFromPreparedOp(prepared);
+  if (relayFeeBps == null) return null;
+  return {
+    relayFeeBps,
+    feeWei: (amountWei * relayFeeBps) / 10_000n,
+  };
 }
 
 async function fetchPrivacyPoolsMaxRelayFeeBps(
@@ -350,7 +365,12 @@ async function runUnshieldWithPlugin(
 
   if (opts.protocol === "tornado") {
     assertTornadoPaymasterConfigured(opts.chainId);
-    assertTornadoUnshieldAmount(opts.chainId, opts.amount);
+    assertTornadoUnshieldAmountForToken(opts.chainId, opts.amount, {
+      isEth: opts.tokenMeta.isEth,
+      tokenAddress: opts.tokenMeta.tokenAddress,
+      symbol: opts.tokenMeta.symbol,
+      decimals: opts.tokenMeta.decimals,
+    });
   }
 
   let tornadoMaxFeePerGas: bigint | undefined;
