@@ -11,7 +11,7 @@ import {
   createRailgunPlugin,
   type LogLevel,
 } from "@kohaku-eth/railgun";
-import type { AssetAmount, Host } from "@kohaku-eth/plugins";
+import type { AssetAmount, Host, UnshieldOptions } from "@kohaku-eth/plugins";
 import {
   DepositStrategy,
   TornadoCashConfigs,
@@ -250,6 +250,8 @@ export type AnyPlugin = {
   ): Promise<unknown>;
   sync?: () => Promise<void>;
   notes?: (...args: unknown[]) => Promise<unknown[]>;
+  /** Tornado Cash: register legacy note strings that match synced deposits. */
+  importNotes?: (notes: string | string[]) => Promise<unknown[]>;
 };
 
 export const ETH_AS_ERC20 = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -337,6 +339,20 @@ export type UnshieldTailCall = TornadoTailCall;
  */
 const TAIL_FORWARD_FEE_PAD_NUM = 23n;
 const TAIL_FORWARD_FEE_PAD_DEN = 20n;
+
+/**
+ * Railgun unshield execution-phase tails. Unlike Tornado, do **not** bake a
+ * leftover-forward ETH transfer — unshielded funds already land at `to` via the
+ * privacy paymaster. Native unshield still prefixes `WETH.withdraw` in the SDK.
+ */
+export function railgunUnshieldOptions(
+  tailCalls: readonly UnshieldTailCall[] = []
+): UnshieldOptions | undefined {
+  if (tailCalls.length === 0) return undefined;
+  return {
+    tailCalls: async () => [...tailCalls],
+  };
+}
 
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(

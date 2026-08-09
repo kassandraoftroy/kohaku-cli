@@ -121,6 +121,8 @@ export type MaxUnshieldAmountHint = {
   estimatedGasFeeWei?: bigint;
   /** Railgun fee-token max used BPS-only because bundler gas price fetch failed. */
   railgunGasEstimateFailed?: boolean;
+  /** Railgun: raw spendable balance before fee reserves (for --amount-max refine). */
+  railgunBalance?: bigint;
 };
 
 export async function maxUnshieldAmountHint(
@@ -203,6 +205,7 @@ export async function maxUnshieldAmountHint(
         cap: amount,
         privacyPoolsLargestNote: false,
         estimatedGasFeeWei,
+        railgunBalance: sum,
       };
     } catch {
       // Soft fallback for prompts: treasury fee only (no gas reserve).
@@ -215,11 +218,12 @@ export async function maxUnshieldAmountHint(
         cap: amount,
         privacyPoolsLargestNote: false,
         railgunGasEstimateFailed: true,
+        railgunBalance: sum,
       };
     }
   }
 
-  return { cap: sum, privacyPoolsLargestNote: false };
+  return { cap: sum, privacyPoolsLargestNote: false, railgunBalance: sum };
 }
 
 export async function broadcastPreparedPrivateOp(

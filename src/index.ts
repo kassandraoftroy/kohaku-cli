@@ -12,6 +12,7 @@ import { registerRevealSeedPhraseCommand } from "./commands/revealSeedPhrase";
 import { registerSeeDecryptedStorageCommand } from "./commands/seeDecryptedStorage";
 import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
+import { registerImportTornadoNoteCommand } from "./commands/import-tornado-note";
 import { registerTransferCommand } from "./commands/transfer";
 import { registerTransactRawCommand } from "./commands/transact-raw";
 import { registerViewNetworkTrafficCommand } from "./commands/viewNetworkTraffic";
@@ -21,6 +22,7 @@ import { registerTransferNameCommand } from "./commands/transfer-name";
 import { registerSetNameTextRecordCommand } from "./commands/set-name-text-record";
 import { registerSetNameWebsiteCommand } from "./commands/set-name-website";
 import { registerSetNameReverseRecordCommand } from "./commands/set-name-reverse-record";
+import { registerInitWalletCommand } from "./commands/init-wallet";
 import { cliErrorFromCaught } from "./utils/cli-errors";
 
 async function main(): Promise<void> {
@@ -36,8 +38,10 @@ async function main(): Promise<void> {
   registerRevealSeedPhraseCommand(program);
   registerListWalletsCommand(program);
   registerNextFreshAddressCommand(program);
+  registerInitWalletCommand(program);
   registerShieldCommand(program);
   registerUnshieldCommand(program);
+  registerImportTornadoNoteCommand(program);
   registerBalancesCommand(program);
   registerTransferCommand(program);
   registerTransactRawCommand(program);

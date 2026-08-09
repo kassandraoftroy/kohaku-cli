@@ -38,11 +38,20 @@ export function isRailgunFeeToken(
 /** Gas × maxFeePerGas × 1.2 safety margin (same pattern as Tornado paymaster estimate). */
 export function estimateRailgunBundlerFeeWei(
   maxFeePerGas: bigint,
-  opts?: { nativeUnwrap?: boolean }
+  opts?: {
+    nativeUnwrap?: boolean;
+    /**
+     * Measured EIP-7702 execution gas for user `tailCalls` (state-override
+     * estimate with post-unshield funds). Added on top of the static UserOp
+     * callGas baseline — not a substitute for bundler whole-UserOp estimate.
+     */
+    tailCallsGasEstimate?: bigint;
+  }
 ): bigint {
   const callGas =
     RAILGUN_UNSHIELD_GAS_UNITS.callGasLimit +
-    (opts?.nativeUnwrap ? RAILGUN_UNSHIELD_GAS_UNITS.nativeUnwrapCallGas : 0n);
+    (opts?.nativeUnwrap ? RAILGUN_UNSHIELD_GAS_UNITS.nativeUnwrapCallGas : 0n) +
+    (opts?.tailCallsGasEstimate ?? 0n);
   const requiredGas =
     RAILGUN_UNSHIELD_GAS_UNITS.verificationGasLimit +
     callGas +
@@ -86,6 +95,8 @@ export async function computeRailgunMaxUnshieldAmount(opts: {
   chainId: bigint;
   balance: bigint;
   tokenMeta: { isEth: boolean; tokenAddress: string };
+  /** Optional measured user-tail execution gas (see resolveRailgunTailCallsGasEstimate). */
+  tailCallsGasEstimate?: bigint;
 }): Promise<{
   amount: bigint;
   estimatedGasFeeWei: bigint;
@@ -101,6 +112,7 @@ export async function computeRailgunMaxUnshieldAmount(opts: {
     );
     estimatedGasFeeWei = estimateRailgunBundlerFeeWei(maxFeePerGas, {
       nativeUnwrap: opts.tokenMeta.isEth,
+      tailCallsGasEstimate: opts.tailCallsGasEstimate,
     });
   }
 

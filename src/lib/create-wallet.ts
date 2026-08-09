@@ -55,11 +55,13 @@ export type CreateWalletOnDiskInput = {
   testnet: boolean;
   /** When set, verifies RPC chain id and scans used public indices (import flow). */
   rpcUrl?: string;
+  /** With rpcUrl import: also scan ERC-5564 announcements for stealth payments. */
+  includeStealth?: boolean;
 };
 
 export async function createWalletOnDisk(
   input: CreateWalletOnDiskInput
-): Promise<{ walletDir: string; mnemonic: string }> {
+): Promise<{ walletDir: string; mnemonic: string; stealthImported?: number }> {
   const walletDir = resolveWalletDir(input.dataDir, input.walletName);
   if (existsSync(walletDir)) {
     throw new Error(`A wallet named "${input.walletName}" already exists.`);
@@ -69,10 +71,11 @@ export async function createWalletOnDisk(
   const expectedChainId = input.testnet ? 11155111n : 1n;
 
   let lastTouchedIndex = -1;
+  let chainId = expectedChainId;
   if (input.rpcUrl) {
     const client = await makePublicClient(input.rpcUrl);
     try {
-      const chainId = BigInt(await client.getChainId());
+      chainId = BigInt(await client.getChainId());
       if (chainId !== expectedChainId) {
         throw new Error(
           `RPC chain ID ${chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
@@ -97,7 +100,28 @@ export async function createWalletOnDisk(
     publicAccountsStorage.addNextAccounts(lastTouchedIndex + 1);
   }
 
-  return { walletDir, mnemonic: mnemonicPhrase };
+  let stealthImported: number | undefined;
+  if (input.rpcUrl && input.includeStealth) {
+    const client = await makePublicClient(input.rpcUrl);
+    try {
+      const { deriveStealthKeypair } = await import("./stealth/keys.js");
+      const { scanAndImportStealthAnnouncements } = await import("./stealth/scan.js");
+      const keypair = deriveStealthKeypair(mnemonicPhrase, chainId);
+      const result = await scanAndImportStealthAnnouncements({
+        client,
+        walletDir,
+        password: input.password,
+        keypair,
+        chainId,
+        fullRescan: true,
+      });
+      stealthImported = result.newlyImported.length;
+    } finally {
+      disposePublicClient(client);
+    }
+  }
+
+  return { walletDir, mnemonic: mnemonicPhrase, stealthImported };
 }
 
 export { generateMnemonic };

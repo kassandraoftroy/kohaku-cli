@@ -28,6 +28,7 @@ type CreateWalletOpts = {
   rpcUrl?: string;
   testnet?: boolean;
   longSeed?: boolean;
+  includeStealth?: boolean;
   dataDir?: string;
 };
 
@@ -95,6 +96,10 @@ export function registerCreateWalletCommand(program: Command): void {
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
     .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL)")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
+    .option(
+      "--include-stealth",
+      "With --import: also scan the ERC-5564 announcer and import matching stealth payments"
+    )
     .option(
       "--long-seed",
       "Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit)"
@@ -170,15 +175,29 @@ export function registerCreateWalletCommand(program: Command): void {
         encryptPassword = await promptPasswordEncryptWallet();
       }
 
+      if (opts.includeStealth && !opts.import) {
+        cliError("--include-stealth only applies with --import.");
+        return;
+      }
+
       try {
-        await createWalletOnDisk({
+        const created = await createWalletOnDisk({
           dataDir,
           walletName: name,
           mnemonic: mnemonicPhrase,
           password: encryptPassword,
           testnet: !!opts.testnet,
           rpcUrl: opts.import ? rpcUrl : undefined,
+          includeStealth: !!opts.includeStealth,
         });
+        if (
+          !opts.nonInteractive &&
+          created.stealthImported !== undefined
+        ) {
+          log.info(
+            `Imported ${created.stealthImported} stealth payment address(es) from announcements.`
+          );
+        }
       } catch (e) {
         cliErrorFromCaught(e);
         return;

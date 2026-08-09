@@ -24,6 +24,11 @@ function logGetLogsChunkFailure(
   }
 }
 
+/** Max inclusive block span per getLogs call (same default/env as privacy-protocol chunking). */
+export function resolveGetLogsMaxBlockSpan(): bigint {
+  return resolveMaxBlockSpan();
+}
+
 function parseEnvMaxBlockSpan(): bigint | null {
   const raw = process.env.KOHAKU_GETLOGS_MAX_BLOCK_SPAN?.trim();
   if (!raw) return null;

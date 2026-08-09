@@ -5,6 +5,7 @@ import type { Command } from "commander";
 import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import {
+  formatAccountSelector,
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   parseFromIndex,
@@ -12,6 +13,13 @@ import {
   simulateTransactionOrThrow,
   type PublicAccountWithBalance,
 } from "../lib/shield-flow.js";
+import { STEALTH_TEXT_RECORD_KEY } from "../lib/stealth/constants.js";
+import {
+  looksLikeStealthMetaAddress,
+  normalizeStealthMetaAddressURI,
+} from "../lib/stealth/keys.js";
+import { prepareStealthSend } from "../lib/stealth/send.js";
+import { parseStealthIndex } from "../lib/stealth/storage.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -19,6 +27,7 @@ import {
   estimateEoaTxFeePreview,
   feeConfirmLine,
   printFeePreview,
+  sumEoaFeePreviews,
 } from "../utils/fee-preview.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import { readSeedKeystore } from "../utils/mnemonic";
@@ -42,6 +51,7 @@ import {
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
 } from "../utils/wallets-util";
+import { createEthereumNames } from "@1001-digital/ethereum-names";
 
 type TransferOpts = {
   wallet?: string;
@@ -56,6 +66,7 @@ type TransferOpts = {
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
+  stealth?: boolean;
   dataDir?: string;
 };
 
@@ -100,9 +111,15 @@ function findAccountWithBalance(
   fromValue: string,
   accounts: PublicAccountWithBalance[]
 ): PublicAccountWithBalance | undefined {
+  const stealthIdx = parseStealthIndex(fromValue);
+  if (stealthIdx !== null) {
+    return accounts.find(
+      (a) => a.kind === "stealth" && a.stealthIndex === stealthIdx
+    );
+  }
   const idx = parseFromIndex(fromValue);
   if (idx !== null) {
-    return accounts.find((a) => a.index === idx);
+    return accounts.find((a) => a.kind !== "stealth" && a.index === idx);
   }
   if (isAddress(fromValue)) {
     const addr = getAddress(fromValue).toLowerCase();
@@ -147,7 +164,7 @@ async function promptSourceAccount(
     message,
     choices: candidates.map((acct) => ({
       value: acct.address,
-      name: `[${acct.index}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)})`,
+      name: `[${formatAccountSelector(acct)}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)})`,
     })),
   });
 }
@@ -183,12 +200,16 @@ export function registerTransferCommand(program: Command): void {
     .description("Transfer ETH or ERC-20 between public accounts")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
-    .option("--from <address-or-index>", "Public sender address or public-account index")
+    .option("--from <address-or-index>", "Public sender address, HD index, or stealth selector (s0)")
     .option(
       "--from-priv",
       "With --broadcast: derive --from index from mnemonic when missing from public accounts"
     )
-    .option("--to <address>", "Recipient address")
+    .option("--to <address>", "Recipient address, name (.eth/.gwei/.wei), or stealth meta-address")
+    .option(
+      "--stealth",
+      "Send via EIP-5564 stealth addresses (required for raw meta-address --to; auto when --to name has stealth-address-scheme-1)"
+    )
     .option(
       "--broadcast",
       "Sign and submit on-chain (omit to simulate / print transaction payload only)"
@@ -287,7 +308,12 @@ export function registerTransferCommand(program: Command): void {
       let toValue = opts.to ?? "";
 
       // Resolve names to addresses early so downstream index/address logic sees plain 0x… values.
-      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+      if (
+        fromValue &&
+        parseFromIndex(fromValue) === null &&
+        parseStealthIndex(fromValue) === null &&
+        !isAddress(fromValue)
+      ) {
         try {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         } catch (e) {
@@ -328,7 +354,7 @@ export function registerTransferCommand(program: Command): void {
       try {
         if (withBalances.length === 0) {
           cliError(
-            "No public accounts found in this wallet. Create one with next-fresh-address first."
+            "No public or stealth accounts found in this wallet. Create one with next-fresh-address or init-wallet first."
           );
           return;
         }
@@ -448,12 +474,17 @@ export function registerTransferCommand(program: Command): void {
 
         if (!toValue) {
           toValue = await input({
-            message: "Recipient address or name (.eth/.gwei/.wei):",
+            message: "Recipient address, name (.eth/.gwei/.wei), or stealth meta (st:…):",
             validate: (value) => {
               const v = value.trim();
               if (!v) return "Recipient is required.";
-              if (!isAddress(v) && !looksLikeName(v))
-                return "Enter a valid Ethereum address or a name ending in .eth, .gwei, or .wei.";
+              if (
+                !isAddress(v) &&
+                !looksLikeName(v) &&
+                !looksLikeStealthMetaAddress(v)
+              ) {
+                return "Enter an address, a .eth/.gwei/.wei name, or a stealth meta-address.";
+              }
               return true;
             },
           });
@@ -464,9 +495,49 @@ export function registerTransferCommand(program: Command): void {
         return;
       }
 
+      let stealthMetaURI: string | null = null;
+      try {
+        if (looksLikeStealthMetaAddress(toValue)) {
+          if (!opts.stealth) {
+            throw new Error(
+              "Recipient looks like a stealth meta-address. Pass --stealth to send an EIP-5564 stealth transfer."
+            );
+          }
+          stealthMetaURI = normalizeStealthMetaAddressURI(toValue, chainId);
+        } else if (looksLikeName(toValue)) {
+          const names = createEthereumNames({ rpcUrl });
+          const text = await names.getText(toValue, STEALTH_TEXT_RECORD_KEY);
+          if (text && text.trim()) {
+            stealthMetaURI = normalizeStealthMetaAddressURI(text.trim(), chainId);
+            if (!opts.nonInteractive) {
+              console.log(
+                chalk.dim(
+                  `Name ${toValue} has ${STEALTH_TEXT_RECORD_KEY}; sending stealth transfer.`
+                )
+              );
+            }
+          } else if (opts.stealth) {
+            throw new Error(
+              `Name ${toValue} has no ${STEALTH_TEXT_RECORD_KEY} text record; cannot --stealth.`
+            );
+          }
+        } else if (opts.stealth) {
+          throw new Error(
+            "--stealth requires --to to be a stealth meta-address or a name with stealth-address-scheme-1."
+          );
+        }
+      } catch (e) {
+        cliErrorFromCaught(e);
+        return;
+      }
+
       let recipient: string;
       try {
-        recipient = await resolveAddressOrName(toValue, rpcUrl);
+        if (stealthMetaURI) {
+          recipient = stealthMetaURI; // placeholder until plan builds ephemeral address
+        } else {
+          recipient = await resolveAddressOrName(toValue, rpcUrl);
+        }
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -490,19 +561,39 @@ export function registerTransferCommand(program: Command): void {
         return;
       }
 
-      if (recipient.toLowerCase() === senderAddress.toLowerCase()) {
+      if (
+        !stealthMetaURI &&
+        recipient.toLowerCase() === senderAddress.toLowerCase()
+      ) {
         cliError("Sender and recipient must be different addresses.");
         return;
       }
 
-      const tx = buildTransferTx(tokenMeta, recipient, amount);
+      const stealthPlan = stealthMetaURI
+        ? prepareStealthSend({
+            stealthMetaAddressURI: stealthMetaURI,
+            chainId,
+            token: {
+              isEth: tokenMeta.isEth,
+              tokenAddress: tokenMeta.tokenAddress,
+            },
+            amount,
+          })
+        : null;
+      const recipientAddress = stealthPlan
+        ? stealthPlan.stealthAddress
+        : recipient;
+      const txs = stealthPlan
+        ? [stealthPlan.transferTx, stealthPlan.announceTx]
+        : [buildTransferTx(tokenMeta, recipientAddress, amount)];
+
       await runWithWalletTrafficLog(walletDir, async () => {
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
       try {
-        if (dryRun) {
+        for (const [i, tx] of txs.entries()) {
           await simulateTransactionOrThrow(
             client,
             {
@@ -511,44 +602,70 @@ export function registerTransferCommand(program: Command): void {
               data: tx.data,
               value: tx.value,
             },
-            "Transfer transaction"
+            stealthPlan
+              ? i === 0
+                ? "Stealth transfer"
+                : "Stealth announce"
+              : "Transfer transaction"
           );
+        }
 
-          const fees = await estimateEoaTxFeePreview(
-            client,
-            {
-              to: tx.to,
-              from: senderAddress,
-              data: tx.data,
-              value: tx.value,
-            },
-            tokenMeta.isEth ? 21_000n : 65_000n
+        const feeParts = [];
+        for (const tx of txs) {
+          feeParts.push(
+            await estimateEoaTxFeePreview(
+              client,
+              {
+                to: tx.to,
+                from: senderAddress,
+                data: tx.data,
+                value: tx.value,
+              },
+              tokenMeta.isEth ? 21_000n : 65_000n
+            )
           );
+        }
+        const fees = sumEoaFeePreviews(feeParts);
 
-          const payload: TxPayloadJson = {
+        if (dryRun) {
+          const payloads = txs.map((tx) => ({
             data: tx.data,
             to: tx.to,
             from: senderAddress,
             value: tx.value.toString(),
-          };
+          }));
 
           if (opts.nonInteractive) {
             logCliJson({
-              recipient,
+              stealth: !!stealthPlan,
+              stealthMetaAddressURI: stealthMetaURI ?? undefined,
+              recipient: recipientAddress,
+              ephemeralPublicKey: stealthPlan?.ephemeralPublicKey,
               amount: amount.toString(),
               token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
-              transaction: payload,
+              transactions: payloads,
               fees,
             });
           } else {
             printTransferDryRunInteractive(
-              tx,
+              txs[0]!,
               tokenMeta,
               senderAddress,
-              recipient,
+              recipientAddress,
               amount,
               tokenMeta.decimals
             );
+            if (stealthPlan) {
+              console.log(
+                chalk.cyan("Announce tx:"),
+                jsonStringifyWithBigInt({
+                  data: stealthPlan.announceTx.data,
+                  to: stealthPlan.announceTx.to,
+                  from: senderAddress,
+                  value: "0",
+                })
+              );
+            }
             printFeePreview(fees);
             console.log(chalk.green("✔ Transfer simulation succeeded."));
           }
@@ -557,79 +674,61 @@ export function registerTransferCommand(program: Command): void {
 
         if (!senderPrivateKey) {
           cliError(
-            "Cannot sign: no private key for this --from (use a saved public account or --from-priv with --broadcast)."
+            "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
           );
           return;
         }
 
-        await simulateTransactionOrThrow(
-          client,
-          {
-            to: tx.to,
-            from: senderAddress,
-            data: tx.data,
-            value: tx.value,
-          },
-          "Transfer transaction"
-        );
-
-        const fees = await estimateEoaTxFeePreview(
-          client,
-          {
-            to: tx.to,
-            from: senderAddress,
-            data: tx.data,
-            value: tx.value,
-          },
-          tokenMeta.isEth ? 21_000n : 65_000n
-        );
-
         await maybeConfirm(
           !!opts.nonInteractive,
-          `Send transfer: ${amountPreview} from ${senderAddress} to ${recipient}?\n  ${feeConfirmLine(fees)}`
+          stealthPlan
+            ? `Send stealth transfer: ${amountPreview} from ${senderAddress} → ${recipientAddress} (+ announce)?\n  ${feeConfirmLine(fees)}`
+            : `Send transfer: ${amountPreview} from ${senderAddress} to ${recipientAddress}?\n  ${feeConfirmLine(fees)}`
         );
 
         const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
-        const sent = await runQuietSpinner(
-          quiet,
-          txSpinner,
-          { start: "Sending transfer...", failure: "Transfer failed." },
-          async () => {
-            if (tokenMeta.isEth) {
-              const hash = await sendTransactionAndWait(walletClient, client, {
-                to: recipient,
-                value: amount,
-                data: "0x",
-              });
-              return { hash };
-            }
-            const hash = await walletClient.writeContract({
-              account: walletClient.account!,
-              chain: walletClient.chain,
-              address: tokenMeta.tokenAddress as `0x${string}`,
-              abi: ERC20_ABI,
-              functionName: "transfer",
-              args: [recipient as `0x${string}`, amount],
-            });
-            await client.waitForTransactionReceipt({ hash });
-            return { hash };
-          },
-          (t) => `Transfer mined: ${t.hash}`
-        );
+        const hashes: `0x${string}`[] = [];
+        for (const [i, tx] of txs.entries()) {
+          const label =
+            stealthPlan && i === 1 ? "Sending announce..." : "Sending transfer...";
+          const failLabel =
+            stealthPlan && i === 1 ? "Announce failed." : "Transfer failed.";
+          const hash = await runQuietSpinner(
+            quiet,
+            txSpinner,
+            { start: label, failure: failLabel },
+            async () =>
+              sendTransactionAndWait(walletClient, client, {
+                to: tx.to,
+                data: tx.data,
+                value: tx.value,
+              }),
+            (h) => `Mined: ${h}`
+          );
+          hashes.push(hash);
+        }
 
         if (opts.nonInteractive) {
           logCliJson({
-            hash: sent.hash,
-            explorer: etherscanTxUrl(chainId, sent.hash),
+            stealth: !!stealthPlan,
+            hashes,
+            explorers: hashes.map((h) => etherscanTxUrl(chainId, h)),
             from: senderAddress,
-            to: recipient,
+            to: recipientAddress,
+            stealthMetaAddressURI: stealthMetaURI ?? undefined,
             amount: amount.toString(),
             token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
           });
         } else {
           console.log();
-          console.log(chalk.green("✔ Transfer complete."));
-          console.log(chalk.dim(etherscanTxUrl(chainId, sent.hash)));
+          console.log(
+            chalk.green(
+              stealthPlan ? "✔ Stealth transfer complete." : "✔ Transfer complete."
+            )
+          );
+          for (const h of hashes) {
+            console.log(chalk.dim(etherscanTxUrl(chainId, h)));
+          }
         }
       } catch (e) {
         cliErrorFromCaught(e);

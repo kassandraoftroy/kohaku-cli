@@ -16,6 +16,10 @@ import { assertTornadoDepositAmount } from "../utils/tornado-pools.js";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
+  makeStealthAccountsStorage,
+  parseStealthIndex,
+} from "./stealth/storage.js";
+import {
   addressFromPrivateKey,
   encodeContractCall,
   makeWalletClient,
@@ -24,11 +28,17 @@ import {
 } from "../utils/viem-tx.js";
 
 export type PublicAccountWithBalance = {
+  /** HD public-account index, or `-1` when this row is a stealth account. */
   index: number;
+  /** Present when `kind === "stealth"`. */
+  stealthIndex?: number;
+  kind?: "hd" | "stealth";
   address: string;
   priv: string;
   balance: bigint;
   ethBalance: bigint;
+  /** Optional identity name attached to a stealth payment. */
+  stealthName?: string;
 };
 
 function formatEthDisplay(balanceWei: bigint): string {
@@ -42,6 +52,13 @@ function formatEthDisplay(balanceWei: bigint): string {
   const keepDigits = Math.max(6, firstNonZero + 1);
   const clipped = fracRaw.slice(0, keepDigits).replace(/0+$/, "");
   return clipped ? `${whole}.${clipped}` : whole;
+}
+
+export function formatAccountSelector(acct: PublicAccountWithBalance): string {
+  if (acct.kind === "stealth" && acct.stealthIndex !== undefined) {
+    return `s${acct.stealthIndex}`;
+  }
+  return String(acct.index);
 }
 
 export function formatPublicAccountBalanceLabel(
@@ -93,10 +110,16 @@ export function publicAccountsWithBalanceFromSnapshot(
   tokenMeta: ResolvedTokenMeta
 ): PublicAccountWithBalance[] {
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+  const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const tokenKey = tokenMeta.tokenAddress.toLowerCase();
 
-  return publicStorage.getAccounts().map((acct) => {
-    const rows = snap.publicByAddress[acct.address];
+  const fromRows = (
+    address: string,
+    priv: string,
+    index: number,
+    extra: Partial<PublicAccountWithBalance>
+  ): PublicAccountWithBalance => {
+    const rows = snap.publicByAddress[address];
     const ethRow = rows?.find((r) => r.symbol === "ETH");
     const tokenRow = tokenMeta.isEth
       ? ethRow
@@ -110,13 +133,26 @@ export function publicAccountsWithBalanceFromSnapshot(
         : 0n;
 
     return {
-      index: acct.index,
-      address: acct.address,
-      priv: acct.priv,
+      index,
+      address,
+      priv,
       balance,
       ethBalance,
+      ...extra,
     };
-  });
+  };
+
+  const hd = publicStorage.getAccounts().map((acct) =>
+    fromRows(acct.address, acct.priv, acct.index, { kind: "hd" })
+  );
+  const stealth = stealthStorage.getAccounts().map((acct) =>
+    fromRows(acct.address, acct.priv, -1, {
+      kind: "stealth",
+      stealthIndex: acct.stealthIndex,
+      stealthName: acct.name,
+    })
+  );
+  return [...hd, ...stealth];
 }
 
 export async function listPublicAccountsWithBalance(
@@ -127,7 +163,9 @@ export async function listPublicAccountsWithBalance(
   tokenMeta: ResolvedTokenMeta
 ): Promise<PublicAccountWithBalance[]> {
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+  const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const allPublicAccounts = publicStorage.getAccounts();
+  const stealthAccounts = stealthStorage.getAccounts();
   const client = await makePublicClient(rpcUrl);
   try {
     const withBalances: PublicAccountWithBalance[] = [];
@@ -145,6 +183,30 @@ export async function listPublicAccountsWithBalance(
           });
       withBalances.push({
         index: acct.index,
+        kind: "hd",
+        address: acct.address,
+        priv: acct.priv,
+        balance: bal,
+        ethBalance,
+      });
+    }
+    for (const acct of stealthAccounts) {
+      const ethBalance = await client.getBalance({
+        address: acct.address as `0x${string}`,
+      });
+      const bal = tokenMeta.isEth
+        ? ethBalance
+        : await client.readContract({
+            address: tokenMeta.tokenAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [acct.address as `0x${string}`],
+          });
+      withBalances.push({
+        index: -1,
+        kind: "stealth",
+        stealthIndex: acct.stealthIndex,
+        stealthName: acct.name,
         address: acct.address,
         priv: acct.priv,
         balance: bal,
@@ -338,6 +400,22 @@ export function resolveShieldSender(opts: {
     opts.mnemonic,
     opts.password
   );
+  const stealthStorage = makeStealthAccountsStorage(
+    opts.walletDir,
+    opts.password
+  );
+
+  const stealthIdx = parseStealthIndex(opts.fromValue);
+  if (stealthIdx !== null) {
+    const account = stealthStorage.getAccount(stealthIdx);
+    if (!account) {
+      throw new Error(
+        `Stealth account s${stealthIdx} not found. Run balances (or init-wallet) to scan announcements.`
+      );
+    }
+    return { senderAddress: account.address, senderPrivateKey: account.priv };
+  }
+
   const fromIndex = parseFromIndex(opts.fromValue);
   if (fromIndex !== null) {
     const account = publicStorage.getAccount(fromIndex);
@@ -360,14 +438,23 @@ export function resolveShieldSender(opts: {
     if (match) {
       return { senderAddress, senderPrivateKey: match.priv };
     }
+    const stealthMatch = stealthStorage.findByAddress(senderAddress);
+    if (stealthMatch) {
+      return {
+        senderAddress: getAddress(stealthMatch.address),
+        senderPrivateKey: stealthMatch.priv,
+      };
+    }
     if (opts.dryRun) {
       return { senderAddress, senderPrivateKey: undefined };
     }
     throw new Error(
-      `Address ${senderAddress} is not in this wallet's public accounts.`
+      `Address ${senderAddress} is not in this wallet's public or stealth accounts.`
     );
   }
-  throw new Error("--from must be either a valid address or a non-negative index.");
+  throw new Error(
+    "--from must be a non-negative HD index, a stealth selector (s0), or an address."
+  );
 }
 
 export async function prepareShieldPlan(opts: {

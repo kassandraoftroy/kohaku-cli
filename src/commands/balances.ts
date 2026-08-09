@@ -204,6 +204,7 @@ function printHumanBalances(opts: {
   publicAggregated: BalanceItem[];
   publicByAddress: Record<string, BalanceItem[]>;
   publicAccountIndexByAddress?: Record<string, number>;
+  stealthAccountIndexByAddress?: Record<string, number>;
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
@@ -268,11 +269,18 @@ function printHumanBalances(opts: {
     for (const addr of addrs) {
       const rows = opts.publicByAddress[addr];
       if (!rows) continue;
-      const index = opts.publicAccountIndexByAddress?.[addr];
+      const hdIndex = opts.publicAccountIndexByAddress?.[addr];
+      const stealthIndex = opts.stealthAccountIndexByAddress?.[addr];
+      const label =
+        stealthIndex !== undefined
+          ? `[s${stealthIndex}]`
+          : hdIndex !== undefined
+            ? `[${hdIndex}]`
+            : undefined;
       console.log();
       console.log(
-        index !== undefined
-          ? `  ${chalk.cyan.bold(`[${index}]`)} ${chalk.cyan.bold(addr)}`
+        label !== undefined
+          ? `  ${chalk.cyan.bold(label)} ${chalk.cyan.bold(addr)}`
           : `  ${chalk.cyan.bold(addr)}`
       );
       console.log(chalk.dim(`  ${THIN}`));
@@ -444,13 +452,19 @@ export function registerBalancesCommand(program: Command): void {
 
             if (opts.verbose) {
               const publicAccountIndexesOut: Record<string, number> = {};
+              const stealthAccountIndexesOut: Record<string, number> = {};
               for (const addr of Object.keys(snap.publicByAddress)) {
                 const idx = snap.publicAccountIndexByAddress[addr];
                 if (idx !== undefined) {
                   publicAccountIndexesOut[addr] = idx;
                 }
+                const sIdx = snap.stealthAccountIndexByAddress[addr];
+                if (sIdx !== undefined) {
+                  stealthAccountIndexesOut[addr] = sIdx;
+                }
               }
               payload.public_account_indexes_by_address = publicAccountIndexesOut;
+              payload.stealth_account_indexes_by_address = stealthAccountIndexesOut;
               if (privateNotesOut) {
                 payload.private_notes = privateNotesOut;
               }
@@ -465,6 +479,7 @@ export function registerBalancesCommand(program: Command): void {
                 publicAggregated: snap.publicAggregated,
                 publicByAddress: snap.publicByAddress,
                 publicAccountIndexByAddress: snap.publicAccountIndexByAddress,
+                stealthAccountIndexByAddress: snap.stealthAccountIndexByAddress,
                 privateRailgun: snap.privateRailgun,
                 privatePrivacyPools: snap.privatePrivacyPools,
                 privateTornado: snap.privateTornado,
