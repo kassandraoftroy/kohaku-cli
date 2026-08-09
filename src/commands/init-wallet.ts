@@ -35,9 +35,13 @@ import {
   simulatePreparedTxs,
   waitUntilCommitmentAged,
 } from "../lib/names/tx.js";
-import type { NameOwnership } from "../lib/names/types.js";
+import type { NameOwnership, PreparedTx } from "../lib/names/types.js";
 import { STEALTH_TEXT_RECORD_KEY } from "../lib/stealth/constants.js";
 import { deriveStealthKeypair } from "../lib/stealth/keys.js";
+import {
+  needsStealthRegistryUpdate,
+  prepareRegisterStealthKeys,
+} from "../lib/stealth/registry.js";
 import { makeStealthAccountsStorage } from "../lib/stealth/storage.js";
 import { logCliJson } from "../utils/cli-quiet.js";
 import { cliError } from "../utils/cli-errors.js";
@@ -45,23 +49,28 @@ import { cliError } from "../utils/cli-errors.js";
 type Opts = NameWalletOpts & {
   protocol?: string;
   name?: string;
+  noName?: boolean;
   years?: string;
 };
 
 /**
- * Bootstrap a wallet identity: ensure a top-level name is owned by this wallet,
- * set reverse + stealth meta-address text record.
+ * Bootstrap wallet stealth identity: optionally register a name + text/reverse,
+ * always publish scheme-1 keys on the ERC-6538 registry for the chosen index.
  */
 export function registerInitWalletCommand(program: Command): void {
   addNameWalletOptions(
     program
       .command("init-wallet")
       .description(
-        "Register (or reuse) a .eth/.gwei/.wei name, set reverse, and publish stealth-address-scheme-1"
+        "Publish stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 text record"
       )
-      .requiredOption(
+      .option(
         "--name <label-or-name>",
         "Bare label or full name (alice / alice.gwei). Existing owned names are reused"
+      )
+      .option(
+        "--no-name",
+        "Skip name registration; only register stealth keys for --index on ERC-6538"
       )
       .option(
         "--protocol <ens|gns|wns>",
@@ -69,7 +78,7 @@ export function registerInitWalletCommand(program: Command): void {
       )
       .option(
         "--index <n>",
-        "HD account index that owns/registers the name (default: 0)",
+        "HD account index that owns/registers the name and registry entry (default: 0)",
         "0"
       )
       .option(
@@ -78,26 +87,14 @@ export function registerInitWalletCommand(program: Command): void {
         "1"
       )
   ).action(async (opts: Opts) => {
-    if (!opts.name?.trim()) {
-      cliError("Missing --name.");
+    const hasName = !!opts.name?.trim();
+    const noName = !!opts.noName;
+    if (hasName === noName) {
+      cliError("Provide exactly one of --name <…> or --no-name.");
       return;
     }
 
     await withNameCommandContext(opts, async (ctx) => {
-      const rawName = opts.name!.trim();
-      const hasTld = /\.(eth|gwei|wei)$/i.test(rawName);
-      const protocol = hasTld
-        ? parseManagedName(rawName).protocol
-        : parseNameProtocol(opts.protocol);
-      if (!hasTld && !opts.protocol) {
-        throw new Error(
-          "Bare --name requires --protocol <ens|gns|wns> (or pass a full name like alice.gwei)."
-        );
-      }
-      const parsed = hasTld
-        ? parseManagedName(rawName)
-        : parseRegisterName(rawName, protocol);
-
       const signer = resolveRegisterSigner({
         walletDir: ctx.walletDir,
         mnemonic: ctx.mnemonic,
@@ -112,6 +109,127 @@ export function registerInitWalletCommand(program: Command): void {
         ctx.walletDir,
         ctx.password
       );
+      const hashes: string[] = [];
+
+      const registryNeeded = await needsStealthRegistryUpdate({
+        client: ctx.client,
+        registrant: signer.address,
+        stealthMetaAddress: keypair.stealthMetaAddress,
+        chainId: ctx.chainId,
+      });
+      const registryTx: PreparedTx | null = registryNeeded
+        ? prepareRegisterStealthKeys({
+            stealthMetaAddress: keypair.stealthMetaAddress,
+            account: signer.address,
+          })
+        : null;
+
+      if (noName) {
+        if (!registryTx) {
+          stealthStorage.setMeta({
+            metaAddressURI: keypair.stealthMetaAddressURI,
+          });
+          const result = {
+            action: "init-wallet",
+            name: null,
+            owner: signer.address,
+            index: signer.index,
+            stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+            registry: "already-registered",
+            txs: [] as string[],
+            urls: [] as string[],
+          };
+          if (ctx.nonInteractive) logCliJson(result);
+          else {
+            console.log(
+              chalk.green(
+                `Stealth keys already registered on ERC-6538 for ${signer.address}`
+              )
+            );
+            console.log(
+              chalk.dim(`stealth meta: ${keypair.stealthMetaAddressURI}`)
+            );
+          }
+          return;
+        }
+
+        if (ctx.dryRun) {
+          await simulatePreparedTxs(ctx.client, signer.address, [registryTx]);
+          printPreparedTxs([registryTx], signer.address, {
+            title: "init-wallet ERC-6538 registerKeys (not submitted)",
+          });
+          if (ctx.nonInteractive) {
+            logCliJson({
+              action: "init-wallet",
+              name: null,
+              owner: signer.address,
+              index: signer.index,
+              stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+              dryRun: true,
+            });
+          }
+          return;
+        }
+
+        if (!signer.privateKey) {
+          throw new Error("Missing private key. Pass --owner-priv if needed.");
+        }
+        await maybeConfirm(
+          ctx.nonInteractive,
+          `Register scheme-1 stealth keys on ERC-6538 for ${signer.address}?`
+        );
+        const [h] = await broadcastPreparedTxs({
+          client: ctx.client,
+          rpcUrl: ctx.rpcUrl,
+          privateKey: signer.privateKey,
+          from: signer.address,
+          txs: [registryTx],
+          nonInteractive: true,
+        });
+        hashes.push(h!);
+
+        stealthStorage.setMeta({
+          metaAddressURI: keypair.stealthMetaAddressURI,
+        });
+
+        const result = {
+          action: "init-wallet",
+          name: null,
+          owner: signer.address,
+          index: signer.index,
+          stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+          txs: hashes,
+          urls: hashes.map((hx) => etherscanTxUrl(ctx.chainId, hx)),
+        };
+        if (ctx.nonInteractive) logCliJson(result);
+        else {
+          console.log(
+            chalk.green(
+              `Registered stealth keys on ERC-6538 for ${signer.address}`
+            )
+          );
+          console.log(
+            chalk.dim(`stealth meta: ${keypair.stealthMetaAddressURI}`)
+          );
+          for (const url of result.urls) console.log(chalk.dim(url));
+        }
+        return;
+      }
+
+      // --name path
+      const rawName = opts.name!.trim();
+      const hasTld = /\.(eth|gwei|wei)$/i.test(rawName);
+      const protocol = hasTld
+        ? parseManagedName(rawName).protocol
+        : parseNameProtocol(opts.protocol);
+      if (!hasTld && !opts.protocol) {
+        throw new Error(
+          "Bare --name requires --protocol <ens|gns|wns> (or pass a full name like alice.gwei)."
+        );
+      }
+      const parsed = hasTld
+        ? parseManagedName(rawName)
+        : parseRegisterName(rawName, protocol);
 
       let ownership: NameOwnership | undefined;
       let needsRegister = false;
@@ -130,8 +248,6 @@ export function registerInitWalletCommand(program: Command): void {
         if (/is owned by/i.test(msg)) throw e;
         needsRegister = true;
       }
-
-      const hashes: string[] = [];
 
       if (needsRegister) {
         const secret = generateSecret();
@@ -183,7 +299,12 @@ export function registerInitWalletCommand(program: Command): void {
 
         if (ctx.dryRun) {
           await simulatePreparedTxs(ctx.client, signer.address, [commitTx]);
-          printPreparedTxs([commitTx, finishTx], signer.address, {
+          const dryTxs = [
+            commitTx,
+            finishTx,
+            ...(registryTx ? [registryTx] : []),
+          ];
+          printPreparedTxs(dryTxs, signer.address, {
             title: "init-wallet registration (not submitted)",
           });
         } else {
@@ -223,12 +344,13 @@ export function registerInitWalletCommand(program: Command): void {
           });
           hashes.push(finishHash!);
         }
-        ownership = await readNameOwnership(ctx.client, parsed).catch(() => ownership);
+        ownership = await readNameOwnership(ctx.client, parsed).catch(
+          () => ownership
+        );
       } else if (!ctx.nonInteractive) {
         console.log(chalk.dim(`Reusing owned name ${parsed.name}`));
       }
 
-      // Ensure we sign as the on-chain owner/manager for record updates.
       if (!ownership) {
         if (ctx.dryRun && needsRegister) {
           if (ctx.nonInteractive) {
@@ -244,12 +366,21 @@ export function registerInitWalletCommand(program: Command): void {
           } else {
             console.log(
               chalk.dim(
-                "Dry-run: register payloads printed. Re-run with --broadcast to register and set stealth text/reverse."
+                "Dry-run: register payloads printed. Re-run with --broadcast to register and set stealth text/reverse/registry."
               )
             );
             console.log(
-              chalk.dim(`Would publish ${STEALTH_TEXT_RECORD_KEY}=${keypair.stealthMetaAddressURI}`)
+              chalk.dim(
+                `Would publish ${STEALTH_TEXT_RECORD_KEY}=${keypair.stealthMetaAddressURI}`
+              )
             );
+            if (registryTx) {
+              console.log(
+                chalk.dim(
+                  `Would registerKeys on ERC-6538 for ${signer.address}`
+                )
+              );
+            }
           }
           return;
         }
@@ -279,11 +410,29 @@ export function registerInitWalletCommand(program: Command): void {
         value: keypair.stealthMetaAddressURI,
       });
 
-      const recordTxs = [...(reverseTx ? [reverseTx] : []), textTx];
+      // Registry must be signed by the registrant (name owner / --index).
+      const recordTxs = [
+        ...(reverseTx ? [reverseTx] : []),
+        textTx,
+        ...(registryTx ? [registryTx] : []),
+      ];
 
       if (ctx.dryRun) {
         if (!needsRegister) {
-          await simulatePreparedTxs(ctx.client, recordSigner.address, recordTxs);
+          const managerTxs = [
+            ...(reverseTx ? [reverseTx] : []),
+            textTx,
+          ];
+          if (managerTxs.length > 0) {
+            await simulatePreparedTxs(
+              ctx.client,
+              recordSigner.address,
+              managerTxs
+            );
+          }
+          if (registryTx) {
+            await simulatePreparedTxs(ctx.client, signer.address, [registryTx]);
+          }
         }
         printPreparedTxs(recordTxs, recordSigner.address, {
           title: "init-wallet record updates (not submitted)",
@@ -303,6 +452,9 @@ export function registerInitWalletCommand(program: Command): void {
 
       if (!recordSigner.privateKey) {
         throw new Error("Missing private key for record updates.");
+      }
+      if (registryTx && !signer.privateKey) {
+        throw new Error("Missing private key for ERC-6538 registerKeys.");
       }
 
       if (reverseTx) {
@@ -335,21 +487,43 @@ export function registerInitWalletCommand(program: Command): void {
       });
       hashes.push(textHash!);
 
+      if (registryTx && signer.privateKey) {
+        await maybeConfirm(
+          ctx.nonInteractive,
+          `Register scheme-1 stealth keys on ERC-6538 for ${signer.address}?`
+        );
+        const [regHash] = await broadcastPreparedTxs({
+          client: ctx.client,
+          rpcUrl: ctx.rpcUrl,
+          privateKey: signer.privateKey,
+          from: signer.address,
+          txs: [registryTx],
+          nonInteractive: true,
+        });
+        hashes.push(regHash!);
+      } else if (!registryTx && !ctx.nonInteractive) {
+        console.log(
+          chalk.dim(
+            `ERC-6538 already has scheme-1 keys for ${signer.address}; skipping registerKeys.`
+          )
+        );
+      }
+
       stealthStorage.setMeta({
         metaAddressURI: keypair.stealthMetaAddressURI,
         name: parsed.name,
       });
 
-      // Verify text record when possible.
       try {
-        const names = createEthereumNames({ rpcUrl: ctx.rpcUrl });
-        const published = await names.getText(
+        const ethNames = createEthereumNames({ rpcUrl: ctx.rpcUrl });
+        const published = await ethNames.getText(
           parsed.name,
           STEALTH_TEXT_RECORD_KEY
         );
         if (
           published &&
-          published.toLowerCase() !== keypair.stealthMetaAddressURI.toLowerCase()
+          published.toLowerCase() !==
+            keypair.stealthMetaAddressURI.toLowerCase()
         ) {
           console.log(
             chalk.yellow(
@@ -374,7 +548,9 @@ export function registerInitWalletCommand(program: Command): void {
       if (ctx.nonInteractive) logCliJson(result);
       else {
         console.log(chalk.green(`Initialized wallet identity ${parsed.name}`));
-        console.log(chalk.dim(`stealth meta: ${keypair.stealthMetaAddressURI}`));
+        console.log(
+          chalk.dim(`stealth meta: ${keypair.stealthMetaAddressURI}`)
+        );
         for (const url of result.urls) console.log(chalk.dim(url));
       }
     });

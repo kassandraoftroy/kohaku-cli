@@ -16,8 +16,8 @@ import {
 import { STEALTH_TEXT_RECORD_KEY } from "../lib/stealth/constants.js";
 import {
   looksLikeStealthMetaAddress,
-  normalizeStealthMetaAddressURI,
 } from "../lib/stealth/keys.js";
+import { resolveScheme1StealthMetaAddress } from "../lib/stealth/resolve-meta.js";
 import { prepareStealthSend } from "../lib/stealth/send.js";
 import { parseStealthIndex } from "../lib/stealth/storage.js";
 import { cliOptions } from "../utils/cli-command-options";
@@ -51,7 +51,6 @@ import {
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
 } from "../utils/wallets-util";
-import { createEthereumNames } from "@1001-digital/ethereum-names";
 
 type TransferOpts = {
   wallet?: string;
@@ -208,7 +207,7 @@ export function registerTransferCommand(program: Command): void {
     .option("--to <address>", "Recipient address, name (.eth/.gwei/.wei), or stealth meta-address")
     .option(
       "--stealth",
-      "Send via EIP-5564 stealth addresses (required for raw meta-address --to; auto when --to name has stealth-address-scheme-1)"
+      "Send via EIP-5564: resolve scheme-1 meta from --to (meta URI, name text record, or ERC-6538 registry)"
     )
     .option(
       "--broadcast",
@@ -497,33 +496,25 @@ export function registerTransferCommand(program: Command): void {
 
       let stealthMetaURI: string | null = null;
       try {
-        if (looksLikeStealthMetaAddress(toValue)) {
-          if (!opts.stealth) {
-            throw new Error(
-              "Recipient looks like a stealth meta-address. Pass --stealth to send an EIP-5564 stealth transfer."
-            );
+        if (opts.stealth) {
+          const resolved = await resolveScheme1StealthMetaAddress({
+            to: toValue,
+            rpcUrl,
+            chainId,
+          });
+          stealthMetaURI = resolved.uri;
+          if (!opts.nonInteractive) {
+            const via =
+              resolved.source === "meta"
+                ? "raw meta-address"
+                : resolved.source === "text"
+                  ? `${STEALTH_TEXT_RECORD_KEY} on ${resolved.name}`
+                  : `ERC-6538 registry${resolved.registrant ? ` (${resolved.registrant})` : ""}`;
+            console.log(chalk.dim(`Resolved scheme-1 stealth meta via ${via}.`));
           }
-          stealthMetaURI = normalizeStealthMetaAddressURI(toValue, chainId);
-        } else if (looksLikeName(toValue)) {
-          const names = createEthereumNames({ rpcUrl });
-          const text = await names.getText(toValue, STEALTH_TEXT_RECORD_KEY);
-          if (text && text.trim()) {
-            stealthMetaURI = normalizeStealthMetaAddressURI(text.trim(), chainId);
-            if (!opts.nonInteractive) {
-              console.log(
-                chalk.dim(
-                  `Name ${toValue} has ${STEALTH_TEXT_RECORD_KEY}; sending stealth transfer.`
-                )
-              );
-            }
-          } else if (opts.stealth) {
-            throw new Error(
-              `Name ${toValue} has no ${STEALTH_TEXT_RECORD_KEY} text record; cannot --stealth.`
-            );
-          }
-        } else if (opts.stealth) {
+        } else if (looksLikeStealthMetaAddress(toValue)) {
           throw new Error(
-            "--stealth requires --to to be a stealth meta-address or a name with stealth-address-scheme-1."
+            "Recipient looks like a stealth meta-address. Pass --stealth to send an EIP-5564 stealth transfer."
           );
         }
       } catch (e) {
