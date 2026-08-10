@@ -168,27 +168,39 @@ export async function loadTornadoPrivateBalances(
   walletDir: string,
   password: string,
   mnemonic: string,
-  chainId: bigint
+  chainId: bigint,
+  onProgress?: (message: string) => void
 ): Promise<AssetAmount[]> {
-  return Promise.race([
-    loadPrivateBalancesForProtocol(
-      "tornado",
-      rpcUrl,
-      walletDir,
-      password,
-      mnemonic,
-      chainId
-    ),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(
-          new Error(
-            "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain)."
-          )
-        );
-      }, TORNADO_BALANCE_TIMEOUT_MS);
-    }),
-  ]);
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const secs = Math.round((Date.now() - started) / 1000);
+    onProgress?.(
+      `Tornado Cash still syncing (${secs}s)… first run pulls saga CDN + proving artifacts (Tor may fall back to clearnet)`
+    );
+  }, 15_000);
+  try {
+    return await Promise.race([
+      loadPrivateBalancesForProtocol(
+        "tornado",
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId
+      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(
+            new Error(
+              "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain). If this persists with Tor, retry with --without-tor or check `view-network-traffic --category saga` / KOHAKU_TOR_DEBUG=1."
+            )
+          );
+        }, TORNADO_BALANCE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearInterval(tick);
+  }
 }
 
 async function loadErc20Meta(
@@ -264,6 +276,7 @@ async function resolvePrivateBalanceItems(
     | "chainId"
     | "includeProtocols"
     | "onWarning"
+    | "onTorStatus"
   >
 ): Promise<ResolvedPrivateBalances> {
   const {
@@ -274,6 +287,7 @@ async function resolvePrivateBalanceItems(
     chainId,
     includeProtocols = null,
     onWarning,
+    onTorStatus,
   } = opts;
   const chainIdString = chainId.toString();
 
@@ -325,7 +339,8 @@ async function resolvePrivateBalanceItems(
         walletDir,
         password,
         mnemonic,
-        chainId
+        chainId,
+        onTorStatus
       );
       protocolAvailable.tornado = true;
     } catch (e) {

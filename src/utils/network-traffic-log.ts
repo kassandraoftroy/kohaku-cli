@@ -32,7 +32,9 @@ export type TrafficClearnetReason =
   | "tor-disabled"
   | "rpc"
   /** Tor failed for a GitHub proving-artifact download; retried on clearnet. */
-  | "artifact-fallback";
+  | "artifact-fallback"
+  /** Tor failed/timed out for saga CDN (Tornado cold sync); retried on clearnet. */
+  | "saga-fallback";
 
 export type TrafficCategory =
   | "pimlico"
