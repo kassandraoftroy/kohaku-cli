@@ -20,5 +20,5 @@ export const cliOptions = {
   withoutTor:
     "Disable Tor for non-RPC HTTP (default: Tor on for private-protocol sync / shield / unshield). RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
   stealthStartBlock:
-    "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan",
+    "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan. balances also reads `.stealth-start-block` from the wallet when this flag is omitted",
 } as const;

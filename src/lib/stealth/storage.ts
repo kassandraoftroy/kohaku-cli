@@ -13,7 +13,7 @@ export type StealthAccount = {
   schemeId: number;
   announcementTxHash?: string;
   announcementBlock?: string;
-  /** Wallet identity name this payment was associated with (from init-wallet). */
+  /** Wallet identity name this payment was associated with (from init-profile). */
   name?: string;
   lastUpdated: number;
   ethBalance: string;
@@ -22,9 +22,9 @@ export type StealthAccount = {
 
 export type StealthAccountsStore = {
   nextStealthIndex: number;
-  /** Our published meta-address URI (from init-wallet / derive). */
+  /** Our published meta-address URI (from init-profile / derive). */
   metaAddressURI?: string;
-  /** Primary name used as wallet identifier (set by init-wallet). */
+  /** Primary name used as wallet identifier (set by init-profile). */
   name?: string;
   /** Inclusive last block scanned for announcements. */
   lastScannedBlock?: string;

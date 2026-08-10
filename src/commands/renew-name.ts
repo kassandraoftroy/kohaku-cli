@@ -1,3 +1,4 @@
+import { input } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 import { formatEther } from "viem";
@@ -28,6 +29,46 @@ type Opts = NameWalletOpts & {
   years?: string;
 };
 
+async function resolveRenewYears(opts: {
+  protocol: "ens" | "gns" | "wns";
+  yearsFlag?: string;
+  nonInteractive: boolean;
+}): Promise<number> {
+  if (opts.protocol !== "ens") {
+    if (opts.yearsFlag !== undefined && opts.yearsFlag !== "" && Number(opts.yearsFlag) !== 1) {
+      throw new Error(
+        `${opts.protocol.toUpperCase()} renewals are fixed at +1 year; omit --years or pass --years 1.`
+      );
+    }
+    return 1;
+  }
+
+  if (opts.yearsFlag !== undefined && opts.yearsFlag !== "") {
+    const years = Number(opts.yearsFlag);
+    if (!Number.isInteger(years) || years < 1) {
+      throw new Error("--years must be a positive integer.");
+    }
+    return years;
+  }
+
+  if (opts.nonInteractive) {
+    return 1;
+  }
+
+  const raw = await input({
+    message: "Renewal duration in years",
+    default: "1",
+    validate: (value) => {
+      const n = Number(value.trim());
+      if (!Number.isInteger(n) || n < 1) {
+        return "Enter a positive whole number of years.";
+      }
+      return true;
+    },
+  });
+  return Number(raw.trim());
+}
+
 export function registerRenewNameCommand(program: Command): void {
   addNameWalletOptions(
     program
@@ -36,12 +77,11 @@ export function registerRenewNameCommand(program: Command): void {
       .requiredOption("--name <name>", "Full name including TLD (e.g. alice.gwei)")
       .option(
         "--index <n>",
-        "HD account index to pay/sign with when not found via name ownership scan"
+        "Only needed when the payer HD index is not stored in the public accounts list yet (defaults to name owner when present)"
       )
       .option(
         "--years <n>",
-        "Extension duration in whole years (ENS only; GNS/WNS always add 1 year)",
-        "1"
+        "Extension duration in whole years (ENS only; GNS/WNS always add 1 year). Interactive default: 1"
       )
   ).action(async (opts: Opts) => {
     if (!opts.name?.trim()) {
@@ -63,12 +103,11 @@ export function registerRenewNameCommand(program: Command): void {
         dryRun: ctx.dryRun,
       });
 
-      const years = Number(opts.years ?? "1");
-      if (parsed.protocol !== "ens" && years !== 1) {
-        throw new Error(
-          `${parsed.protocol.toUpperCase()} renewals are fixed at +1 year; omit --years or pass --years 1.`
-        );
-      }
+      const years = await resolveRenewYears({
+        protocol: parsed.protocol,
+        yearsFlag: opts.years,
+        nonInteractive: ctx.nonInteractive,
+      });
       const durationSeconds = defaultDurationSeconds(years);
       const tx = await prepareRenew({
         client: ctx.client,
@@ -80,7 +119,7 @@ export function registerRenewNameCommand(program: Command): void {
       if (!ctx.nonInteractive) {
         console.log(
           chalk.dim(
-            `Renew ${parsed.name} from ${payer.address} (pay ${formatEther(tx.value)} ETH)`
+            `Renew ${parsed.name} (+${years} year${years === 1 ? "" : "s"}) from ${payer.address} (pay ${formatEther(tx.value)} ETH)`
           )
         );
       }
@@ -94,6 +133,7 @@ export function registerRenewNameCommand(program: Command): void {
             action: "renew-name",
             name: parsed.name,
             protocol: parsed.protocol,
+            years,
             from: payer.address,
             feeWei: tx.value.toString(),
             dryRun: true,
@@ -127,6 +167,7 @@ export function registerRenewNameCommand(program: Command): void {
         action: "renew-name",
         name: parsed.name,
         protocol: parsed.protocol,
+        years,
         from: payer.address,
         feeWei: tx.value.toString(),
         tx: hash,

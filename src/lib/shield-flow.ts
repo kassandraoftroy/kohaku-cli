@@ -410,7 +410,7 @@ export function resolveShieldSender(opts: {
     const account = stealthStorage.getAccount(stealthIdx);
     if (!account) {
       throw new Error(
-        `Stealth account s${stealthIdx} not found. Run balances (or init-wallet) to scan announcements.`
+        `Stealth account s${stealthIdx} not found. Run balances (or init-profile) to scan announcements.`
       );
     }
     return { senderAddress: account.address, senderPrivateKey: account.priv };

@@ -8,10 +8,11 @@ import { encodeFunctionData, type Address, type Hex } from "viem";
 import { encodeContractCall } from "../../utils/viem-tx.js";
 import { ERC20_ABI } from "../../utils/tokens-util.js";
 import {
-  STEALTH_ANNOUNCER_ADDRESS,
   STEALTH_SCHEME_ID,
-} from "./constants.js";
-import { normalizeStealthMetaAddressURI } from "./keys.js";
+  normalizeStealthMetaAddressURI,
+} from "eth-stealth-address-resolver";
+
+import { STEALTH_ANNOUNCER_ADDRESS } from "./constants.js";
 
 export type StealthSendPlan = {
   stealthAddress: Address;

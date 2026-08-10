@@ -156,3 +156,64 @@ export async function getRpcChainIdMatchingWallet(
   }
   return chainId;
 }
+
+/** Public HTTP RPCs used when `--rpc-url` / `RPC_URL` is unset (create-wallet seed timestamp). */
+const PUBLIC_RPC_URLS: Record<"mainnet" | "sepolia", readonly string[]> = {
+  mainnet: [
+    "https://cloudflare-eth.com",
+    "https://ethereum.publicnode.com",
+    "https://rpc.ankr.com/eth",
+  ],
+  sepolia: [
+    "https://ethereum-sepolia-rpc.publicnode.com",
+    "https://rpc.sepolia.org",
+    "https://rpc2.sepolia.org",
+  ],
+};
+
+function publicRpcCandidates(testnet: boolean): readonly string[] {
+  return testnet ? PUBLIC_RPC_URLS.sepolia : PUBLIC_RPC_URLS.mainnet;
+}
+
+/**
+ * Current block height for mainnet or Sepolia.
+ * Prefers `rpcUrl` when provided (must match the network); otherwise tries public RPCs.
+ */
+export async function fetchCurrentBlockNumber(opts: {
+  testnet: boolean;
+  /** Preferred RPC (e.g. `--rpc-url` / `RPC_URL`). */
+  rpcUrl?: string;
+}): Promise<{ blockNumber: bigint; rpcUrlUsed: string }> {
+  const expectedChainId = opts.testnet ? 11155111n : 1n;
+  const preferred = opts.rpcUrl?.trim();
+  const candidates = preferred
+    ? [preferred, ...publicRpcCandidates(opts.testnet).filter((u) => u !== preferred)]
+    : [...publicRpcCandidates(opts.testnet)];
+
+  const errors: string[] = [];
+  for (const url of candidates) {
+    try {
+      const client = await makePublicClient(url);
+      try {
+        const chainId = BigInt(await client.getChainId());
+        if (chainId !== expectedChainId) {
+          throw new Error(
+            `chain ID ${chainId.toString()} (expected ${expectedChainId.toString()})`
+          );
+        }
+        const blockNumber = await client.getBlockNumber();
+        return { blockNumber, rpcUrlUsed: url };
+      } finally {
+        disposePublicClient(client);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`${url}: ${msg}`);
+    }
+  }
+
+  throw new Error(
+    `Could not fetch current block for ${opts.testnet ? "Sepolia" : "mainnet"}.\n` +
+      errors.map((line) => `  - ${line}`).join("\n")
+  );
+}

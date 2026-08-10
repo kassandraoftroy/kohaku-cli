@@ -32,7 +32,7 @@ export function registerSetNameReverseRecordCommand(program: Command): void {
       .requiredOption("--name <name>", "Full name including TLD (e.g. alice.eth)")
       .option(
         "--index <n>",
-        "HD account that will claim this primary name (must be allowed by the protocol)"
+        "Only needed when the required HD index is not stored in the public accounts list yet"
       )
   ).action(async (opts: Opts) => {
     if (!opts.name?.trim()) {

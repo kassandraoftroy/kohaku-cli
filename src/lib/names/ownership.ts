@@ -184,7 +184,7 @@ export function requiredAddressForRecords(ownership: NameOwnership): Address {
 }
 
 export function parseTransferRole(raw: string | undefined): "owner" | "manager" | "both" {
-  const v = (raw ?? "owner").trim().toLowerCase();
+  const v = (raw ?? "both").trim().toLowerCase();
   if (v !== "owner" && v !== "manager" && v !== "both") {
     throw new Error("--role must be owner, manager, or both");
   }

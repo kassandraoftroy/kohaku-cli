@@ -299,6 +299,34 @@ export function assertTornadoDepositAmount(
   }
 }
 
+/** Throws unless `amount` equals exactly one pool denomination for this asset. */
+export function assertTornadoExactPoolDenomination(
+  chainId: bigint,
+  amount: bigint,
+  opts: {
+    isEth: boolean;
+    tokenAddress: string;
+    symbol: string;
+    decimals: number;
+  }
+): TornadoSagaPool {
+  if (amount <= 0n) {
+    throw new Error("Amount must be greater than zero.");
+  }
+  const pools = assertTornadoTokenSupported(chainId, opts);
+  const match = pools.filter((p) => p.denomination === amount);
+  if (match.length === 0) {
+    const dens = pools
+      .map((p) => formatUnits(p.denomination, opts.decimals))
+      .join(", ");
+    throw new Error(
+      `Amount ${formatUnits(amount, opts.decimals)} ${opts.symbol} is not an exact Tornado pool denomination. ` +
+        `Valid ${opts.symbol} denominations: ${dens}.`
+    );
+  }
+  return match[0]!;
+}
+
 /** Like {@link assertTornadoDepositAmount}, but only against paymaster-backed pools. */
 export function assertTornadoUnshieldAmountForToken(
   chainId: bigint,

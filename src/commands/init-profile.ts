@@ -40,7 +40,7 @@ import {
   waitUntilCommitmentAged,
 } from "../lib/names/tx.js";
 import type { NameOwnership, PreparedTx } from "../lib/names/types.js";
-import { STEALTH_TEXT_RECORD_KEY } from "../lib/stealth/constants.js";
+import { STEALTH_TEXT_RECORD_KEY } from "eth-stealth-address-resolver";
 import { deriveStealthKeypair } from "../lib/stealth/keys.js";
 import {
   needsStealthRegistryUpdate,
@@ -120,12 +120,12 @@ function predictEnsOwnership(opts: {
  * reveal/register + reverse + text + registerKeys.
  * With `--no-name`: a single `registerKeys` EOA tx (no 7702).
  */
-export function registerInitWalletCommand(program: Command): void {
+export function registerInitProfileCommand(program: Command): void {
   addNameWalletOptions(
     program
-      .command("init-wallet")
+      .command("init-profile")
       .description(
-        "Publish stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 (post-commit steps batched via EIP-7702)"
+        "Publish profile stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 (post-commit steps batched via EIP-7702)"
       )
       .option(
         "--name <label-or-name>",
@@ -159,7 +159,7 @@ export function registerInitWalletCommand(program: Command): void {
 
     await withNameCommandContext(opts, async (ctx) => {
       // Default index 0: persist the first public account if the wallet is empty
-      // so init-wallet works without a prior next-fresh-address / balances run.
+      // so init-profile works without a prior next-fresh-address / balances run.
       const indexFlag = opts.index ?? "0";
       const idx = parseFromIndex(indexFlag);
       if (idx === 0) {
@@ -213,7 +213,7 @@ export function registerInitWalletCommand(program: Command): void {
             metaAddressURI: keypair.stealthMetaAddressURI,
           });
           const result = {
-            action: "init-wallet",
+            action: "init-profile",
             name: null,
             owner: signer.address,
             index: signer.index,
@@ -239,11 +239,11 @@ export function registerInitWalletCommand(program: Command): void {
         if (ctx.dryRun) {
           await simulatePreparedTxs(ctx.client, signer.address, [registryTx]);
           printPreparedTxs([registryTx], signer.address, {
-            title: "init-wallet ERC-6538 registerKeys (not submitted)",
+            title: "init-profile ERC-6538 registerKeys (not submitted)",
           });
           if (ctx.nonInteractive) {
             logCliJson({
-              action: "init-wallet",
+              action: "init-profile",
               name: null,
               owner: signer.address,
               index: signer.index,
@@ -276,7 +276,7 @@ export function registerInitWalletCommand(program: Command): void {
         });
 
         const result = {
-          action: "init-wallet",
+          action: "init-profile",
           name: null,
           owner: signer.address,
           index: signer.index,
@@ -427,7 +427,7 @@ export function registerInitWalletCommand(program: Command): void {
         if (ctx.dryRun) {
           await simulatePreparedTxs(ctx.client, signer.address, [commitTx]);
           printPreparedTxs([commitTx], signer.address, {
-            title: "init-wallet step 1: commit (EOA, not submitted)",
+            title: "init-profile step 1: commit (EOA, not submitted)",
           });
           const needsDelegation = await needsSimple7702Authorization(
             ctx.client,
@@ -441,7 +441,7 @@ export function registerInitWalletCommand(program: Command): void {
             privateKey: signer.privateKey,
           });
           printPreparedTxs(batchTxs, signer.address, {
-            title: "init-wallet step 2: EIP-7702 UserOp (not submitted)",
+            title: "init-profile step 2: EIP-7702 UserOp (not submitted)",
           });
           printFeePreview(fees);
           console.log(
@@ -453,7 +453,7 @@ export function registerInitWalletCommand(program: Command): void {
           );
           if (ctx.nonInteractive) {
             logCliJson({
-              action: "init-wallet",
+              action: "init-profile",
               name: parsed.name,
               protocol: parsed.protocol,
               owner: signer.address,
@@ -543,7 +543,7 @@ export function registerInitWalletCommand(program: Command): void {
         }
 
         const result = {
-          action: "init-wallet",
+          action: "init-profile",
           name: parsed.name,
           protocol: parsed.protocol,
           owner: signer.address,
@@ -679,7 +679,7 @@ export function registerInitWalletCommand(program: Command): void {
           name: parsed.name,
         });
         const result = {
-          action: "init-wallet",
+          action: "init-profile",
           name: parsed.name,
           protocol: parsed.protocol,
           owner: signer.address,
@@ -717,7 +717,7 @@ export function registerInitWalletCommand(program: Command): void {
             privateKey: recordSigner.privateKey,
           });
           printPreparedTxs(recordBatch, recordSigner.address, {
-            title: "init-wallet EIP-7702 UserOp (not submitted)",
+            title: "init-profile EIP-7702 UserOp (not submitted)",
           });
           printFeePreview(fees);
           console.log(
@@ -734,7 +734,7 @@ export function registerInitWalletCommand(program: Command): void {
             recordBatch
           );
           printPreparedTxs(recordBatch, recordSigner.address, {
-            title: "init-wallet EOA tx (not submitted)",
+            title: "init-profile EOA tx (not submitted)",
           });
           const fees = await estimateEoaTxFeePreview(ctx.client, {
             to: recordBatch[0]!.to,
@@ -749,12 +749,12 @@ export function registerInitWalletCommand(program: Command): void {
             separateRegistry,
           ]);
           printPreparedTxs([separateRegistry], signer.address, {
-            title: "init-wallet registerKeys (separate EOA, not submitted)",
+            title: "init-profile registerKeys (separate EOA, not submitted)",
           });
         }
         if (ctx.nonInteractive) {
           logCliJson({
-            action: "init-wallet",
+            action: "init-profile",
             name: parsed.name,
             protocol: parsed.protocol,
             owner: signer.address,
@@ -879,7 +879,7 @@ export function registerInitWalletCommand(program: Command): void {
       }
 
       const result = {
-        action: "init-wallet",
+        action: "init-profile",
         name: parsed.name,
         protocol: parsed.protocol,
         owner: signer.address,

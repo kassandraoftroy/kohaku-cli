@@ -1,3 +1,4 @@
+import { input } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 
@@ -27,33 +28,76 @@ type Opts = NameWalletOpts & {
   value?: string;
 };
 
+async function resolveTextKeyValue(opts: {
+  key?: string;
+  value?: string;
+  nonInteractive: boolean;
+}): Promise<{ key: string; value: string }> {
+  let key = opts.key;
+  let value = opts.value;
+
+  if (opts.nonInteractive) {
+    if (key === undefined) {
+      throw new Error("Missing --key (required with --non-interactive).");
+    }
+    if (value === undefined) {
+      throw new Error("Missing --value (required with --non-interactive).");
+    }
+    return { key, value };
+  }
+
+  if (key === undefined) {
+    key = await input({
+      message: "Text record key (e.g. url, avatar, com.twitter, stealth-address-scheme-1)",
+      validate: (v) => (v.trim() ? true : "Key is required."),
+    });
+    key = key.trim();
+  }
+
+  if (value === undefined) {
+    value = await input({
+      message: `Text record value for "${key}" (empty clears the record)`,
+    });
+  }
+
+  return { key, value };
+}
+
 export function registerSetNameTextRecordCommand(program: Command): void {
   addNameWalletOptions(
     program
       .command("set-name-text-record")
       .description("Set a text record on a top-level .eth / .gwei / .wei name")
       .requiredOption("--name <name>", "Full name including TLD (e.g. alice.wei)")
-      .requiredOption("--key <key>", "Text record key (e.g. url, avatar, com.twitter)")
-      .requiredOption("--value <value>", "Text record value (empty string clears)")
+      .option("--key <key>", "Text record key (e.g. url, avatar, com.twitter); prompted if omitted")
+      .option(
+        "--value <value>",
+        "Text record value (empty string clears); prompted if omitted"
+      )
       .option(
         "--index <n>",
-        "HD account index when the name manager/owner is not in public accounts"
+        "Only needed when the required HD index is not stored in the public accounts list yet"
       )
   ).action(async (opts: Opts) => {
     if (!opts.name?.trim()) {
       cliError("Missing --name.");
       return;
     }
-    if (opts.key === undefined) {
-      cliError("Missing --key.");
-      return;
-    }
-    if (opts.value === undefined) {
-      cliError("Missing --value.");
-      return;
-    }
 
     await withNameCommandContext(opts, async (ctx) => {
+      let key: string;
+      let value: string;
+      try {
+        ({ key, value } = await resolveTextKeyValue({
+          key: opts.key,
+          value: opts.value,
+          nonInteractive: ctx.nonInteractive,
+        }));
+      } catch (e) {
+        cliError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+
       const parsed = parseManagedName(opts.name!);
       const ownership = await readNameOwnership(ctx.client, parsed);
       const signer = resolveNameSigner({
@@ -70,14 +114,14 @@ export function registerSetNameTextRecordCommand(program: Command): void {
         client: ctx.client,
         parsed,
         ownership,
-        key: opts.key!,
-        value: opts.value!,
+        key,
+        value,
       });
 
       if (!ctx.nonInteractive) {
         console.log(
           chalk.dim(
-            `Set text ${opts.key}=${JSON.stringify(opts.value)} on ${parsed.name}`
+            `Set text ${key}=${JSON.stringify(value)} on ${parsed.name}`
           )
         );
       }
@@ -91,8 +135,8 @@ export function registerSetNameTextRecordCommand(program: Command): void {
             action: "set-name-text-record",
             name: parsed.name,
             protocol: parsed.protocol,
-            key: opts.key,
-            value: opts.value,
+            key,
+            value,
             from: signer.address,
             dryRun: true,
             transaction: {
@@ -118,15 +162,15 @@ export function registerSetNameTextRecordCommand(program: Command): void {
         from: signer.address,
         txs: [tx],
         nonInteractive: ctx.nonInteractive,
-        confirmMessage: `Set text record ${opts.key} on ${parsed.name} from ${signer.address}?`,
+        confirmMessage: `Set text record ${key} on ${parsed.name} from ${signer.address}?`,
       });
 
       const result = {
         action: "set-name-text-record",
         name: parsed.name,
         protocol: parsed.protocol,
-        key: opts.key,
-        value: opts.value,
+        key,
+        value,
         from: signer.address,
         tx: hash,
         url: etherscanTxUrl(ctx.chainId, hash!),

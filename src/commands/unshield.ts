@@ -37,6 +37,11 @@ import {
   publicAccountDerivationPath,
 } from "../utils/public-accounts";
 import {
+  formatStealthSelector,
+  makeStealthAccountsStorage,
+  parseStealthIndex,
+} from "../lib/stealth/storage.js";
+import {
   ETH_AS_ERC20,
   assertPpErc20TokenWhitelisted,
   assertTornadoPaymasterConfigured,
@@ -186,7 +191,10 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
-    .option("--to <address>", "Public recipient address")
+    .option(
+      "--to <address>",
+      "Recipient: public address, HD index address, stealth selector (s0), or name (.eth/.gwei/.wei)"
+    )
     .option(
       "--next",
       "Unshield to the next fresh public account (persisted only after a successful --broadcast)"
@@ -347,11 +355,43 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+      const stealthStorage = makeStealthAccountsStorage(walletDir, password);
       let persistFreshAccountAfterBroadcast = false;
 
       let recipient: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
       let recipientDerivationPath: string | undefined;
+
+      const applyPublicRecipient = (address: `0x${string}`) => {
+        recipient = getAddress(address) as `0x${string}`;
+        const publicAcct = findPublicAccountByAddress(publicStorage, recipient);
+        if (publicAcct) {
+          recipientPriv = as0xPrivateKey(publicAcct.priv);
+          recipientDerivationPath = publicAccountDerivationPath(publicAcct.index);
+          return;
+        }
+        const stealthAcct = stealthStorage.findByAddress(recipient);
+        if (stealthAcct) {
+          recipientPriv = as0xPrivateKey(stealthAcct.priv);
+          recipientDerivationPath = undefined;
+          return;
+        }
+        recipientPriv = undefined;
+        recipientDerivationPath = undefined;
+      };
+
+      const applyStealthRecipient = (stealthIndex: number) => {
+        const stealthAcct = stealthStorage.getAccount(stealthIndex);
+        if (!stealthAcct) {
+          throw new Error(
+            `Stealth account ${formatStealthSelector(stealthIndex)} not found in this wallet.`
+          );
+        }
+        recipient = getAddress(stealthAcct.address) as `0x${string}`;
+        recipientPriv = as0xPrivateKey(stealthAcct.priv);
+        recipientDerivationPath = undefined;
+      };
+
       if (hasNext) {
         const fresh = takeNextFreshPublicAccount(publicStorage);
         recipient = getAddress(fresh.address) as `0x${string}`;
@@ -361,18 +401,23 @@ export function registerUnshieldCommand(program: Command): void {
       } else if (hasTo) {
         const raw = opts.to!.trim();
         try {
-          recipient = await resolveAddressOrName(raw, rpcUrl) as `0x${string}`;
+          const stealthIdx = parseStealthIndex(raw);
+          if (stealthIdx !== null) {
+            applyStealthRecipient(stealthIdx);
+          } else {
+            const resolved = (await resolveAddressOrName(
+              raw,
+              rpcUrl
+            )) as `0x${string}`;
+            applyPublicRecipient(resolved);
+          }
         } catch (e) {
           cliErrorFromCaught(e);
           return;
         }
-        const acct = findPublicAccountByAddress(publicStorage, recipient);
-        recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
-        recipientDerivationPath = acct
-          ? publicAccountDerivationPath(acct.index)
-          : undefined;
       } else {
         const existingAccounts = publicStorage.getAccounts();
+        const stealthAccounts = stealthStorage.getAccounts();
         const NEXT_FRESH = "__next_fresh__";
         const CUSTOM_ADDR = "__custom__";
 
@@ -391,6 +436,12 @@ export function registerUnshieldCommand(program: Command): void {
           choices.push({
             value: acct.address,
             name: `[${acct.index}] ${acct.address}`,
+          });
+        }
+        for (const acct of stealthAccounts) {
+          choices.push({
+            value: `stealth:${acct.stealthIndex}`,
+            name: `[${formatStealthSelector(acct.stealthIndex)}] ${acct.address}`,
           });
         }
 
@@ -416,30 +467,31 @@ export function registerUnshieldCommand(program: Command): void {
             },
           });
           try {
-            recipient = await resolveAddressOrName(addr.trim(), rpcUrl) as `0x${string}`;
+            recipient = (await resolveAddressOrName(
+              addr.trim(),
+              rpcUrl
+            )) as `0x${string}`;
+            recipientPriv = undefined;
+            recipientDerivationPath = undefined;
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
+        } else if (chosen.startsWith("stealth:")) {
+          try {
+            applyStealthRecipient(Number(chosen.slice("stealth:".length)));
           } catch (e) {
             cliErrorFromCaught(e);
             return;
           }
         } else {
-          recipient = getAddress(chosen) as `0x${string}`;
-          const acct = findPublicAccountByAddress(publicStorage, recipient);
-          recipientPriv = acct ? as0xPrivateKey(acct.priv) : undefined;
-          recipientDerivationPath = acct
-            ? publicAccountDerivationPath(acct.index)
-            : undefined;
+          applyPublicRecipient(getAddress(chosen) as `0x${string}`);
         }
       }
 
       if (protocol === "railgun" && !recipientPriv) {
         cliError(
-          "Railgun unshield requires a recipient public account from this wallet (use --next or --to with a stored public address)."
-        );
-        return;
-      }
-      if (protocol === "tornado" && !recipientDerivationPath) {
-        cliError(
-          "Tornado unshield requires --to to be a public account from this wallet (or use --next) so that account can sign the EIP-7702 delegation."
+          "Railgun unshield requires --to to be a public or stealth account from this wallet (use --next, --to s0, or a stored address)."
         );
         return;
       }
@@ -800,7 +852,7 @@ export function registerUnshieldCommand(program: Command): void {
                     recipient,
                     amountWei,
                     tornadoMaxFeePerGas!,
-                    recipientDerivationPath!,
+                    recipientDerivationPath,
                     tornadoWithdrawalCount!,
                     tailCalls,
                     tornadoTailCallsGasEstimate

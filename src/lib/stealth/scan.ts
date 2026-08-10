@@ -1,6 +1,7 @@
 import checkStealthAddress from "@scopelift/stealth-address-sdk/dist/utils/crypto/checkStealthAddress.js";
 import computeStealthKey from "@scopelift/stealth-address-sdk/dist/utils/crypto/computeStealthKey.js";
 import getViewTagFromMetadata from "@scopelift/stealth-address-sdk/dist/utils/helpers/getViewTagFromMetadata.js";
+import { STEALTH_SCHEME_ID } from "eth-stealth-address-resolver";
 import { getAddress, parseAbiItem, type Hex, type Log } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -8,7 +9,6 @@ import { resolveGetLogsMaxBlockSpan } from "../../host/chunked-get-logs.js";
 import type { KohakuPublicClient } from "../../utils/rpc.js";
 import {
   STEALTH_ANNOUNCER_ADDRESS,
-  STEALTH_SCHEME_ID,
   stealthAnnouncerStartBlock,
 } from "./constants.js";
 import type { StealthKeypair } from "./keys.js";

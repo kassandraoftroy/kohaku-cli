@@ -1,12 +1,12 @@
 import { getPublicKey } from "@noble/secp256k1";
 import generateStealthMetaAddressFromKeys from "@scopelift/stealth-address-sdk/dist/utils/helpers/generateStealthMetaAddressFromKeys.js";
+import { stealthChainShortName } from "eth-stealth-address-resolver";
 import { bytesToHex, hexToBytes, type Hex } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 
 import {
   STEALTH_SPENDING_PATH,
   STEALTH_VIEWING_PATH,
-  stealthChainShortName,
 } from "./constants.js";
 
 export type StealthKeypair = {
@@ -60,27 +60,4 @@ export function deriveStealthKeypair(
     stealthMetaAddress,
     stealthMetaAddressURI: `st:${chain}:${stealthMetaAddress}`,
   };
-}
-
-/** True if value looks like a stealth meta-address URI or bare 0x meta (spending||viewing pubs). */
-export function looksLikeStealthMetaAddress(value: string): boolean {
-  const v = value.trim();
-  if (/^st:[a-z0-9]+:0x[0-9a-fA-F]+$/i.test(v)) return true;
-  // scheme-1 meta = two compressed pubs = 132 hex chars + 0x prefix.
-  if (/^0x[0-9a-fA-F]{132}$/.test(v)) return true;
-  return false;
-}
-
-export function normalizeStealthMetaAddressURI(
-  value: string,
-  chainId: bigint = 1n
-): string {
-  const v = value.trim();
-  if (/^st:[a-z0-9]+:0x/i.test(v)) return v;
-  if (/^0x[0-9a-fA-F]{132}$/.test(v)) {
-    return `st:${stealthChainShortName(chainId)}:${v}`;
-  }
-  throw new Error(
-    `Not a stealth meta-address (expected st:<chain>:0x… or 0x + 132 hex chars): ${v.slice(0, 24)}…`
-  );
 }

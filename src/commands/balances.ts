@@ -1,3 +1,4 @@
+import { createEthereumNames } from "@1001-digital/ethereum-names";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
@@ -11,9 +12,11 @@ import {
   type PrivateNoteRow,
 } from "../lib/private-notes";
 import { parseStealthStartBlock } from "../lib/stealth/scan.js";
+import { readStealthStartBlock } from "../lib/stealth/start-block-file.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -51,6 +54,47 @@ function stringifyBalancesJson(payload: unknown): string {
     (_key, value) => (typeof value === "bigint" ? value.toString() : value),
     2
   );
+}
+
+type WalletProfile = {
+  /** Reverse-resolved ENS/GNS/WNS primary for HD index 0, or empty. */
+  name: string;
+  /** HD index 0 public address used for reverse lookup, when present. */
+  account?: string;
+};
+
+/**
+ * Profile header for balances: reverse name for public index 0.
+ */
+async function resolveWalletProfile(opts: {
+  rpcUrl: string;
+  walletDir: string;
+  mnemonic: string;
+  password: string;
+}): Promise<WalletProfile> {
+  const publicStorage = makePublicAccountsStorage(
+    opts.walletDir,
+    opts.mnemonic,
+    opts.password
+  );
+  const acct0 = publicStorage.getAccount(0);
+  if (!acct0) {
+    return { name: "" };
+  }
+
+  const account = getAddress(acct0.address);
+  let name = "";
+  try {
+    const names = createEthereumNames({
+      rpcUrl: opts.rpcUrl,
+      reversePriority: ["ens", "gns", "wns"],
+    });
+    name = (await names.reverse(account))?.trim() ?? "";
+  } catch {
+    name = "";
+  }
+
+  return { name, account };
 }
 
 function parseTokensList(raw: string | undefined): `0x${string}`[] {
@@ -203,6 +247,7 @@ function printPrivateNoteRow(n: PrivateNoteRow): void {
 function printHumanBalances(opts: {
   walletName: string;
   chainId: string;
+  profile: WalletProfile;
   publicAggregated: BalanceItem[];
   publicByAddress: Record<string, BalanceItem[]>;
   publicAccountIndexByAddress?: Record<string, number>;
@@ -223,6 +268,11 @@ function printHumanBalances(opts: {
     chalk.dim(`· chain ${opts.chainId}`)
   );
   console.log(chalk.bold(` ${BAR}`));
+  console.log();
+  console.log(
+    chalk.dim("  wallet profile name: ") +
+      (opts.profile.name ? chalk.cyan(opts.profile.name) : chalk.dim("(none)"))
+  );
   console.log();
 
   printAggregatedTotalsTable(opts.publicAggregated);
@@ -342,10 +392,10 @@ export function registerBalancesCommand(program: Command): void {
     .option("--stealth-start-block <block>", cliOptions.stealthStartBlock)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: BalancesOpts) => {
-      let stealthStartBlock: bigint | undefined;
+      let stealthStartBlockFlag: bigint | undefined;
       if (opts.stealthStartBlock !== undefined) {
         try {
-          stealthStartBlock = parseStealthStartBlock(opts.stealthStartBlock);
+          stealthStartBlockFlag = parseStealthStartBlock(opts.stealthStartBlock);
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -371,6 +421,16 @@ export function registerBalancesCommand(program: Command): void {
       } catch (e) {
         cliErrorFromCaught(e);
         return;
+      }
+
+      let stealthStartBlock = stealthStartBlockFlag;
+      if (stealthStartBlock === undefined) {
+        try {
+          stealthStartBlock = readStealthStartBlock(walletDir) ?? undefined;
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
       }
 
       const password = await resolveWalletPassword({
@@ -445,6 +505,13 @@ export function registerBalancesCommand(program: Command): void {
               },
             });
 
+            const profile = await resolveWalletProfile({
+              rpcUrl,
+              walletDir,
+              mnemonic,
+              password,
+            });
+
             const privateNotesOut = snap.privateNotes;
 
             const privateBalances: Record<string, BalanceItem[]> = {};
@@ -459,6 +526,7 @@ export function registerBalancesCommand(program: Command): void {
             }
 
             const payload: Record<string, unknown> = {
+              wallet_profile_name: profile.name,
               public_balances_aggregated: snap.publicAggregated,
               public_balances_by_address: snap.publicByAddress,
               private_balances: privateBalances,
@@ -490,6 +558,7 @@ export function registerBalancesCommand(program: Command): void {
               printHumanBalances({
                 walletName,
                 chainId: chainIdString,
+                profile,
                 publicAggregated: snap.publicAggregated,
                 publicByAddress: snap.publicByAddress,
                 publicAccountIndexByAddress: snap.publicAccountIndexByAddress,

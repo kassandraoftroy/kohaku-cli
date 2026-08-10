@@ -1,5 +1,7 @@
+import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
+import { isAddress } from "viem";
 
 import {
   addNameWalletOptions,
@@ -22,13 +24,68 @@ import {
 } from "../lib/names/tx.js";
 import { logCliJson } from "../utils/cli-quiet.js";
 import { cliError } from "../utils/cli-errors.js";
-import { resolveAddressOrName } from "../utils/resolve-name.js";
+import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 
 type Opts = NameWalletOpts & {
   name?: string;
   to?: string;
   role?: string;
 };
+
+type TransferRole = "owner" | "manager" | "both";
+
+async function resolveRecipient(opts: {
+  to?: string;
+  nonInteractive: boolean;
+}): Promise<string> {
+  if (opts.to?.trim()) {
+    return opts.to.trim();
+  }
+  if (opts.nonInteractive) {
+    throw new Error("Missing --to (required with --non-interactive).");
+  }
+  const raw = await input({
+    message: "Recipient address or name (.eth / .gwei / .wei)",
+    validate: (value) => {
+      const v = value.trim();
+      if (!v) return "Recipient is required.";
+      if (!isAddress(v) && !looksLikeName(v)) {
+        return "Enter a valid Ethereum address or a name ending in .eth, .gwei, or .wei.";
+      }
+      return true;
+    },
+  });
+  return raw.trim();
+}
+
+async function resolveRole(opts: {
+  roleFlag?: string;
+  protocol: "ens" | "gns" | "wns";
+  nonInteractive: boolean;
+}): Promise<TransferRole> {
+  if (opts.roleFlag !== undefined && opts.roleFlag !== "") {
+    return parseTransferRole(opts.roleFlag);
+  }
+
+  if (opts.nonInteractive) {
+    return "both";
+  }
+
+  if (opts.protocol !== "ens") {
+    // GNS/WNS only transfer the NFT owner; skip a confusing multi-role prompt.
+    return "owner";
+  }
+
+  return await select<TransferRole>({
+    message: "What to transfer",
+    default: "both",
+    choices: [
+      { name: "both (owner + manager)", value: "both" },
+      { name: "owner", value: "owner" },
+      { name: "manager", value: "manager" },
+    ],
+  });
+}
 
 export function registerTransferNameCommand(program: Command): void {
   addNameWalletOptions(
@@ -38,29 +95,49 @@ export function registerTransferNameCommand(program: Command): void {
         "Transfer name ownership and/or ENS manager. GNS/WNS only support NFT owner transfer."
       )
       .requiredOption("--name <name>", "Full name including TLD (e.g. alice.eth)")
-      .requiredOption("--to <address-or-name>", "Recipient address or .eth/.gwei/.wei name")
+      .option(
+        "--to <address-or-name>",
+        "Recipient address or .eth/.gwei/.wei name; prompted if omitted"
+      )
       .option(
         "--role <owner|manager|both>",
-        "What to transfer (default: owner). manager/both are ENS-only",
-        "owner"
+        "What to transfer (default: both). manager/both are ENS-only; prompted if omitted"
       )
       .option(
         "--index <n>",
-        "HD account index when the required controller is not in public accounts"
+        "Only needed when the required HD index is not stored in the public accounts list yet"
       )
   ).action(async (opts: Opts) => {
     if (!opts.name?.trim()) {
       cliError("Missing --name.");
       return;
     }
-    if (!opts.to?.trim()) {
-      cliError("Missing --to.");
-      return;
-    }
 
     await withNameCommandContext(opts, async (ctx) => {
+      let toRaw: string;
+      try {
+        toRaw = await resolveRecipient({
+          to: opts.to,
+          nonInteractive: ctx.nonInteractive,
+        });
+      } catch (e) {
+        cliError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+
       const parsed = parseManagedName(opts.name!);
-      const role = parseTransferRole(opts.role);
+      let role: TransferRole;
+      try {
+        role = await resolveRole({
+          roleFlag: opts.role,
+          protocol: parsed.protocol,
+          nonInteractive: ctx.nonInteractive,
+        });
+      } catch (e) {
+        cliError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+
       const ownership = await readNameOwnership(ctx.client, parsed);
       const required = requiredAddressForTransfer(ownership, role);
       const signer = resolveNameSigner({
@@ -73,7 +150,7 @@ export function registerTransferNameCommand(program: Command): void {
         dryRun: ctx.dryRun,
       });
 
-      const to = await resolveToAddress(opts.to!, (v) =>
+      const to = await resolveToAddress(toRaw, (v) =>
         resolveAddressOrName(v, ctx.rpcUrl)
       );
 

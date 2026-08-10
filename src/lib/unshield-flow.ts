@@ -317,7 +317,7 @@ async function runUnshieldWithPlugin(
   if (opts.protocol === "railgun") {
     if (!opts.recipientPriv) {
       throw new Error(
-        "Railgun unshield requires a recipient public account from this wallet."
+        "Railgun unshield requires a recipient public or stealth account from this wallet."
       );
     }
     configureRailgunForUnshield(
@@ -326,11 +326,6 @@ async function runUnshieldWithPlugin(
       opts.chainId,
       opts.recipientPriv,
       railgunPimlicoBundlerUrl(opts.chainId)
-    );
-  }
-  if (opts.protocol === "tornado" && !opts.recipientDerivationPath) {
-    throw new Error(
-      "Tornado unshield requires a wallet public-account derivation path for the EIP-7702 delegation."
     );
   }
 
@@ -409,7 +404,7 @@ async function runUnshieldWithPlugin(
             opts.recipient,
             opts.amount,
             tornadoMaxFeePerGas!,
-            opts.recipientDerivationPath!,
+            opts.recipientDerivationPath,
             tornadoWithdrawalCount!
           )
         )

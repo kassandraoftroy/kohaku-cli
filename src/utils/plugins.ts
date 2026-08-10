@@ -359,7 +359,12 @@ export function tornadoUnshieldOptions(
   recipient: `0x${string}`,
   amountWei: bigint,
   maxFeePerGas: bigint,
-  delegationPath: string,
+  /**
+   * Optional BIP-32 path for a recoverable batch delegator (public HD account).
+   * Omit for external / stealth recipients — the SDK uses an ephemeral delegator
+   * and forwards leftovers to `recipient`.
+   */
+  delegationPath: string | undefined,
   withdrawalCount: number,
   tailCalls: readonly UnshieldTailCall[] = [],
   /** Measured execution-tail gas for user `tailCalls` (SDK `tailCallsGasEstimate`). */
@@ -371,7 +376,9 @@ export function tornadoUnshieldOptions(
 
   const base: TCPaymasterUnshieldOptions = {
     mode: "paymaster",
-    delegation: { mode: "deterministic", path: delegationPath },
+    delegation: delegationPath
+      ? { mode: "deterministic", path: delegationPath }
+      : { mode: "deterministic" },
   };
 
   // No user tails: omit `tailCalls` so the SDK forwards leftovers with the
