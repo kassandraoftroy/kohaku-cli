@@ -21,7 +21,10 @@
  * Ethereum RPC stays clearnet: viem http transport uses fetch (not Tor by default). Hosts
  * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
  */
+import { existsSync, rmSync } from "node:fs";
 import http from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { TorClient } from "tor-js/wasm-file";
 
@@ -31,6 +34,23 @@ import {
   runWithTrafficLogWallet,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
+
+/** tor-js Arti directory cache (`createAutoStorage('tor-js')`). */
+export function torJsCacheDir(): string {
+  return join(homedir(), ".local", "share", "tor-js");
+}
+
+/**
+ * Delete the on-disk tor-js cache. Fixes bootstrap failures like
+ * "corrupted data in cache: Unable to bootstrap a working directory".
+ * Next Tor start re-downloads consensus (slower first bootstrap).
+ */
+export function clearTorJsCache(): { cleared: boolean; path: string } {
+  const path = torJsCacheDir();
+  if (!existsSync(path)) return { cleared: false, path };
+  rmSync(path, { recursive: true, force: true });
+  return { cleared: true, path };
+}
 
 const PIMLICO_ORIGIN = "https://public.pimlico.io";
 const PIMLICO_ALLOWED_PATH = /^\/v2\/\d+\/rpc$/;

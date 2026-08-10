@@ -19,6 +19,7 @@ import { registerExportTornadoNoteCommand } from "./commands/export-tornado-note
 import { registerTransferCommand } from "./commands/transfer";
 import { registerTransactRawCommand } from "./commands/transact-raw";
 import { registerViewNetworkTrafficCommand } from "./commands/viewNetworkTraffic";
+import { registerClearTorCacheCommand } from "./commands/clear-tor-cache";
 import { registerRegisterNameCommand } from "./commands/register-name";
 import { registerRenewNameCommand } from "./commands/renew-name";
 import { registerTransferNameCommand } from "./commands/transfer-name";
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
   registerSeeDecryptedStorageCommand(program);
   registerSeeStealthMetaAddressCommand(program);
   registerViewNetworkTrafficCommand(program);
+  registerClearTorCacheCommand(program);
 
   await program.parseAsync(process.argv);
 }
