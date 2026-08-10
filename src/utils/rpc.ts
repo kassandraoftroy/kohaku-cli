@@ -1,81 +1,129 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { JsonRpcProvider, type Network } from "ethers";
+import {
+  createPublicClient,
+  defineChain,
+  http,
+  type Chain,
+  type PublicClient,
+  type Transport,
+} from "viem";
+import { mainnet, sepolia } from "viem/chains";
 
 import { appendNetworkTraffic, redactUrl } from "./network-traffic-log.js";
 import { resolvePimlicoBundlerUrl } from "./tor.js";
 import { expectedChainIdStringFromWalletDir } from "./wallets-util";
 
-/**
- * Detects chain/network via a throwaway provider, then always destroys it.
- * If `getNetwork()` throws (RPC down, wrong URL, TLS, etc.), the error propagates
- * after cleanup — we never build the static-network provider with a missing `Network`.
- */
-async function detectNetworkOrThrow(rpcUrl: string): Promise<Network> {
-  const bootstrap = new JsonRpcProvider(rpcUrl);
+export type KohakuPublicClient = PublicClient<Transport, Chain>;
+
+/** Default Kohaku data root: `~/.kohaku-cli`. */
+export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
+
+function chainForId(chainId: bigint, rpcUrl: string): Chain {
+  if (chainId === 1n) return mainnet;
+  if (chainId === 11155111n) return sepolia;
+  const id = Number(chainId);
+  return defineChain({
+    id,
+    name: `chain-${id}`,
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [rpcUrl] } },
+  });
+}
+
+async function detectChainId(rpcUrl: string): Promise<bigint> {
+  const res = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `RPC network detection failed for ${rpcUrl}. HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  const json = (await res.json()) as { result?: string; error?: { message?: string } };
+  if (json.error?.message) {
+    throw new Error(
+      `RPC network detection failed for ${rpcUrl}. ${json.error.message}`
+    );
+  }
+  if (!json.result) {
+    throw new Error(`RPC network detection failed for ${rpcUrl}. Missing eth_chainId result.`);
+  }
+  return BigInt(json.result);
+}
+
+function wrapFetchWithTrafficLog(rpcUrl: string): typeof fetch {
+  const redacted = redactUrl(rpcUrl);
+  return async (input, init) => {
+    const started = Date.now();
+    let rpcMethod: string | undefined;
+    try {
+      const body = init?.body;
+      if (typeof body === "string") {
+        const parsed = JSON.parse(body) as { method?: string };
+        rpcMethod = parsed.method;
+      }
+    } catch {
+      // ignore parse errors for traffic metadata
+    }
+
+    try {
+      const response = await fetch(input, init);
+      appendNetworkTraffic({
+        kind: "rpc",
+        method: "POST",
+        url: redacted,
+        via: "clearnet",
+        clearnetReason: "rpc",
+        category: "rpc",
+        ok: response.ok,
+        status: response.status,
+        durationMs: Date.now() - started,
+        rpcMethod,
+      });
+      return response;
+    } catch (err) {
+      appendNetworkTraffic({
+        kind: "rpc",
+        method: "POST",
+        url: redacted,
+        via: "clearnet",
+        clearnetReason: "rpc",
+        category: "rpc",
+        ok: false,
+        durationMs: Date.now() - started,
+        rpcMethod,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  };
+}
+
+/** Create a viem public client for the given RPC URL (chain detected on first use). */
+export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClient> {
+  let chainId: bigint;
   try {
-    return await bootstrap.getNetwork();
+    chainId = await detectChainId(rpcUrl);
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     throw new Error(
       `RPC network detection failed for ${rpcUrl}. Check the URL and that the node is reachable.\n${detail}`,
       { cause: cause instanceof Error ? cause : undefined }
     );
-  } finally {
-    bootstrap.destroy();
   }
-}
 
-function wrapProviderTrafficLog(
-  provider: JsonRpcProvider,
-  rpcUrl: string
-): JsonRpcProvider {
-  const originalSend = provider.send.bind(provider);
-  provider.send = async (method: string, params: Array<any> | Record<string, any>) => {
-    const started = Date.now();
-    try {
-      const result = await originalSend(method, params);
-      appendNetworkTraffic({
-        kind: "rpc",
-        method: "POST",
-        url: rpcUrl,
-        via: "clearnet",
-        clearnetReason: "rpc",
-        category: "rpc",
-        ok: true,
-        durationMs: Date.now() - started,
-        rpcMethod: method,
-      });
-      return result;
-    } catch (err) {
-      appendNetworkTraffic({
-        kind: "rpc",
-        method: "POST",
-        url: rpcUrl,
-        via: "clearnet",
-        clearnetReason: "rpc",
-        category: "rpc",
-        ok: false,
-        durationMs: Date.now() - started,
-        rpcMethod: method,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
-    }
-  };
-  return provider;
-}
-
-export async function makeEthersProvider(rpcUrl: string): Promise<JsonRpcProvider> {
-  const network = await detectNetworkOrThrow(rpcUrl);
-  const provider = new JsonRpcProvider(rpcUrl, network, {
-    staticNetwork: network,
+  const chain = chainForId(chainId, rpcUrl);
+  return createPublicClient({
+    chain,
+    transport: http(rpcUrl, { fetchFn: wrapFetchWithTrafficLog(rpcUrl) }),
   });
-  return wrapProviderTrafficLog(provider, redactUrl(rpcUrl));
 }
 
-/** Default Kohaku data root: `~/.kohaku-cli`. */
-export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
+/** Viem clients are stateless; kept for call-site symmetry with the old ethers provider. */
+export function disposePublicClient(_client?: KohakuPublicClient): void {}
 
 /**
  * RPC endpoint from `--rpc-url` or the `RPC_URL` environment variable (trimmed).
@@ -99,16 +147,73 @@ export async function getRpcChainIdMatchingWallet(
   walletDir: string
 ): Promise<bigint> {
   const expectedStr = expectedChainIdStringFromWalletDir(walletDir);
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const chainId = (await rpc.getNetwork()).chainId;
-    if (chainId.toString() !== expectedStr) {
-      throw new Error(
-        `RPC chainId ${chainId.toString()} does not match wallet chainId ${expectedStr}.`
-      );
-    }
-    return chainId;
-  } finally {
-    rpc.destroy();
+  const client = await makePublicClient(rpcUrl);
+  const chainId = BigInt(await client.getChainId());
+  if (chainId.toString() !== expectedStr) {
+    throw new Error(
+      `RPC chainId ${chainId.toString()} does not match wallet chainId ${expectedStr}.`
+    );
   }
+  return chainId;
+}
+
+/** Public HTTP RPCs used when `--rpc-url` / `RPC_URL` is unset (create-wallet seed timestamp). */
+const PUBLIC_RPC_URLS: Record<"mainnet" | "sepolia", readonly string[]> = {
+  mainnet: [
+    "https://cloudflare-eth.com",
+    "https://ethereum.publicnode.com",
+    "https://rpc.ankr.com/eth",
+  ],
+  sepolia: [
+    "https://ethereum-sepolia-rpc.publicnode.com",
+    "https://rpc.sepolia.org",
+    "https://rpc2.sepolia.org",
+  ],
+};
+
+function publicRpcCandidates(testnet: boolean): readonly string[] {
+  return testnet ? PUBLIC_RPC_URLS.sepolia : PUBLIC_RPC_URLS.mainnet;
+}
+
+/**
+ * Current block height for mainnet or Sepolia.
+ * Prefers `rpcUrl` when provided (must match the network); otherwise tries public RPCs.
+ */
+export async function fetchCurrentBlockNumber(opts: {
+  testnet: boolean;
+  /** Preferred RPC (e.g. `--rpc-url` / `RPC_URL`). */
+  rpcUrl?: string;
+}): Promise<{ blockNumber: bigint; rpcUrlUsed: string }> {
+  const expectedChainId = opts.testnet ? 11155111n : 1n;
+  const preferred = opts.rpcUrl?.trim();
+  const candidates = preferred
+    ? [preferred, ...publicRpcCandidates(opts.testnet).filter((u) => u !== preferred)]
+    : [...publicRpcCandidates(opts.testnet)];
+
+  const errors: string[] = [];
+  for (const url of candidates) {
+    try {
+      const client = await makePublicClient(url);
+      try {
+        const chainId = BigInt(await client.getChainId());
+        if (chainId !== expectedChainId) {
+          throw new Error(
+            `chain ID ${chainId.toString()} (expected ${expectedChainId.toString()})`
+          );
+        }
+        const blockNumber = await client.getBlockNumber();
+        return { blockNumber, rpcUrlUsed: url };
+      } finally {
+        disposePublicClient(client);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`${url}: ${msg}`);
+    }
+  }
+
+  throw new Error(
+    `Could not fetch current block for ${opts.testnet ? "Sepolia" : "mainnet"}.\n` +
+      errors.map((line) => `  - ${line}`).join("\n")
+  );
 }

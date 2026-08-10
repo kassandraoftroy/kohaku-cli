@@ -32,7 +32,9 @@ export type TrafficClearnetReason =
   | "tor-disabled"
   | "rpc"
   /** Tor failed for a GitHub proving-artifact download; retried on clearnet. */
-  | "artifact-fallback";
+  | "artifact-fallback"
+  /** Tor failed/timed out for saga CDN (Tornado cold sync); retried on clearnet. */
+  | "saga-fallback";
 
 export type TrafficCategory =
   | "pimlico"
@@ -246,8 +248,24 @@ export function clearNetworkTrafficLog(walletDir: string): boolean {
   return true;
 }
 
+export function isLocalEntry(entry: NetworkTrafficEntry): boolean {
+  if (entry.clearnetReason === "loopback") return true;
+  try {
+    const h = new URL(entry.url).hostname.toLowerCase();
+    return (
+      h === "localhost" ||
+      h === "127.0.0.1" ||
+      h === "::1" ||
+      h === "[::1]" ||
+      h.endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function formatTrafficEntryLine(entry: NetworkTrafficEntry): string {
-  const via = entry.via === "tor" ? "TOR" : "CLR";
+  const via = entry.via === "tor" ? "TOR" : isLocalEntry(entry) ? "LCL" : "CLR";
   const status =
     entry.status != null
       ? String(entry.status)

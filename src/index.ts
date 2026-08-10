@@ -10,12 +10,21 @@ import { registerListWalletsCommand } from "./commands/listWallets";
 import { registerNextFreshAddressCommand } from "./commands/nextFreshAddress";
 import { registerRevealSeedPhraseCommand } from "./commands/revealSeedPhrase";
 import { registerSeeDecryptedStorageCommand } from "./commands/seeDecryptedStorage";
+import { registerSeeStealthMetaAddressCommand } from "./commands/see-stealth-meta-address";
 import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
+import { registerImportTornadoNoteCommand } from "./commands/import-tornado-note";
+import { registerExportTornadoNoteCommand } from "./commands/export-tornado-note";
 import { registerTransferCommand } from "./commands/transfer";
 import { registerTransactRawCommand } from "./commands/transact-raw";
 import { registerViewNetworkTrafficCommand } from "./commands/viewNetworkTraffic";
-// import { registerTuiCommand } from "./commands/tui";
+import { registerRegisterNameCommand } from "./commands/register-name";
+import { registerRenewNameCommand } from "./commands/renew-name";
+import { registerTransferNameCommand } from "./commands/transfer-name";
+import { registerSetNameTextRecordCommand } from "./commands/set-name-text-record";
+import { registerSetNameWebsiteCommand } from "./commands/set-name-website";
+import { registerSetNameReverseRecordCommand } from "./commands/set-name-reverse-record";
+import { registerInitProfileCommand } from "./commands/init-profile";
 import { cliErrorFromCaught } from "./utils/cli-errors";
 
 async function main(): Promise<void> {
@@ -31,14 +40,23 @@ async function main(): Promise<void> {
   registerRevealSeedPhraseCommand(program);
   registerListWalletsCommand(program);
   registerNextFreshAddressCommand(program);
+  registerInitProfileCommand(program);
   registerShieldCommand(program);
   registerUnshieldCommand(program);
+  registerImportTornadoNoteCommand(program);
+  registerExportTornadoNoteCommand(program);
   registerBalancesCommand(program);
   registerTransferCommand(program);
   registerTransactRawCommand(program);
+  registerRegisterNameCommand(program);
+  registerRenewNameCommand(program);
+  registerTransferNameCommand(program);
+  registerSetNameTextRecordCommand(program);
+  registerSetNameWebsiteCommand(program);
+  registerSetNameReverseRecordCommand(program);
   registerSeeDecryptedStorageCommand(program);
+  registerSeeStealthMetaAddressCommand(program);
   registerViewNetworkTrafficCommand(program);
-  // registerTuiCommand(program);
 
   await program.parseAsync(process.argv);
 }

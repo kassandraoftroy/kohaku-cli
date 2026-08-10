@@ -1,36 +1,44 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
-import {
-  Contract,
-  Interface,
-  Wallet,
-  formatUnits,
-  getAddress,
-  isAddress,
-  parseUnits,
-} from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits, type Address } from "viem";
 import { Mnemonic } from "derive-railgun-keys";
 
-import { makeEthersProvider } from "../utils/rpc";
+import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc";
 import { withTor } from "../utils/tor";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
 import {
-  assertTornadoEthOnly,
-  assertTornadoShieldAmount,
   ETH_AS_ERC20,
   prepareProtocolShield,
   type SupportedProtocol,
 } from "../utils/plugins";
+import { assertTornadoDepositAmount } from "../utils/tornado-pools.js";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+import {
+  makeStealthAccountsStorage,
+  parseStealthIndex,
+} from "./stealth/storage.js";
+import {
+  addressFromPrivateKey,
+  encodeContractCall,
+  makeWalletClient,
+  simulateCallOrThrow,
+  sendTransactionAndWait,
+} from "../utils/viem-tx.js";
 
 export type PublicAccountWithBalance = {
+  /** HD public-account index, or `-1` when this row is a stealth account. */
   index: number;
+  /** Present when `kind === "stealth"`. */
+  stealthIndex?: number;
+  kind?: "hd" | "stealth";
   address: string;
   priv: string;
   balance: bigint;
   ethBalance: bigint;
+  /** Optional identity name attached to a stealth payment. */
+  stealthName?: string;
 };
 
 function formatEthDisplay(balanceWei: bigint): string {
@@ -44,6 +52,13 @@ function formatEthDisplay(balanceWei: bigint): string {
   const keepDigits = Math.max(6, firstNonZero + 1);
   const clipped = fracRaw.slice(0, keepDigits).replace(/0+$/, "");
   return clipped ? `${whole}.${clipped}` : whole;
+}
+
+export function formatAccountSelector(acct: PublicAccountWithBalance): string {
+  if (acct.kind === "stealth" && acct.stealthIndex !== undefined) {
+    return `s${acct.stealthIndex}`;
+  }
+  return String(acct.index);
 }
 
 export function formatPublicAccountBalanceLabel(
@@ -69,9 +84,13 @@ export type ShieldTxPayload = {
 
 export type ShieldPlan = {
   senderAddress: string;
+  /** @deprecated use approvals */
   approve: { to: string; data: string; value: bigint } | null;
+  approvals: Array<{ to: string; data: string; value: bigint }>;
   shieldTx: { to: string; data: string; value: bigint };
   shieldTxs: Array<{ to: string; data: string; value: bigint }>;
+  /** Full ordered call list (approvals + shield txs). */
+  calls: Array<{ to: string; data: string; value: bigint }>;
   transactions: ShieldTxPayload[];
 };
 
@@ -91,10 +110,16 @@ export function publicAccountsWithBalanceFromSnapshot(
   tokenMeta: ResolvedTokenMeta
 ): PublicAccountWithBalance[] {
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+  const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const tokenKey = tokenMeta.tokenAddress.toLowerCase();
 
-  return publicStorage.getAccounts().map((acct) => {
-    const rows = snap.publicByAddress[acct.address];
+  const fromRows = (
+    address: string,
+    priv: string,
+    index: number,
+    extra: Partial<PublicAccountWithBalance>
+  ): PublicAccountWithBalance => {
+    const rows = snap.publicByAddress[address];
     const ethRow = rows?.find((r) => r.symbol === "ETH");
     const tokenRow = tokenMeta.isEth
       ? ethRow
@@ -108,13 +133,26 @@ export function publicAccountsWithBalanceFromSnapshot(
         : 0n;
 
     return {
-      index: acct.index,
-      address: acct.address,
-      priv: acct.priv,
+      index,
+      address,
+      priv,
       balance,
       ethBalance,
+      ...extra,
     };
-  });
+  };
+
+  const hd = publicStorage.getAccounts().map((acct) =>
+    fromRows(acct.address, acct.priv, acct.index, { kind: "hd" })
+  );
+  const stealth = stealthStorage.getAccounts().map((acct) =>
+    fromRows(acct.address, acct.priv, -1, {
+      kind: "stealth",
+      stealthIndex: acct.stealthIndex,
+      stealthName: acct.name,
+    })
+  );
+  return [...hd, ...stealth];
 }
 
 export async function listPublicAccountsWithBalance(
@@ -125,19 +163,50 @@ export async function listPublicAccountsWithBalance(
   tokenMeta: ResolvedTokenMeta
 ): Promise<PublicAccountWithBalance[]> {
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+  const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const allPublicAccounts = publicStorage.getAccounts();
-  const rpc = await makeEthersProvider(rpcUrl);
+  const stealthAccounts = stealthStorage.getAccounts();
+  const client = await makePublicClient(rpcUrl);
   try {
     const withBalances: PublicAccountWithBalance[] = [];
     for (const acct of allPublicAccounts) {
-      const ethBalance = await rpc.getBalance(acct.address);
+      const ethBalance = await client.getBalance({
+        address: acct.address as `0x${string}`,
+      });
       const bal = tokenMeta.isEth
         ? ethBalance
-        : await new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc).balanceOf(
-            acct.address
-          );
+        : await client.readContract({
+            address: tokenMeta.tokenAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [acct.address as `0x${string}`],
+          });
       withBalances.push({
         index: acct.index,
+        kind: "hd",
+        address: acct.address,
+        priv: acct.priv,
+        balance: bal,
+        ethBalance,
+      });
+    }
+    for (const acct of stealthAccounts) {
+      const ethBalance = await client.getBalance({
+        address: acct.address as `0x${string}`,
+      });
+      const bal = tokenMeta.isEth
+        ? ethBalance
+        : await client.readContract({
+            address: tokenMeta.tokenAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [acct.address as `0x${string}`],
+          });
+      withBalances.push({
+        index: -1,
+        kind: "stealth",
+        stealthIndex: acct.stealthIndex,
+        stealthName: acct.name,
         address: acct.address,
         priv: acct.priv,
         balance: bal,
@@ -146,7 +215,7 @@ export async function listPublicAccountsWithBalance(
     }
     return withBalances;
   } finally {
-    rpc.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -155,26 +224,42 @@ function encodeErc20ApproveTx(
   spender: string,
   amount: bigint
 ): { to: string; data: string; value: bigint } {
-  const iface = new Interface(ERC20_ABI);
-  const data = iface.encodeFunctionData("approve", [spender, amount]);
+  const data = encodeContractCall(ERC20_ABI, "approve", [spender, amount]);
   return { to: tokenAddress, data, value: 0n };
 }
 
-function toShieldTxs(
-  op: unknown,
-  opts?: { allowMultiple?: boolean }
-): Array<{ to: string; data: string; value: bigint }> {
-  let txs: Array<{ to: string; data: string; value: bigint }> | null = null;
+const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
+
+export type ShieldCall = { to: string; data: string; value: bigint };
+
+/** Decode ERC-20 `approve(address,uint256)` calldata, or null if not an approve. */
+export function tryDecodeErc20Approve(data: string): {
+  spender: Address;
+  amount: bigint;
+} | null {
+  const hex = data.toLowerCase();
+  if (!hex.startsWith(ERC20_APPROVE_SELECTOR) || hex.length < 2 + 8 + 64 + 64) {
+    return null;
+  }
+  const spenderWord = hex.slice(10, 74);
+  const amountWord = hex.slice(74, 138);
+  const spender = getAddress(`0x${spenderWord.slice(24)}`);
+  return { spender, amount: BigInt(`0x${amountWord}`) };
+}
+
+/** Parse prepareShield() into one or more deposit/shield calls (may include approves). */
+export function toShieldTxs(op: unknown): ShieldCall[] {
+  let txs: ShieldCall[] | null = null;
 
   if (Array.isArray(op)) {
-    txs = op as Array<{ to: string; data: string; value: bigint }>;
+    txs = op as ShieldCall[];
   } else if (
     typeof op === "object" &&
     op !== null &&
     "txns" in op &&
     Array.isArray((op as { txns?: unknown[] }).txns)
   ) {
-    txs = (op as { txns: Array<{ to: string; data: string; value: bigint }> }).txns;
+    txs = (op as { txns: ShieldCall[] }).txns;
   }
 
   if (!txs) {
@@ -184,32 +269,122 @@ function toShieldTxs(
   if (txs.length === 0) {
     throw new Error("prepareShield() returned no transactions.");
   }
-
-  if (!opts?.allowMultiple && txs.length !== 1) {
-    throw new Error(
-      `Expected prepareShield() to return exactly 1 tx, got ${txs.length}.`
-    );
-  }
   return txs;
 }
 
+/**
+ * Split prepareShield txs into deposit calls + any plugin-embedded ERC-20 approves.
+ * Tornado ERC-20 embeds one `approve(pool, denomination)` per deposit; we strip
+ * those and re-emit a single aggregated approve per pool.
+ */
+export function partitionShieldTxs(txs: ShieldCall[]): {
+  deposits: ShieldCall[];
+  /** Aggregated allowance needed per pool/spender (from plugin approve txs). */
+  approvalNeededBySpender: Map<string, bigint>;
+  /** Token contract from the first approve tx (when present). */
+  approvalToken: string | undefined;
+} {
+  const deposits: ShieldCall[] = [];
+  const approvalNeededBySpender = new Map<string, bigint>();
+  let approvalToken: string | undefined;
+
+  for (const tx of txs) {
+    const decoded = tryDecodeErc20Approve(tx.data);
+    if (decoded && tx.value === 0n) {
+      approvalToken = getAddress(tx.to);
+      const key = getAddress(decoded.spender);
+      approvalNeededBySpender.set(
+        key,
+        (approvalNeededBySpender.get(key) ?? 0n) + decoded.amount
+      );
+      continue;
+    }
+    deposits.push(tx);
+  }
+
+  return { deposits, approvalNeededBySpender, approvalToken };
+}
+
+/**
+ * Build ERC-20 approval calls the consumer must submit before deposits.
+ * - Tornado: aggregates plugin per-deposit approves into one approve per pool
+ *   (e.g. 2×1000 + 5×100 → approve 2000 to 1000-pool, 500 to 100-pool).
+ * - Railgun / others: if prepareShield has no approves, approve `amount` to each
+ *   unique deposit target (non-payable calls only).
+ */
+export async function resolveShieldApprovalCalls(opts: {
+  client: KohakuPublicClient;
+  tokenAddress: string;
+  senderAddress: string;
+  amount: bigint;
+  /** Raw prepareShield txs (may include embedded approves). */
+  shieldTxs: ShieldCall[];
+}): Promise<{
+  approvals: ShieldCall[];
+  /** Deposit/shield calls only (approves stripped). */
+  deposits: ShieldCall[];
+}> {
+  const { deposits, approvalNeededBySpender, approvalToken } = partitionShieldTxs(
+    opts.shieldTxs
+  );
+  const token = approvalToken ?? getAddress(opts.tokenAddress);
+
+  if (approvalNeededBySpender.size === 0) {
+    // No plugin-embedded approves: approve full amount to each unique ERC-20
+    // deposit target (Railgun / Privacy Pools style).
+    for (const tx of deposits) {
+      if (tx.value > 0n) continue;
+      const key = getAddress(tx.to);
+      if (!approvalNeededBySpender.has(key)) {
+        approvalNeededBySpender.set(key, opts.amount);
+      }
+    }
+  }
+
+  const approvals: ShieldCall[] = [];
+  for (const [spender, approveAmount] of approvalNeededBySpender) {
+    if (approveAmount <= 0n) continue;
+    const allowance = await opts.client.readContract({
+      address: token as `0x${string}`,
+      abi: ERC20_ABI,
+      functionName: "allowance",
+      args: [
+        opts.senderAddress as `0x${string}`,
+        spender as `0x${string}`,
+      ],
+    });
+    if (allowance < approveAmount) {
+      approvals.push(encodeErc20ApproveTx(token, spender, approveAmount));
+    }
+  }
+
+  return { approvals, deposits };
+}
+
+/** Approvals first, then shield/deposit calls — the UserOp / EOA call list. */
+export function buildShieldCallList(
+  approvals: ShieldCall[],
+  deposits: ShieldCall[]
+): ShieldCall[] {
+  return [...approvals, ...deposits];
+}
+
 export async function simulateTransactionOrThrow(
-  rpc: Awaited<ReturnType<typeof makeEthersProvider>>,
+  client: KohakuPublicClient,
   tx: { to: string; from: string; data: string; value: bigint; gasLimit?: bigint },
   stepLabel: string
 ): Promise<void> {
-  try {
-    await rpc.call({
+  await simulateCallOrThrow(
+    client,
+    {
       to: tx.to,
       from: tx.from,
       data: tx.data,
       value: tx.value,
-      gasLimit: tx.gasLimit,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${stepLabel} simulation failed: ${msg}`);
-  }
+      gas: tx.gasLimit,
+    },
+    stepLabel
+  );
 }
 
 export function resolveShieldSender(opts: {
@@ -225,6 +400,22 @@ export function resolveShieldSender(opts: {
     opts.mnemonic,
     opts.password
   );
+  const stealthStorage = makeStealthAccountsStorage(
+    opts.walletDir,
+    opts.password
+  );
+
+  const stealthIdx = parseStealthIndex(opts.fromValue);
+  if (stealthIdx !== null) {
+    const account = stealthStorage.getAccount(stealthIdx);
+    if (!account) {
+      throw new Error(
+        `Stealth account s${stealthIdx} not found. Run balances (or init-profile) to scan announcements.`
+      );
+    }
+    return { senderAddress: account.address, senderPrivateKey: account.priv };
+  }
+
   const fromIndex = parseFromIndex(opts.fromValue);
   if (fromIndex !== null) {
     const account = publicStorage.getAccount(fromIndex);
@@ -233,7 +424,7 @@ export function resolveShieldSender(opts: {
     }
     if (opts.allowDeriveFromMnemonic || opts.dryRun) {
       const priv = Mnemonic.to0xPrivateKeyByIndex(opts.mnemonic, fromIndex);
-      return { senderAddress: new Wallet(priv).address, senderPrivateKey: priv };
+      return { senderAddress: addressFromPrivateKey(priv), senderPrivateKey: priv };
     }
     throw new Error(
       `Public account index ${fromIndex} not found. Derive from mnemonic is not enabled.`
@@ -247,14 +438,23 @@ export function resolveShieldSender(opts: {
     if (match) {
       return { senderAddress, senderPrivateKey: match.priv };
     }
+    const stealthMatch = stealthStorage.findByAddress(senderAddress);
+    if (stealthMatch) {
+      return {
+        senderAddress: getAddress(stealthMatch.address),
+        senderPrivateKey: stealthMatch.priv,
+      };
+    }
     if (opts.dryRun) {
       return { senderAddress, senderPrivateKey: undefined };
     }
     throw new Error(
-      `Address ${senderAddress} is not in this wallet's public accounts.`
+      `Address ${senderAddress} is not in this wallet's public or stealth accounts.`
     );
   }
-  throw new Error("--from must be either a valid address or a non-negative index.");
+  throw new Error(
+    "--from must be a non-negative HD index, a stealth selector (s0), or an address."
+  );
 }
 
 export async function prepareShieldPlan(opts: {
@@ -294,8 +494,12 @@ export async function prepareShieldPlan(opts: {
   });
 
   if (protocol === "tornado") {
-    assertTornadoEthOnly(tokenMeta.isEth);
-    assertTornadoShieldAmount(chainId, amount);
+    assertTornadoDepositAmount(chainId, amount, {
+      isEth: tokenMeta.isEth,
+      tokenAddress: tokenMeta.tokenAddress,
+      symbol: tokenMeta.symbol,
+      decimals: tokenMeta.decimals,
+    });
   }
 
   return withTor(!withoutTor, { rpcUrl, walletDir }, () =>
@@ -325,39 +529,44 @@ export async function prepareShieldPlan(opts: {
               };
 
         const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
-        const shieldTxs = toShieldTxs(op, {
-          allowMultiple: protocol === "tornado",
-        });
-        const shieldTx = shieldTxs[0]!;
+        const rawTxs = toShieldTxs(op);
 
-        let approve: { to: string; data: string; value: bigint } | null = null;
-        if (!tokenMeta.isEth) {
-          const erc20Read = new Contract(tokenMeta.tokenAddress, ERC20_ABI, rpc);
-          const allowance: bigint = await erc20Read.allowance(senderAddress, shieldTx.to);
-          if (allowance < amount) {
-            approve = encodeErc20ApproveTx(tokenMeta.tokenAddress, shieldTx.to, amount);
-          }
-        }
-
-        const transactions: ShieldTxPayload[] = [];
-        if (approve) {
-          transactions.push({
-            data: approve.data,
-            to: approve.to,
-            from: senderAddress,
-            value: approve.value.toString(),
+        let approvals: ShieldCall[] = [];
+        let deposits: ShieldCall[];
+        if (tokenMeta.isEth) {
+          const parted = partitionShieldTxs(rawTxs);
+          deposits = parted.deposits;
+        } else {
+          const resolved = await resolveShieldApprovalCalls({
+            client: rpc,
+            tokenAddress: tokenMeta.tokenAddress,
+            senderAddress,
+            amount,
+            shieldTxs: rawTxs,
           });
+          approvals = resolved.approvals;
+          deposits = resolved.deposits;
         }
-        for (const tx of shieldTxs) {
-          transactions.push({
-            data: tx.data,
-            to: tx.to,
-            from: senderAddress,
-            value: tx.value.toString(),
-          });
-        }
+        const shieldTx = deposits[0]!;
+        const shieldTxs = deposits;
+        const calls = buildShieldCallList(approvals, deposits);
 
-        return { senderAddress, approve, shieldTx, shieldTxs, transactions };
+        const transactions: ShieldTxPayload[] = calls.map((tx) => ({
+          data: tx.data,
+          to: tx.to,
+          from: senderAddress,
+          value: tx.value.toString(),
+        }));
+
+        return {
+          senderAddress,
+          approve: approvals[0] ?? null,
+          approvals,
+          shieldTx,
+          shieldTxs,
+          calls,
+          transactions,
+        };
       } finally {
         dispose();
       }
@@ -367,8 +576,9 @@ export async function prepareShieldPlan(opts: {
 }
 
 export type BroadcastShieldResult = {
-  type: "approval" | "shield";
+  type: "approval" | "shield" | "eip7702-userop";
   hash: string;
+  userOpHash?: string;
 }[];
 
 export async function broadcastShield(opts: {
@@ -388,7 +598,7 @@ export async function broadcastShield(opts: {
     ...opts,
     allowDeriveFromMnemonic: opts.allowDeriveFromMnemonic ?? true,
   });
-  const { senderAddress, approve, shieldTx, shieldTxs } = plan;
+  const { senderAddress, calls } = plan;
 
   const sender = resolveShieldSender({
     fromValue: opts.fromValue,
@@ -413,29 +623,9 @@ export async function broadcastShield(opts: {
     chainId: opts.chainId,
   };
   const { rpc, dispose } = await rpcForWalletOps(ctx);
-  const results: BroadcastShieldResult = [];
   try {
-    const signer = new Wallet(sender.senderPrivateKey, rpc);
-
-    if (approve && !opts.tokenMeta.isEth) {
-      await simulateTransactionOrThrow(
-        rpc,
-        {
-          to: opts.tokenMeta.tokenAddress,
-          from: senderAddress,
-          data: approve.data,
-          value: 0n,
-        },
-        "Approval transaction"
-      );
-      const erc20 = new Contract(opts.tokenMeta.tokenAddress, ERC20_ABI, signer);
-      const t = await erc20.approve(shieldTx.to, opts.amount);
-      await t.wait();
-      results.push({ type: "approval", hash: t.hash });
-    }
-
-    for (let i = 0; i < shieldTxs.length; i++) {
-      const tx = shieldTxs[i]!;
+    if (calls.length === 1) {
+      const tx = calls[0]!;
       await simulateTransactionOrThrow(
         rpc,
         {
@@ -443,22 +633,45 @@ export async function broadcastShield(opts: {
           from: senderAddress,
           data: tx.data,
           value: tx.value,
-          gasLimit: 2000000n,
         },
-        shieldTxs.length > 1
-          ? `Shield transaction (${i + 1}/${shieldTxs.length})`
-          : "Shield transaction"
+        "Shield transaction"
       );
-      const s = await signer.sendTransaction({
-        to: tx.to,
-        data: tx.data,
-        value: tx.value,
-        gasLimit: 2000000,
-      });
-      await s.wait();
-      results.push({ type: "shield", hash: s.hash });
     }
-    return results;
+    // Multi-call UserOp: skip per-call eth_call (dependent payloads). Bundler
+    // prepare inside sendEip7702BatchUserOperation validates the full batch.
+
+    if (calls.length > 1) {
+      const { sendEip7702BatchUserOperation } = await import(
+        "../utils/eip7702-batch-userop.js"
+      );
+      const sent = await sendEip7702BatchUserOperation({
+        client: rpc,
+        privateKey: sender.senderPrivateKey,
+        chainId: opts.chainId,
+        calls,
+      });
+      return [
+        {
+          type: "eip7702-userop",
+          hash: sent.txHash,
+          userOpHash: sent.userOpHash,
+        },
+      ];
+    }
+
+    const tx = calls[0]!;
+    const walletClient = makeWalletClient(
+      sender.senderPrivateKey,
+      rpc,
+      opts.rpcUrl
+    );
+    const hash = await sendTransactionAndWait(walletClient, rpc, {
+      to: tx.to,
+      data: tx.data,
+      value: tx.value,
+      gas: 2_000_000n,
+    });
+    return [{ type: "shield", hash }];
   } finally {
     dispose();
   }

@@ -2,26 +2,43 @@ import { confirm, select } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { Wallet, getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 
 import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
+  parseFromIndex,
   resolveShieldSender,
   simulateTransactionOrThrow,
 } from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import {
+  estimateEip7702BatchUserOpFee,
+  needsSimple7702Authorization,
+  sendEip7702BatchUserOperation,
+} from "../utils/eip7702-batch-userop.js";
+import {
+  estimateEoaTxFeePreview,
+  feeConfirmLine,
+  printFeePreview,
+  sumEoaFeePreviews,
+  type FeePreview,
+} from "../utils/fee-preview.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import { readSeedKeystore } from "../utils/mnemonic";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  makeEthersProvider,
+  makePublicClient,
+  disposePublicClient,
   resolveRpcUrl,
 } from "../utils/rpc";
+import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { runWithWalletTrafficLog } from "../utils/tor";
+import { resolveAddressOrName } from "../utils/resolve-name.js";
+import { makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -140,18 +157,41 @@ async function maybeConfirm(nonInteractive: boolean, message: string): Promise<v
 
 function printDryRunInteractive(
   transactions: TxPayloadJson[],
-  senderAddress: string
+  senderAddress: string,
+  batchAsUserOp: boolean
 ): void {
   console.log();
-  console.log(chalk.bold("Planned transactions (not submitted)"));
   console.log(
-    chalk.dim("Add --broadcast to sign and send these transactions on-chain from the CLI.")
+    chalk.bold(
+      batchAsUserOp
+        ? "Planned EIP-7702 UserOperation (not submitted)"
+        : "Planned transactions (not submitted)"
+    )
+  );
+  console.log(
+    chalk.dim(
+      batchAsUserOp
+        ? "Add --broadcast to submit all calls as a single Pimlico UserOp (EIP-7702 Simple7702Account)."
+        : "Add --broadcast to sign and send these transactions on-chain from the CLI."
+    )
   );
   console.log();
   console.log(chalk.dim(`Sender: ${senderAddress}`));
+  if (batchAsUserOp) {
+    console.log(chalk.dim(`Implementation: ${SIMPLE_7702_IMPLEMENTATION}`));
+    console.log(
+      chalk.dim(
+        `Calls: ${transactions.length} (batched via executeBatch in one UserOp)`
+      )
+    );
+  }
   for (let i = 0; i < transactions.length; i++) {
     console.log(
-      chalk.cyan(`Transaction ${i + 1}/${transactions.length}:`),
+      chalk.cyan(
+        batchAsUserOp
+          ? `Call ${i + 1}/${transactions.length}:`
+          : `Transaction ${i + 1}/${transactions.length}:`
+      ),
       jsonStringifyWithBigInt(transactions[i])
     );
   }
@@ -160,14 +200,16 @@ function printDryRunInteractive(
 export function registerTransactRawCommand(program: Command): void {
   program
     .command("transact-raw")
-    .description("Send one or more raw contract calls from a public account")
+    .description(
+      "Send one or more raw contract calls from a public account (2+ calls → one EIP-7702 UserOp via Pimlico)"
+    )
     .requiredOption(
       "--targets <addresses>",
       "Comma-separated contract addresses to call (same order as --payloads)"
     )
     .requiredOption(
       "--payloads <hex>",
-      "Comma-separated calldata hex strings (same order as --targets)"
+      "Comma-separated calldata hex strings (same order as --targets). Two or more are batched into a single EIP-7702 UserOperation."
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
@@ -182,7 +224,7 @@ export function registerTransactRawCommand(program: Command): void {
     )
     .option(
       "--broadcast",
-      "Sign and submit on-chain (omit to simulate / print transaction payloads only)"
+      "Sign and submit on-chain (one EOA tx, or one EIP-7702 UserOp when 2+ calls)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
@@ -257,6 +299,15 @@ export function registerTransactRawCommand(program: Command): void {
       const dryRun = !broadcast;
       let fromValue = opts.from ?? "";
 
+      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+        try {
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
       if (!fromValue && opts.nonInteractive) {
         cliError("Missing --from in non-interactive mode.");
         return;
@@ -328,7 +379,7 @@ export function registerTransactRawCommand(program: Command): void {
 
       const rawTxs = buildRawTransactions(targets, payloads, values);
       await runWithWalletTrafficLog(walletDir, async () => {
-      const rpc = await makeEthersProvider(rpcUrl);
+      const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
 
@@ -339,27 +390,90 @@ export function registerTransactRawCommand(program: Command): void {
           from: senderAddress,
           value: tx.value.toString(),
         }));
+        const batchAsUserOp = rawTxs.length > 1;
 
-        for (let i = 0; i < rawTxs.length; i++) {
-          const tx = rawTxs[i]!;
-          await simulateTransactionOrThrow(
-            rpc,
-            {
-              to: tx.to,
-              from: senderAddress,
-              data: tx.data,
-              value: tx.value,
-            },
-            `Transaction ${i + 1}/${rawTxs.length}`
-          );
+        // Single EOA: eth_call each tx. Multi-call UserOp: skip isolated eth_calls —
+        // later payloads often depend on earlier ones (e.g. approve then spend).
+        // Batch validity is checked via bundler prepareUserOperation in the fee estimate.
+        if (!batchAsUserOp) {
+          for (let i = 0; i < rawTxs.length; i++) {
+            const tx = rawTxs[i]!;
+            await simulateTransactionOrThrow(
+              client,
+              {
+                to: tx.to,
+                from: senderAddress,
+                data: tx.data,
+                value: tx.value,
+              },
+              `Transaction ${i + 1}/${rawTxs.length}`
+            );
+          }
         }
 
         if (dryRun) {
-          if (opts.nonInteractive) {
-            logCliJson({ from: senderAddress, transactions });
+          let needsDelegation: boolean | undefined;
+          let fees: FeePreview;
+          if (batchAsUserOp) {
+            needsDelegation = await needsSimple7702Authorization(
+              client,
+              senderAddress as `0x${string}`
+            );
+            fees = await estimateEip7702BatchUserOpFee({
+              client,
+              chainId,
+              senderAddress,
+              calls: rawTxs,
+              privateKey: senderPrivateKey,
+            });
           } else {
-            printDryRunInteractive(transactions, senderAddress);
-            console.log(chalk.green("✔ Raw transaction simulation succeeded."));
+            const parts: FeePreview[] = [];
+            for (const tx of rawTxs) {
+              parts.push(
+                await estimateEoaTxFeePreview(client, {
+                  to: tx.to,
+                  from: senderAddress,
+                  data: tx.data,
+                  value: tx.value,
+                })
+              );
+            }
+            fees = sumEoaFeePreviews(parts);
+          }
+          if (opts.nonInteractive) {
+            logCliJson({
+              from: senderAddress,
+              fees,
+              ...(batchAsUserOp
+                ? {
+                    mode: "eip7702-userop",
+                    implementation: SIMPLE_7702_IMPLEMENTATION,
+                    delegation: needsDelegation
+                      ? "will-include-in-userop"
+                      : "already-set",
+                    calls: transactions,
+                  }
+                : { transactions }),
+            });
+          } else {
+            printDryRunInteractive(transactions, senderAddress, batchAsUserOp);
+            if (batchAsUserOp) {
+              console.log(
+                chalk.dim(
+                  needsDelegation
+                    ? "EIP-7702 delegation will be included in the UserOp."
+                    : "Account already delegates to Simple7702; UserOp skips re-authorization."
+                )
+              );
+            }
+            printFeePreview(fees);
+            console.log(
+              chalk.green(
+                batchAsUserOp
+                  ? "✔ Batched call simulation succeeded."
+                  : "✔ Raw transaction simulation succeeded."
+              )
+            );
           }
           return;
         }
@@ -371,15 +485,77 @@ export function registerTransactRawCommand(program: Command): void {
           return;
         }
 
-        const signer = new Wallet(senderPrivateKey, rpc);
+        if (batchAsUserOp) {
+          const fees = await estimateEip7702BatchUserOpFee({
+            client,
+            chainId,
+            senderAddress,
+            calls: rawTxs,
+            privateKey: senderPrivateKey,
+          });
+          await maybeConfirm(
+            !!opts.nonInteractive,
+            `Submit ${rawTxs.length} calls as one EIP-7702 UserOp from ${senderAddress}?\n  ${feeConfirmLine(fees)}`
+          );
+
+          const sent = await runQuietSpinner(
+            quiet,
+            txSpinner,
+            {
+              start: `Submitting EIP-7702 UserOp (${rawTxs.length} calls)...`,
+              failure: "EIP-7702 UserOp failed.",
+            },
+            async () =>
+              sendEip7702BatchUserOperation({
+                client,
+                privateKey: senderPrivateKey,
+                chainId,
+                calls: rawTxs,
+              }),
+            (t) =>
+              `UserOp mined: ${t.txHash}${
+                t.delegatedInUserOp ? " (delegation included)" : ""
+              }`
+          );
+
+          if (opts.nonInteractive) {
+            logCliJson({
+              from: senderAddress,
+              mode: "eip7702-userop",
+              implementation: sent.implementation,
+              delegation: sent.delegatedInUserOp
+                ? "included-in-userop"
+                : "already-set",
+              userOpHash: sent.userOpHash,
+              txHash: sent.txHash,
+              explorer: etherscanTxUrl(chainId, sent.txHash),
+              calls: transactions,
+              fees,
+            });
+          } else {
+            console.log();
+            console.log(chalk.green("✔ Batched EIP-7702 UserOp complete."));
+            console.log(chalk.dim(`userOpHash: ${sent.userOpHash}`));
+            console.log(chalk.dim(etherscanTxUrl(chainId, sent.txHash)));
+          }
+          return;
+        }
+
+        const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
         const broadcastResults: Array<{ index: number; hash: string }> = [];
 
         for (let i = 0; i < rawTxs.length; i++) {
           const tx = rawTxs[i]!;
           const step = `${i + 1}/${rawTxs.length}`;
+          const fees = await estimateEoaTxFeePreview(client, {
+            to: tx.to,
+            from: senderAddress,
+            data: tx.data,
+            value: tx.value,
+          });
           await maybeConfirm(
             !!opts.nonInteractive,
-            `Send transaction (${step}) to ${tx.to} from ${senderAddress}?`
+            `Send transaction (${step}) to ${tx.to} from ${senderAddress}?\n  ${feeConfirmLine(fees)}`
           );
 
           const sent = await runQuietSpinner(
@@ -390,13 +566,12 @@ export function registerTransactRawCommand(program: Command): void {
               failure: `Transaction ${step} failed.`,
             },
             async () => {
-              const t = await signer.sendTransaction({
+              const hash = await sendTransactionAndWait(walletClient, client, {
                 to: tx.to,
                 data: tx.data,
                 value: tx.value,
               });
-              await t.wait();
-              return t;
+              return { hash };
             },
             (t) => `Transaction ${step} mined: ${t.hash}`
           );
@@ -425,7 +600,7 @@ export function registerTransactRawCommand(program: Command): void {
       } catch (e) {
         cliErrorFromCaught(e);
       } finally {
-        rpc.destroy();
+        disposePublicClient(client);
       }
       });
     });

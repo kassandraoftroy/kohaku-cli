@@ -10,6 +10,7 @@ import {
   createWalletOnDisk,
   generateMnemonic,
 } from "../lib/create-wallet";
+import { parseStealthStartBlock } from "../lib/stealth/scan.js";
 import {
   DEFAULT_DATA_DIR,
   resolveRpcUrl,
@@ -28,6 +29,7 @@ type CreateWalletOpts = {
   rpcUrl?: string;
   testnet?: boolean;
   longSeed?: boolean;
+  stealthStartBlock?: string;
   dataDir?: string;
 };
 
@@ -93,8 +95,12 @@ export function registerCreateWalletCommand(program: Command): void {
       "Password to encrypt this wallet (required with --non-interactive; else prompted)"
     )
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
-    .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL)")
+    .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL). Optional for new wallets when recording the stealth scan floor")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
+    .option(
+      "--stealth-start-block <block>",
+      "With --import: write `.stealth-start-block` for later balances stealth scans. New wallets record the current tip automatically."
+    )
     .option(
       "--long-seed",
       "Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit)"
@@ -125,7 +131,7 @@ export function registerCreateWalletCommand(program: Command): void {
       }
 
       let mnemonicPhrase: string;
-      let rpcUrl: string | undefined;
+      let importRpcUrl: string | undefined;
       if (opts.import) {
         const pasted = opts.nonInteractive
           ? opts.mnemonic
@@ -137,8 +143,8 @@ export function registerCreateWalletCommand(program: Command): void {
           cliError("--mnemonic is required when using --non-interactive --import.");
           return;
         }
-        rpcUrl = resolveRpcUrl(opts.rpcUrl);
-        if (!rpcUrl) {
+        importRpcUrl = resolveRpcUrl(opts.rpcUrl);
+        if (!importRpcUrl) {
           cliError(
             "Missing --rpc-url (or environment variable RPC_URL) when using --import."
           );
@@ -170,15 +176,47 @@ export function registerCreateWalletCommand(program: Command): void {
         encryptPassword = await promptPasswordEncryptWallet();
       }
 
+      if (opts.stealthStartBlock !== undefined && !opts.import) {
+        cliError(
+          "--stealth-start-block only applies with --import (new wallets record the current block automatically)."
+        );
+        return;
+      }
+
+      let stealthStartBlock: bigint | undefined;
+      if (opts.stealthStartBlock !== undefined) {
+        try {
+          stealthStartBlock = parseStealthStartBlock(opts.stealthStartBlock);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
+      // New wallets: prefer --rpc-url / RPC_URL for the tip; else public RPCs.
+      const preferredRpcUrl = opts.import
+        ? importRpcUrl
+        : resolveRpcUrl(opts.rpcUrl) || undefined;
+
       try {
-        await createWalletOnDisk({
+        const created = await createWalletOnDisk({
           dataDir,
           walletName: name,
           mnemonic: mnemonicPhrase,
           password: encryptPassword,
           testnet: !!opts.testnet,
-          rpcUrl: opts.import ? rpcUrl : undefined,
+          importMode: !!opts.import,
+          rpcUrl: preferredRpcUrl,
+          stealthStartBlock,
         });
+        if (
+          !opts.nonInteractive &&
+          created.stealthStartBlockWritten !== undefined
+        ) {
+          log.info(
+            `Stealth announcement scan floor: block ${created.stealthStartBlockWritten.toString()} (saved in .stealth-start-block).`
+          );
+        }
       } catch (e) {
         cliErrorFromCaught(e);
         return;

@@ -1,13 +1,15 @@
 import { confirm } from "@inquirer/prompts";
 import { Mnemonic } from "derive-railgun-keys";
 import type { Command } from "commander";
-import { computeAddress, getAddress, isAddress } from "ethers";
+import { getAddress, isAddress } from "viem";
 
 import { readSeedKeystore } from "../utils/mnemonic";
 import { findPublicAccountByAddress, makePublicAccountsStorage } from "../utils/public-accounts";
-import { DEFAULT_DATA_DIR } from "../utils/rpc";
+import { DEFAULT_DATA_DIR, resolveRpcUrl } from "../utils/rpc";
 import { cliOptions } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import { resolveAddressOrName } from "../utils/resolve-name.js";
+import { addressFromPrivateKey } from "../utils/viem-tx.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -19,6 +21,7 @@ type ExportPrivateKeyOpts = {
   password?: string;
   address?: string;
   index?: string;
+  rpcUrl?: string;
   nonInteractive?: boolean;
   dataDir?: string;
 };
@@ -36,8 +39,9 @@ export function registerExportPrivateKeyCommand(program: Command): void {
     .description("Export the private key for a wallet public account")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
-    .option("--address <address>", "Public account address to export")
+    .option("--address <address>", "Public account address or ENS/GNS/WNS name to export")
     .option("--index <index>", "Public account index to export")
+    .option("--rpc-url <url>", `${cliOptions.rpcUrl} (required when --address is a name)`)
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ExportPrivateKeyOpts) => {
@@ -103,16 +107,18 @@ export function registerExportPrivateKeyCommand(program: Command): void {
           } else {
             // Allow exporting by derivation index even if not persisted yet.
             privateKey = Mnemonic.to0xPrivateKeyByIndex(mnemonic, idx);
-            address = getAddress(computeAddress(privateKey));
+            address = addressFromPrivateKey(privateKey);
           }
           indexLabel = idx.toString();
         } else {
           const raw = opts.address!;
-          if (!isAddress(raw)) {
-            cliError(`Invalid --address: ${raw}`);
+          let normalized: string;
+          try {
+            normalized = await resolveAddressOrName(raw, resolveRpcUrl(opts.rpcUrl) ?? undefined);
+          } catch (e) {
+            cliErrorFromCaught(e);
             return;
           }
-          const normalized = getAddress(raw);
           const account = findPublicAccountByAddress(storage, normalized);
           if (!account) {
             cliError(

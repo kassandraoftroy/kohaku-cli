@@ -3,22 +3,19 @@ import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
-import {
-  Contract,
-  Interface,
-  Wallet,
-  formatUnits,
-  getAddress,
-  isAddress,
-  parseUnits,
-} from "ethers";
+import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
 import {
+  buildShieldCallList,
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
+  partitionShieldTxs,
+  resolveShieldApprovalCalls,
   shieldTransactionConfirmMessage,
+  summarizeMultiShieldPlan,
+  toShieldTxs,
 } from "../lib/shield-flow.js";
 import { cliOptions } from "../utils/cli-command-options";
 import {
@@ -28,15 +25,36 @@ import {
   runQuietSpinner,
 } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
+import {
+  estimateEip7702BatchUserOpFee,
+  needsSimple7702Authorization,
+  sendEip7702BatchUserOperation,
+} from "../utils/eip7702-batch-userop.js";
+import {
+  estimateEoaTxFeePreview,
+  feeConfirmLine,
+  printFeePreview,
+  type FeePreview,
+} from "../utils/fee-preview.js";
+import { resolveAddressOrName } from "../utils/resolve-name.js";
+import {
+  addressFromPrivateKey,
+  makeWalletClient,
+  sendTransactionAndWait,
+  simulateCallOrThrow,
+} from "../utils/viem-tx.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  makeEthersProvider,
+  makePublicClient,
+  disposePublicClient,
   resolveRpcUrl,
+  type KohakuPublicClient,
 } from "../utils/rpc";
+import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { withTor } from "../utils/tor";
-import { ERC20_ABI, resolveTokenMeta } from "../utils/tokens-util";
+import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -46,8 +64,6 @@ import { readSeedKeystore } from "../utils/mnemonic";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
   assertPpErc20TokenWhitelisted,
-  assertTornadoEthOnly,
-  assertTornadoShieldAmount,
   createProtocolPlugin,
   ETH_AS_ERC20,
   pluginIdForProtocol,
@@ -56,6 +72,10 @@ import {
   SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
 } from "../utils/plugins";
+import {
+  assertTornadoDepositAmount,
+  assertTornadoTokenSupported,
+} from "../utils/tornado-pools.js";
 
 type ShieldOpts = {
   protocol?: string;
@@ -75,9 +95,17 @@ type ShieldOpts = {
   dataDir?: string;
 };
 
-type FeeOverrides = {
-  maxFeePerGas: bigint;
-  maxPriorityFeePerGas: bigint;
+type TxPayloadJson = {
+  data: string;
+  to: string;
+  from: string;
+  value: string;
+};
+
+type BroadcastTxResultJson = {
+  type: "approval" | "shield" | "eip7702-userop";
+  hash: string;
+  userOpHash?: string;
 };
 
 function etherscanTxUrl(chainId: bigint, txHash: string): string {
@@ -107,60 +135,23 @@ async function maybeConfirm(
   }
 }
 
-async function computeFees(rpcUrl: string, opts: ShieldOpts): Promise<FeeOverrides> {
-  if (opts.baseFeeGwei || opts.priorityFeeGwei) {
-    const base = opts.baseFeeGwei ? parseUnits(opts.baseFeeGwei, 9) : 0n;
-    const priority = opts.priorityFeeGwei ? parseUnits(opts.priorityFeeGwei, 9) : 0n;
-    return { maxFeePerGas: base + priority, maxPriorityFeePerGas: priority };
-  }
-
-  const rpc = await makeEthersProvider(rpcUrl);
-  try {
-    const latest = await rpc.getBlock("latest");
-    const base = latest?.baseFeePerGas ?? 0n;
-    const priority = 0n;
-    const maxFee = (base * 110n) / 100n + priority;
-    return { maxFeePerGas: maxFee, maxPriorityFeePerGas: priority };
-  } finally {
-    rpc.destroy();
-  }
-}
-
-function encodeErc20ApproveTx(
-  tokenAddress: string,
-  spender: string,
-  amount: bigint
-): { to: string; data: string; value: bigint } {
-  const iface = new Interface(ERC20_ABI);
-  const data = iface.encodeFunctionData("approve", [spender, amount]);
-  return { to: tokenAddress, data, value: 0n };
-}
-
-type TxPayloadJson = {
-  data: string;
-  to: string;
-  from: string;
-  value: string;
-};
-
-type BroadcastTxResultJson = {
-  type: "approval" | "shield";
-  hash: string;
-};
-
 async function simulateTransactionOrThrow(
-  rpc: Awaited<ReturnType<typeof makeEthersProvider>>,
+  client: KohakuPublicClient,
   tx: { to: string; from: string; data: string; value: bigint; gasLimit?: bigint },
   stepLabel: string
 ): Promise<void> {
   try {
-    await rpc.call({
-      to: tx.to,
-      from: tx.from,
-      data: tx.data,
-      value: tx.value,
-      gasLimit: tx.gasLimit,
-    });
+    await simulateCallOrThrow(
+      client,
+      {
+        to: tx.to,
+        from: tx.from,
+        data: tx.data,
+        value: tx.value,
+        gas: tx.gasLimit,
+      },
+      stepLabel
+    );
   } catch (e) {
     const msg =
       e instanceof Error
@@ -171,92 +162,65 @@ async function simulateTransactionOrThrow(
 }
 
 function printShieldDryRunInteractive(
-  shieldTxs: Array<{ to: string; data: string; value: bigint }>,
-  approve: { to: string; data: string; value: bigint } | null,
+  calls: Array<{ to: string; data: string; value: bigint }>,
+  approvalsCount: number,
   tokenMeta: { symbol: string; decimals: number },
-  senderAddress: string
+  senderAddress: string,
+  batchAsUserOp: boolean
 ): void {
   console.log();
-  console.log(chalk.bold("Planned transactions (not submitted)"));
   console.log(
-    chalk.dim("Add --broadcast to sign and send these transactions on-chain from the CLI.")
+    chalk.bold(
+      batchAsUserOp
+        ? "Planned EIP-7702 UserOperation (not submitted)"
+        : "Planned transactions (not submitted)"
+    )
+  );
+  console.log(
+    chalk.dim(
+      batchAsUserOp
+        ? "Add --broadcast to submit all calls as a single Pimlico UserOp (EIP-7702 Simple7702Account)."
+        : "Add --broadcast to sign and send these transactions on-chain from the CLI."
+    )
   );
   console.log();
-  const shieldStepOffset = approve ? 1 : 0;
-  const totalSteps = shieldStepOffset + shieldTxs.length;
-  if (approve) {
-    const o: TxPayloadJson = {
-      data: approve.data,
-      to: approve.to,
-      from: senderAddress,
-      value: approve.value.toString(),
-    };
+  console.log(chalk.dim(`Sender: ${senderAddress}`));
+  if (batchAsUserOp) {
+    console.log(chalk.dim(`Implementation: ${SIMPLE_7702_IMPLEMENTATION}`));
     console.log(
-      chalk.cyan(`Approve ${tokenMeta.symbol} ERC20 tx (1/${totalSteps}):`),
-      jsonStringifyWithBigInt(o)
+      chalk.dim(
+        `Calls: ${calls.length} (${approvalsCount} approval(s) + ${calls.length - approvalsCount} shield)`
+      )
     );
-    console.log();
   }
-  for (let i = 0; i < shieldTxs.length; i++) {
-    const shieldTx = shieldTxs[i]!;
-    const step = shieldStepOffset + i + 1;
+  for (let i = 0; i < calls.length; i++) {
+    const call = calls[i]!;
+    const isApprove = i < approvalsCount;
     const o: TxPayloadJson = {
-      data: shieldTx.data,
-      to: shieldTx.to,
+      data: call.data,
+      to: call.to,
       from: senderAddress,
-      value: shieldTx.value.toString(),
+      value: call.value.toString(),
     };
     const valueLabel =
-      shieldTxs.length > 1
-        ? ` — ${formatUnits(shieldTx.value, tokenMeta.decimals)} ${tokenMeta.symbol}`
+      !isApprove && call.value > 0n
+        ? ` — ${formatUnits(call.value, tokenMeta.decimals)} ${tokenMeta.symbol}`
         : "";
     console.log(
-      chalk.cyan(`Shield operation tx (${step}/${totalSteps})${valueLabel}:`),
+      chalk.cyan(
+        `${isApprove ? "Approve" : "Shield"} call (${i + 1}/${calls.length})${valueLabel}:`
+      ),
       jsonStringifyWithBigInt(o)
     );
-    if (i < shieldTxs.length - 1) {
-      console.log();
-    }
   }
-}
-
-function toShieldTxs(
-  op: unknown,
-  opts?: { allowMultiple?: boolean }
-): Array<{ to: string; data: string; value: bigint }> {
-  let txs: Array<{ to: string; data: string; value: bigint }> | null = null;
-
-  if (Array.isArray(op)) {
-    txs = op as Array<{ to: string; data: string; value: bigint }>;
-  } else if (
-    typeof op === "object" &&
-    op !== null &&
-    "txns" in op &&
-    Array.isArray((op as { txns?: unknown[] }).txns)
-  ) {
-    txs = (op as { txns: Array<{ to: string; data: string; value: bigint }> }).txns;
-  }
-
-  if (!txs) {
-    throw new Error("Unsupported shield operation shape returned by plugin.");
-  }
-
-  if (txs.length === 0) {
-    throw new Error("prepareShield() returned no transactions.");
-  }
-
-  if (!opts?.allowMultiple && txs.length !== 1) {
-    throw new Error(
-      `Expected prepareShield() to return exactly 1 tx, got ${txs.length}.`
-    );
-  }
-  return txs;
 }
 
 export function registerShieldCommand(program: Command): void {
   program
     .command("shield")
-    .description("Shield public funds into a privacy protocol")
+    .description(
+      "Shield public funds into a privacy protocol (2+ calls → one EIP-7702 UserOp via Pimlico)"
+    )
     .option(
       "--protocol <protocol>",
       `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
@@ -270,7 +234,7 @@ export function registerShieldCommand(program: Command): void {
     )
     .option(
       "--broadcast",
-      "Sign and submit on-chain (omit to print transaction payloads only)"
+      "Sign and submit on-chain (one EOA tx, or one EIP-7702 UserOp when 2+ calls)"
     )
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
@@ -364,7 +328,11 @@ export function registerShieldCommand(program: Command): void {
       }
       if (protocol === "tornado") {
         try {
-          assertTornadoEthOnly(tokenMeta.isEth);
+          assertTornadoTokenSupported(chainId, {
+            isEth: tokenMeta.isEth,
+            tokenAddress: tokenMeta.tokenAddress,
+            symbol: tokenMeta.symbol,
+          });
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -383,7 +351,12 @@ export function registerShieldCommand(program: Command): void {
       }
       if (amount !== null && protocol === "tornado") {
         try {
-          assertTornadoShieldAmount(chainId, amount);
+          assertTornadoDepositAmount(chainId, amount, {
+            isEth: tokenMeta.isEth,
+            tokenAddress: tokenMeta.tokenAddress,
+            symbol: tokenMeta.symbol,
+            decimals: tokenMeta.decimals,
+          });
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -448,7 +421,12 @@ export function registerShieldCommand(program: Command): void {
                 const parsed = parseUnits(value.trim(), tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
                 if (protocol === "tornado") {
-                  assertTornadoShieldAmount(chainId, parsed);
+                  assertTornadoDepositAmount(chainId, parsed, {
+                    isEth: tokenMeta.isEth,
+                    tokenAddress: tokenMeta.tokenAddress,
+                    symbol: tokenMeta.symbol,
+                    decimals: tokenMeta.decimals,
+                  });
                 }
               } catch (e) {
                 return e instanceof Error
@@ -461,7 +439,12 @@ export function registerShieldCommand(program: Command): void {
           amount = parseUnits(amountFormattedInput.trim(), tokenMeta.decimals);
           if (protocol === "tornado") {
             try {
-              assertTornadoShieldAmount(chainId, amount);
+              assertTornadoDepositAmount(chainId, amount, {
+                isEth: tokenMeta.isEth,
+                tokenAddress: tokenMeta.tokenAddress,
+                symbol: tokenMeta.symbol,
+                decimals: tokenMeta.decimals,
+              });
             } catch (e) {
               cliErrorFromCaught(e);
               return;
@@ -502,6 +485,16 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
+      // Resolve ENS / GNS / WNS names to addresses before the index/address branch.
+      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+        try {
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
       const fromIndex = parseFromIndex(fromValue);
       let senderPrivateKey: string | undefined;
       let senderAddress: string;
@@ -512,7 +505,7 @@ export function registerShieldCommand(program: Command): void {
           senderAddress = account.address;
         } else if (opts.fromPriv || dryRun) {
           senderPrivateKey = Mnemonic.to0xPrivateKeyByIndex(mnemonic, fromIndex);
-          senderAddress = new Wallet(senderPrivateKey).address;
+          senderAddress = addressFromPrivateKey(senderPrivateKey);
         } else {
           cliError(
             `Public account index ${fromIndex} not found. Use --from-priv with --broadcast to derive from mnemonic, or omit --broadcast for a dry-run.`
@@ -539,7 +532,7 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      const rpcForHost = await makeEthersProvider(rpcUrl);
+      const rpcForHost = await makePublicClient(rpcUrl);
       const txSpinner = manageSpinner(
         spinner(),
         quietNonInteractive(opts.nonInteractive)
@@ -585,58 +578,128 @@ export function registerShieldCommand(program: Command): void {
               amount,
             };
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
+        let approvals: Array<{ to: string; data: string; value: bigint }> = [];
         try {
           const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
-          shieldTxs = toShieldTxs(op, { allowMultiple: protocol === "tornado" });
+          const rawTxs = toShieldTxs(op);
+          if (tokenMeta.isEth) {
+            shieldTxs = partitionShieldTxs(rawTxs).deposits;
+          } else {
+            const resolved = await resolveShieldApprovalCalls({
+              client: rpcForHost,
+              tokenAddress: tokenMeta.tokenAddress,
+              senderAddress,
+              amount,
+              shieldTxs: rawTxs,
+            });
+            approvals = resolved.approvals;
+            shieldTxs = resolved.deposits;
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
           cliError(msg);
           return;
         }
-        const tx = shieldTxs[0]!;
+
+        const calls = buildShieldCallList(approvals, shieldTxs);
+        const batchAsUserOp = calls.length > 1;
+        const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
+
+        // Single EOA tx: eth_call is fine. Multi-call UserOp: do NOT eth_call each
+        // payload alone (approve→deposit etc. false-positive). Batch validation is
+        // bundler prepareUserOperation / estimateUserOperationGas below.
+        if (!batchAsUserOp) {
+          const call = calls[0]!;
+          await simulateTransactionOrThrow(
+            rpcForHost,
+            {
+              to: call.to,
+              from: senderAddress,
+              data: call.data,
+              value: call.value,
+            },
+            "Shield transaction"
+          );
+        }
+
+        let fees: FeePreview;
+        if (batchAsUserOp) {
+          fees = await estimateEip7702BatchUserOpFee({
+            client: rpcForHost,
+            chainId,
+            senderAddress,
+            calls,
+            privateKey: senderPrivateKey,
+          });
+        } else {
+          const call = calls[0]!;
+          fees = await estimateEoaTxFeePreview(
+            rpcForHost,
+            {
+              to: call.to,
+              from: senderAddress,
+              data: call.data,
+              value: call.value,
+            },
+            2_000_000n
+          );
+        }
+
+        const transactions: TxPayloadJson[] = calls.map((call) => ({
+          data: call.data,
+          to: call.to,
+          from: senderAddress,
+          value: call.value.toString(),
+        }));
 
         if (dryRun) {
-          let approve: { to: string; data: string; value: bigint } | null = null;
-          if (!tokenMeta.isEth) {
-            const erc20Read = new Contract(
-              tokenMeta.tokenAddress,
-              ERC20_ABI,
-              rpcForHost
+          let needsDelegation: boolean | undefined;
+          if (batchAsUserOp) {
+            needsDelegation = await needsSimple7702Authorization(
+              rpcForHost,
+              senderAddress as `0x${string}`
             );
-            const allowance: bigint = await erc20Read.allowance(
-              senderAddress,
-              tx.to
-            );
-            if (allowance < amount) {
-              approve = encodeErc20ApproveTx(
-                tokenMeta.tokenAddress,
-                tx.to,
-                amount
-              );
-            }
-          }
-          const transactions: TxPayloadJson[] = [];
-          if (approve) {
-            transactions.push({
-              data: approve.data,
-              to: approve.to,
-              from: senderAddress,
-              value: approve.value.toString(),
-            });
-          }
-          for (const stx of shieldTxs) {
-            transactions.push({
-              data: stx.data,
-              to: stx.to,
-              from: senderAddress,
-              value: stx.value.toString(),
-            });
           }
           if (opts.nonInteractive) {
-            logCliJson({ transactions });
+            logCliJson({
+              fees,
+              ...(batchAsUserOp
+                ? {
+                    mode: "eip7702-userop",
+                    implementation: SIMPLE_7702_IMPLEMENTATION,
+                    delegation: needsDelegation
+                      ? "will-include-in-userop"
+                      : "already-set",
+                    calls: transactions,
+                  }
+                : { transactions }),
+            });
           } else {
             if (txSpinner.active) txSpinner.stop();
-            printShieldDryRunInteractive(shieldTxs, approve, tokenMeta, senderAddress);
+            printShieldDryRunInteractive(
+              calls,
+              approvals.length,
+              tokenMeta,
+              senderAddress,
+              batchAsUserOp
+            );
+            if (batchAsUserOp) {
+              console.log(
+                chalk.dim(
+                  needsDelegation
+                    ? "EIP-7702 delegation will be included in the UserOp."
+                    : "Account already delegates to Simple7702; UserOp skips re-authorization."
+                )
+              );
+              if (shieldTxs.length > 1) {
+                console.log(
+                  chalk.dim(
+                    `Deposit plan: ${summarizeMultiShieldPlan(shieldTxs, tokenMeta)}`
+                  )
+                );
+              }
+            }
+            printFeePreview(fees);
             console.log(chalk.green("✔ Shield dry run complete."));
           }
           return;
@@ -649,102 +712,107 @@ export function registerShieldCommand(program: Command): void {
           return;
         }
 
-        const signer = new Wallet(senderPrivateKey, rpcForHost);
-        // const feeOverrides = await computeFees(rpcUrl, opts);
-        const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
-
-        let hasApproval = false;
-        if (!tokenMeta.isEth) {
-          const erc20 = new Contract(tokenMeta.tokenAddress, ERC20_ABI, signer);
-          const allowance: bigint = await erc20.allowance(senderAddress, tx.to);
-          if (allowance < amount) {
-            hasApproval = true;
-            await simulateTransactionOrThrow(
-              rpcForHost,
-              {
-                to: tokenMeta.tokenAddress,
-                from: senderAddress,
-                data: encodeErc20ApproveTx(tokenMeta.tokenAddress, tx.to, amount).data,
-                value: 0n,
-              },
-              "Approval transaction"
-            );
-            await maybeConfirm(
-              !!opts.nonInteractive,
-              `Send approval transaction (1/2): approve ${tx.to} to spend ${amountPreview} (from ${senderAddress})?`,
-              txSpinner
-            );
-            const approveTx = await runQuietSpinner(
-              quiet,
-              txSpinner,
-              { start: "Sending approval 1/2...", failure: "Approval failed." },
-              async () => {
-                const t = await erc20.approve(tx.to, amount/*, feeOverrides*/);
-                await t.wait();
-                return t;
-              },
-              (t) => `Approval mined (1/2): ${t.hash}`
-            );
-            broadcastTransactions.push({ type: "approval", hash: approveTx.hash });
-          }
-        }
-
-        for (let i = 0; i < shieldTxs.length; i++) {
-          const stx = shieldTxs[i]!;
-          const shieldStep =
+        if (batchAsUserOp) {
+          const plan =
             shieldTxs.length > 1
-              ? `${i + 1}/${shieldTxs.length}`
-              : hasApproval
-                ? "2/2"
-                : "1/1";
+              ? ` (${summarizeMultiShieldPlan(shieldTxs, tokenMeta)})`
+              : "";
+          await maybeConfirm(
+            !!opts.nonInteractive,
+            `Submit shield of ${amountPreview}${plan} as one EIP-7702 UserOp (${calls.length} calls) from ${senderAddress}?\n  ${feeConfirmLine(fees)}`,
+            txSpinner
+          );
+
+          const sent = await runQuietSpinner(
+            quiet,
+            txSpinner,
+            {
+              start: `Submitting EIP-7702 shield UserOp (${calls.length} calls)...`,
+              failure: "EIP-7702 shield UserOp failed.",
+            },
+            async () =>
+              sendEip7702BatchUserOperation({
+                client: rpcForHost,
+                privateKey: senderPrivateKey,
+                chainId,
+                calls,
+              }),
+            (t) =>
+              `UserOp mined: ${t.txHash}${
+                t.delegatedInUserOp ? " (delegation included)" : ""
+              }`
+          );
+          broadcastTransactions.push({
+            type: "eip7702-userop",
+            hash: sent.txHash,
+            userOpHash: sent.userOpHash,
+          });
+
+          if (opts.nonInteractive) {
+            logCliJson({
+              mode: "eip7702-userop",
+              implementation: sent.implementation,
+              delegation: sent.delegatedInUserOp
+                ? "included-in-userop"
+                : "already-set",
+              userOpHash: sent.userOpHash,
+              txHash: sent.txHash,
+              explorer: etherscanTxUrl(chainId, sent.txHash),
+              calls: transactions,
+              fees,
+            });
+            return;
+          }
+        } else {
+          const call = calls[0]!;
           await maybeConfirm(
             !!opts.nonInteractive,
             shieldTransactionConfirmMessage({
-              step: shieldStep,
-              txValue: stx.value,
+              step: "1/1",
+              txValue: call.value > 0n ? call.value : amount,
               shieldTxs,
               tokenMeta,
               senderAddress,
-            }),
+            }) + `\n  ${feeConfirmLine(fees)}`,
             txSpinner
           );
-          await simulateTransactionOrThrow(
+
+          const walletClient = makeWalletClient(
+            senderPrivateKey,
             rpcForHost,
-            {
-              to: stx.to,
-              from: senderAddress,
-              data: stx.data,
-              value: stx.value,
-              gasLimit: 2000000n,
-            },
-            shieldTxs.length > 1
-              ? `Shield transaction (${shieldStep})`
-              : "Shield transaction"
+            rpcUrl
           );
           const sent = await runQuietSpinner(
             quiet,
             txSpinner,
             {
-              start: `Sending shield tx ${shieldStep}...`,
+              start: "Sending shield tx...",
               failure: "Shield transaction failed.",
             },
             async () => {
-              const s = await signer.sendTransaction({
-                to: stx.to,
-                data: stx.data,
-                value: stx.value,
-                gasLimit: 2000000,
-              });
-              await s.wait();
-              return s;
+              const hash = await sendTransactionAndWait(
+                walletClient,
+                rpcForHost,
+                {
+                  to: call.to,
+                  data: call.data,
+                  value: call.value,
+                  gas: 2_000_000n,
+                }
+              );
+              return { hash };
             },
-            (s) => `Shield tx mined (${shieldStep}): ${s.hash}`
+            (s) => `Shield tx mined: ${s.hash}`
           );
           broadcastTransactions.push({ type: "shield", hash: sent.hash });
-        }
-        if (opts.nonInteractive) {
-          logCliJson({ transactions: broadcastTransactions });
-          return;
+
+          if (opts.nonInteractive) {
+            logCliJson({
+              transactions: broadcastTransactions,
+              fees,
+            });
+            return;
+          }
         }
           }
         );
@@ -753,13 +821,16 @@ export function registerShieldCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       } finally {
-        rpcForHost.destroy();
+        disposePublicClient(rpcForHost);
       }
 
       if (!opts.nonInteractive) {
         if (broadcastTransactions.length > 0) {
           console.log(chalk.bold("Etherscan links:"));
           for (const tx of broadcastTransactions) {
+            if (tx.userOpHash) {
+              console.log(chalk.dim(`  userOpHash: ${tx.userOpHash}`));
+            }
             console.log(
               chalk.cyan(
                 `  ${tx.type}: ${etherscanTxUrl(chainId, tx.hash)}`

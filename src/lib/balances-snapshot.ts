@@ -1,7 +1,7 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
-import { Contract, formatUnits, getAddress, isAddress } from "ethers";
+import { formatUnits, getAddress, isAddress } from "viem";
 
-import { makeEthersProvider } from "../utils/rpc";
+import { makePublicClient, disposePublicClient } from "../utils/rpc";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
@@ -24,6 +24,9 @@ import {
   type PrivateNotesByProtocol,
 } from "./private-notes";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+import { deriveStealthKeypair } from "./stealth/keys.js";
+import { scanAndImportStealthAnnouncements } from "./stealth/scan.js";
+import { makeStealthAccountsStorage } from "./stealth/storage.js";
 import {
   attachUsdValuesToRowsLists,
   USD_VALUE_UNAVAILABLE,
@@ -48,6 +51,8 @@ export type BalancesSnapshot = {
   publicAggregated: BalanceItem[];
   publicByAddress: Record<string, BalanceItem[]>;
   publicAccountIndexByAddress: Record<string, number>;
+  /** Stealth local index (`sN`) by address. */
+  stealthAccountIndexByAddress: Record<string, number>;
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
@@ -156,48 +161,69 @@ async function loadPrivateBalancesForProtocol(
   );
 }
 
-const TORNADO_BALANCE_TIMEOUT_MS = 600_000;
+const TORNADO_BALANCE_TIMEOUT_MS = 360_000;
 
 export async function loadTornadoPrivateBalances(
   rpcUrl: string,
   walletDir: string,
   password: string,
   mnemonic: string,
-  chainId: bigint
+  chainId: bigint,
+  onProgress?: (message: string) => void
 ): Promise<AssetAmount[]> {
-  return Promise.race([
-    loadPrivateBalancesForProtocol(
-      "tornado",
-      rpcUrl,
-      walletDir,
-      password,
-      mnemonic,
-      chainId
-    ),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(
-          new Error(
-            "Tornado Cash sync timed out after 10 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain)."
-          )
-        );
-      }, TORNADO_BALANCE_TIMEOUT_MS);
-    }),
-  ]);
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const secs = Math.round((Date.now() - started) / 1000);
+    onProgress?.(
+      `Tornado Cash still syncing (${secs}s)… first run pulls saga CDN + proving artifacts (Tor may fall back to clearnet)`
+    );
+  }, 15_000);
+  try {
+    return await Promise.race([
+      loadPrivateBalancesForProtocol(
+        "tornado",
+        rpcUrl,
+        walletDir,
+        password,
+        mnemonic,
+        chainId
+      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(
+            new Error(
+              "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain). If this persists with Tor, retry with --without-tor or check `view-network-traffic --category saga` / KOHAKU_TOR_DEBUG=1."
+            )
+          );
+        }, TORNADO_BALANCE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearInterval(tick);
+  }
 }
 
 async function loadErc20Meta(
-  provider: Awaited<ReturnType<typeof makeEthersProvider>>,
+  client: Awaited<ReturnType<typeof makePublicClient>>,
   token: `0x${string}`
 ): Promise<{ symbol: string; decimals: number }> {
-  const c = new Contract(token, ERC20_ABI, provider);
   let decimals: number;
   try {
-    decimals = Number(await c.decimals());
+    decimals = Number(
+      await client.readContract({
+        address: token,
+        abi: ERC20_ABI,
+        functionName: "decimals",
+      })
+    );
   } catch {
     throw new Error(`Failed to read decimals() for token ${token}`);
   }
-  const symbol = await c.symbol().catch(() => "UNKNOWN");
+  const symbol = await client.readContract({
+    address: token,
+    abi: ERC20_ABI,
+    functionName: "symbol",
+  }).catch(() => "UNKNOWN");
   return { symbol, decimals };
 }
 
@@ -215,6 +241,11 @@ export type LoadBalancesSnapshotOptions = {
   /** Skip Tor for privacy HTTP (default: Tor on when private protocols sync). */
   withoutTor?: boolean;
   onTorStatus?: (message: string) => void;
+  /**
+   * Lower bound for the ERC-5564 announcement scan (inclusive).
+   * When set on a first/full history pass, skips announcer history before this block.
+   */
+  stealthStartBlock?: bigint;
 };
 
 export type PrivateBalancesSnapshot = {
@@ -245,6 +276,7 @@ async function resolvePrivateBalanceItems(
     | "chainId"
     | "includeProtocols"
     | "onWarning"
+    | "onTorStatus"
   >
 ): Promise<ResolvedPrivateBalances> {
   const {
@@ -255,6 +287,7 @@ async function resolvePrivateBalanceItems(
     chainId,
     includeProtocols = null,
     onWarning,
+    onTorStatus,
   } = opts;
   const chainIdString = chainId.toString();
 
@@ -306,7 +339,8 @@ async function resolvePrivateBalanceItems(
         walletDir,
         password,
         mnemonic,
-        chainId
+        chainId,
+        onTorStatus
       );
       protocolAvailable.tornado = true;
     } catch (e) {
@@ -324,7 +358,7 @@ async function resolvePrivateBalanceItems(
   const { erc20Addresses: tokenAddresses, knownMetaByLower } =
     mergeDefaultAndExtraErc20s(chainIdString, erc20FromPrivate);
 
-  const rpc = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
   try {
     for (const token of tokenAddresses) {
@@ -333,7 +367,7 @@ async function resolvePrivateBalanceItems(
       if (known) {
         tokenMeta.set(key, known);
       } else {
-        tokenMeta.set(key, await loadErc20Meta(rpc, token));
+        tokenMeta.set(key, await loadErc20Meta(client, token));
       }
     }
 
@@ -351,7 +385,7 @@ async function resolvePrivateBalanceItems(
       protocolAvailable,
     };
   } finally {
-    rpc.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -451,6 +485,37 @@ async function loadBalancesSnapshotInner(
     publicAccountIndexByAddress[acct.address] = acct.index;
   }
 
+  const rpcForPublic = await makePublicClient(rpcUrl);
+  const stealthAccountIndexByAddress: Record<string, number> = {};
+  let stealthAccounts: ReturnType<
+    ReturnType<typeof makeStealthAccountsStorage>["getAccounts"]
+  > = [];
+  try {
+    // Discover new stealth payments before aggregating public balances.
+    try {
+      const keypair = deriveStealthKeypair(mnemonic, chainId);
+      await scanAndImportStealthAnnouncements({
+        client: rpcForPublic,
+        walletDir,
+        password,
+        keypair,
+        chainId,
+        startFromBlock: opts.stealthStartBlock,
+        onProgress: (msg) => onWarning?.(msg),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onWarning?.(`Stealth announcement scan skipped: ${msg}`);
+    }
+    stealthAccounts = makeStealthAccountsStorage(walletDir, password).getAccounts();
+    for (const acct of stealthAccounts) {
+      stealthAccountIndexByAddress[acct.address] = acct.stealthIndex;
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    onWarning?.(`Stealth accounts unavailable: ${msg}`);
+  }
+
   const publicByAddress: Record<string, BalanceItem[]> = {};
   const aggregatedEth: bigint[] = [];
   const aggregatedByToken = new Map<string, bigint>();
@@ -458,7 +523,6 @@ async function loadBalancesSnapshotInner(
     aggregatedByToken.set(t.toLowerCase(), 0n);
   }
 
-  const rpcForPublic = await makeEthersProvider(rpcUrl);
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
   let privateNotes: PrivateNotesByProtocol | undefined;
   try {
@@ -512,12 +576,34 @@ async function loadBalancesSnapshotInner(
 
     const now = Date.now();
     const updatedAccounts: typeof publicAccounts = [];
+    const updatedStealth: typeof stealthAccounts = [];
+    const allSpendable: Array<{
+      address: string;
+      ethBalanceKey: "hd" | "stealth";
+      hd?: (typeof publicAccounts)[number];
+      stealth?: (typeof stealthAccounts)[number];
+    }> = [
+      ...publicAccounts.map((hd) => ({
+        address: hd.address,
+        ethBalanceKey: "hd" as const,
+        hd,
+      })),
+      ...stealthAccounts.map((stealth) => ({
+        address: stealth.address,
+        ethBalanceKey: "stealth" as const,
+        stealth,
+      })),
+    ];
 
-    for (const acct of publicAccounts) {
-      const ethBalance = await rpcForPublic.getBalance(acct.address);
+    for (const entry of allSpendable) {
+      const ethBalance = await rpcForPublic.getBalance({
+        address: entry.address as `0x${string}`,
+      });
       aggregatedEth.push(ethBalance);
 
-      const erc20Balances = { ...acct.erc20Balances };
+      const priorErc20 =
+        entry.hd?.erc20Balances ?? entry.stealth?.erc20Balances ?? {};
+      const erc20Balances = { ...priorErc20 };
       const rows: BalanceItem[] = [
         {
           symbol: "ETH",
@@ -531,8 +617,12 @@ async function loadBalancesSnapshotInner(
 
       for (const token of tokenAddresses) {
         const key = token.toLowerCase();
-        const c = new Contract(token, ERC20_ABI, rpcForPublic);
-        const bal: bigint = await c.balanceOf(acct.address);
+        const bal = await rpcForPublic.readContract({
+          address: token,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [entry.address as `0x${string}`],
+        });
         erc20Balances[key] = bal.toString();
         aggregatedByToken.set(key, (aggregatedByToken.get(key) ?? 0n) + bal);
         const meta = tokenMeta.get(key)!;
@@ -546,21 +636,37 @@ async function loadBalancesSnapshotInner(
         });
       }
 
-      updatedAccounts.push({
-        ...acct,
-        ethBalance: ethBalance.toString(),
-        erc20Balances,
-        lastUpdated: now,
-      });
+      if (entry.hd) {
+        updatedAccounts.push({
+          ...entry.hd,
+          ethBalance: ethBalance.toString(),
+          erc20Balances,
+          lastUpdated: now,
+        });
+      }
+      if (entry.stealth) {
+        updatedStealth.push({
+          ...entry.stealth,
+          ethBalance: ethBalance.toString(),
+          erc20Balances,
+          lastUpdated: now,
+        });
+      }
 
-      publicByAddress[acct.address] = rows;
+      publicByAddress[entry.address] = rows;
     }
 
     if (updatedAccounts.length > 0) {
       publicStorage.setAccounts(updatedAccounts);
     }
+    if (updatedStealth.length > 0) {
+      const stealthStorage = makeStealthAccountsStorage(walletDir, password);
+      for (const acct of updatedStealth) {
+        stealthStorage.upsertAccount(acct);
+      }
+    }
   } finally {
-    rpcForPublic.destroy();
+    disposePublicClient(rpcForPublic);
   }
 
   const totalPublicEth = aggregatedEth.reduce((a, b) => a + b, 0n);
@@ -623,6 +729,7 @@ async function loadBalancesSnapshotInner(
     publicAggregated: publicAggregatedPriced!,
     publicByAddress: publicByAddressPriced,
     publicAccountIndexByAddress,
+    stealthAccountIndexByAddress,
     privateRailgun: pricedPrivate[0]!,
     privatePrivacyPools: pricedPrivate[1]!,
     privateTornado: pricedPrivate[2]!,

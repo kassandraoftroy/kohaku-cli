@@ -1,7 +1,7 @@
-import { Contract, getAddress, isAddress } from "ethers";
+import { getAddress, isAddress, parseAbi } from "viem";
 
 import { ETH_AS_ERC20 } from "./plugins";
-import { makeEthersProvider } from "./rpc";
+import { makePublicClient } from "./rpc";
 
 /** Native ETH in private balance rows (privacy-pools: EEE…; zero address variants). */
 export function isPrivateBalanceNativeEth(addrStr: string): boolean {
@@ -214,13 +214,14 @@ export function mergeDefaultAndExtraErc20s(
 // --- ERC-20 ABI (balances, shield, token metadata) ---
 
 /** Shared ERC-20 fragment: balances, approve/allowance (shield), symbol/decimals (metadata). */
-export const ERC20_ABI = [
+export const ERC20_ABI = parseAbi([
   "function balanceOf(address account) view returns (uint256)",
   "function decimals() view returns (uint8)",
   "function symbol() view returns (string)",
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
-] as const;
+  "function transfer(address to, uint256 amount) returns (bool)",
+]);
 
 export type ResolvedTokenMeta = {
   symbol: string;
@@ -239,20 +240,25 @@ export async function resolveTokenMeta(
   }
   if (isAddress(tokenArg)) {
     const tokenAddress = getAddress(tokenArg);
-    const rpc = await makeEthersProvider(rpcUrl);
+    const client = await makePublicClient(rpcUrl);
+    let decimals: number;
     try {
-      const erc20 = new Contract(tokenAddress, ERC20_ABI, rpc);
-      let decimals: number;
-      try {
-        decimals = Number(await erc20.decimals());
-      } catch {
-        throw new Error(`Failed to read decimals() from token ${tokenAddress}`);
-      }
-      const symbol = await erc20.symbol().catch(() => "UNKNOWN");
-      return { symbol, tokenAddress, decimals, isEth: false };
-    } finally {
-      rpc.destroy();
+      decimals = Number(
+        await client.readContract({
+          address: tokenAddress,
+          abi: ERC20_ABI,
+          functionName: "decimals",
+        })
+      );
+    } catch {
+      throw new Error(`Failed to read decimals() from token ${tokenAddress}`);
     }
+    const symbol = await client.readContract({
+      address: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: "symbol",
+    }).catch(() => "UNKNOWN");
+    return { symbol, tokenAddress, decimals, isEth: false };
   }
 
   const known = lookupKnownTokenBySymbol(chainId, tokenArg);

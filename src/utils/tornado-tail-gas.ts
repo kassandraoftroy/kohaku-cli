@@ -1,6 +1,12 @@
-import { AbiCoder, Interface, keccak256 } from "ethers";
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  keccak256,
+  parseAbi,
+} from "viem";
 
-import { makeEthersProvider } from "./rpc.js";
+import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "./rpc.js";
+import { SIMPLE_7702_IMPLEMENTATION } from "./simple-7702.js";
 import {
   estimateTornadoPaymasterFee,
   tornadoWithdrawalCallGasLimit,
@@ -13,8 +19,7 @@ export type TornadoTailCall = {
 };
 
 /** Same EIP-7702 SimpleAccount impl the Tornado paymaster SDK delegates to. */
-export const TORNADO_SIMPLE_7702_IMPLEMENTATION =
-  "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
+export const TORNADO_SIMPLE_7702_IMPLEMENTATION = SIMPLE_7702_IMPLEMENTATION;
 
 /**
  * ETH left on the simulating account when the unshielded asset is an ERC-20.
@@ -22,16 +27,12 @@ export const TORNADO_SIMPLE_7702_IMPLEMENTATION =
  */
 export const TORNADO_TAIL_SIM_GAS_STIPEND_WEI = 10n ** 18n;
 
-const EXECUTE_ABI = [
+const EXECUTE_ABI = parseAbi([
   "function execute(address target, uint256 value, bytes data)",
   "function executeBatch((address target, uint256 value, bytes data)[] calls)",
-] as const;
+]);
 
-const ERC20_ABI = ["function balanceOf(address) view returns (uint256)"] as const;
-
-const executeIface = new Interface(EXECUTE_ABI);
-const erc20Iface = new Interface(ERC20_ABI);
-const abiCoder = AbiCoder.defaultAbiCoder();
+const ERC20_ABI = parseAbi(["function balanceOf(address) view returns (uint256)"]);
 
 /** ~10% headroom on measured execution-tail gas before feeding SDK fee math. */
 const TAIL_GAS_OVERHEAD_NUM = 11n;
@@ -41,9 +42,7 @@ const MAX_REFINE_ITERS = 2;
 /** Max ERC-20 `_balances` mapping base slots to probe (OZ / USDC / etc.). */
 const MAX_ERC20_BALANCE_SLOTS = 100;
 
-type JsonRpcProviderLike = {
-  send: (method: string, params: unknown[]) => Promise<unknown>;
-};
+type JsonRpcProviderLike = Pick<KohakuPublicClient, "request">;
 
 export type TornadoTailFundAsset =
   | { kind: "native" }
@@ -64,15 +63,17 @@ function encodeAccountCalls(calls: readonly TornadoTailCall[]): `0x${string}` {
   }
   if (calls.length === 1) {
     const call = calls[0]!;
-    return executeIface.encodeFunctionData("execute", [
-      call.to,
-      call.value,
-      call.data,
-    ]) as `0x${string}`;
+    return encodeFunctionData({
+      abi: EXECUTE_ABI,
+      functionName: "execute",
+      args: [call.to, call.value, call.data],
+    });
   }
-  return executeIface.encodeFunctionData("executeBatch", [
-    calls.map((c) => ({ target: c.to, value: c.value, data: c.data })),
-  ]) as `0x${string}`;
+  return encodeFunctionData({
+    abi: EXECUTE_ABI,
+    functionName: "executeBatch",
+    args: [calls.map((c) => ({ target: c.to, value: c.value, data: c.data }))],
+  });
 }
 
 function toHexQuantity(value: bigint): `0x${string}` {
@@ -94,8 +95,11 @@ function solidityMappingSlot(
   baseSlot: bigint
 ): `0x${string}` {
   return keccak256(
-    abiCoder.encode(["address", "uint256"], [account, baseSlot])
-  ) as `0x${string}`;
+    encodeAbiParameters(
+      [{ type: "address" }, { type: "uint256" }],
+      [account, baseSlot]
+    )
+  );
 }
 
 /** Vyper-style `HashMap`: keccak256(abi.encode(baseSlot, account)). */
@@ -104,8 +108,11 @@ function vyperMappingSlot(
   baseSlot: bigint
 ): `0x${string}` {
   return keccak256(
-    abiCoder.encode(["uint256", "address"], [baseSlot, account])
-  ) as `0x${string}`;
+    encodeAbiParameters(
+      [{ type: "uint256" }, { type: "address" }],
+      [baseSlot, account]
+    )
+  );
 }
 
 async function readErc20Balance(
@@ -114,10 +121,17 @@ async function readErc20Balance(
   account: `0x${string}`,
   stateOverride?: StateOverride
 ): Promise<bigint> {
-  const data = erc20Iface.encodeFunctionData("balanceOf", [account]);
+  const data = encodeFunctionData({
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: [account],
+  });
   const params: unknown[] = [{ to: token, data }, "latest"];
   if (stateOverride) params.push(stateOverride);
-  const result = (await provider.send("eth_call", params)) as string;
+  const result = (await provider.request({
+    method: "eth_call",
+    params: params as never,
+  })) as string;
   return BigInt(result === "0x" ? "0x0" : result);
 }
 
@@ -226,12 +240,12 @@ export async function estimateTornadoTailCallsGas(opts: {
     throw new Error("erc20.amount must be >= 0.");
   }
 
-  const provider = await makeEthersProvider(opts.rpcUrl);
+  const client = await makePublicClient(opts.rpcUrl);
   try {
-    const code = (await provider.send("eth_getCode", [
-      TORNADO_SIMPLE_7702_IMPLEMENTATION,
-      "latest",
-    ])) as string;
+    const code = (await client.request({
+      method: "eth_getCode",
+      params: [TORNADO_SIMPLE_7702_IMPLEMENTATION, "latest"],
+    })) as string;
     if (!code || code === "0x") {
       throw new Error(
         `Tornado Simple7702 implementation has no code at ${TORNADO_SIMPLE_7702_IMPLEMENTATION} on this RPC.`
@@ -243,7 +257,7 @@ export async function estimateTornadoTailCallsGas(opts: {
       | undefined;
     if (opts.erc20 && opts.erc20.amount > 0n) {
       const { slot } = await findErc20BalanceStorageSlot(
-        provider,
+        client,
         opts.erc20.token,
         opts.account
       );
@@ -264,15 +278,18 @@ export async function estimateTornadoTailCallsGas(opts: {
 
     let gasHex: string;
     try {
-      gasHex = (await provider.send("eth_estimateGas", [
-        {
-          from: opts.account,
-          to: opts.account,
-          data,
-        },
-        "latest",
-        stateOverride,
-      ])) as string;
+      gasHex = (await client.request({
+        method: "eth_estimateGas",
+        params: [
+          {
+            from: opts.account,
+            to: opts.account,
+            data,
+          },
+          "latest",
+          stateOverride,
+        ] as never,
+      })) as string;
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
       throw new Error(
@@ -290,7 +307,7 @@ export async function estimateTornadoTailCallsGas(opts: {
     }
     return gas;
   } finally {
-    provider.destroy();
+    disposePublicClient(client);
   }
 }
 

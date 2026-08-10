@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Mnemonic } from "derive-railgun-keys";
-import { ethers } from "ethers";
+import { addressFromPrivateKey } from "./viem-tx.js";
 
 import {
   decrypt,
@@ -115,7 +115,7 @@ export function peekAddressesFromMnemonic(
   indexes: number[]
 ): string[] {
   return indexes.map((index) =>
-    ethers.computeAddress(Mnemonic.to0xPrivateKeyByIndex(mnemonic, index))
+    addressFromPrivateKey(Mnemonic.to0xPrivateKeyByIndex(mnemonic, index))
   );
 }
 

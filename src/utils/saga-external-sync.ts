@@ -156,7 +156,11 @@ export function createSagaExternalSyncProvider(opts: {
 
     async lastCoveredBlock(params) {
       const segments = collectSegments(await getEntry(params));
-      if (segments.length === 0) return null;
+      if (segments.length === 0) {
+        throw new Error(
+          `Saga has no segments for chain ${params.chainId} address ${params.address}`
+        );
+      }
       const last = segments.reduce((max, seg) => {
         const end = inclusiveLastBlock(seg);
         return end > max ? end : max;

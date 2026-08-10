@@ -3,9 +3,9 @@ import {
   PrivacyPoolsV1_0xBow,
 } from "@kohaku-eth/privacy-pools";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
-import { Contract, formatUnits, getAddress, parseUnits } from "ethers";
+import { formatUnits, getAddress, parseAbi, parseUnits } from "viem";
 
-import { makeEthersProvider, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
+import { makePublicClient, disposePublicClient, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
@@ -14,7 +14,6 @@ import {
 } from "../utils/tokens-util.js";
 import {
   assertTornadoPaymasterConfigured,
-  assertTornadoUnshieldAmount,
   broadcastTornadoPrivateOp,
   countTornadoWithdrawals,
   configureRailgunForUnshield,
@@ -32,13 +31,16 @@ import {
   railgunUnshieldFeeBps,
 } from "../utils/railgun-unshield-max.js";
 import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
+import {
+  assertTornadoUnshieldAmountForToken,
+} from "../utils/tornado-pools.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
 
 type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
 
-const PP_ENTRYPOINT_ASSET_CONFIG_ABI = [
+const PP_ENTRYPOINT_ASSET_CONFIG_ABI = parseAbi([
   "function assetConfig(address _asset) view returns (address pool, uint256 minimumDepositAmount, uint256 vettingFeeBPS, uint256 maxRelayFeeBPS)",
-] as const;
+]);
 
 type PpPreparedOp = {
   rawData?: {
@@ -51,25 +53,38 @@ function relayFeeBpsFromPreparedOp(prepared: unknown): bigint | null {
   return raw != null ? BigInt(raw) : null;
 }
 
+/** Relayer fee in token units from a prepared Privacy Pools unshield. */
+export function privacyPoolsRelayerFeeWei(
+  prepared: unknown,
+  amountWei: bigint
+): { relayFeeBps: bigint; feeWei: bigint } | null {
+  const relayFeeBps = relayFeeBpsFromPreparedOp(prepared);
+  if (relayFeeBps == null) return null;
+  return {
+    relayFeeBps,
+    feeWei: (amountWei * relayFeeBps) / 10_000n,
+  };
+}
+
 async function fetchPrivacyPoolsMaxRelayFeeBps(
   rpcUrl: string,
   chainId: bigint
 ): Promise<bigint | null> {
   const deployment = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
   if (!deployment) return null;
-  const provider = await makeEthersProvider(rpcUrl);
+  const client = await makePublicClient(rpcUrl);
   try {
-    const entrypoint = new Contract(
-      deployment.entrypoint.entrypointAddress,
-      PP_ENTRYPOINT_ASSET_CONFIG_ABI,
-      provider
-    );
-    const cfg = await entrypoint.assetConfig(ETH_AS_ERC20);
-    return BigInt(cfg.maxRelayFeeBPS);
+    const cfg = await client.readContract({
+      address: deployment.entrypoint.entrypointAddress as `0x${string}`,
+      abi: PP_ENTRYPOINT_ASSET_CONFIG_ABI,
+      functionName: "assetConfig",
+      args: [ETH_AS_ERC20 as `0x${string}`],
+    });
+    return BigInt(cfg[3]);
   } catch {
     return null;
   } finally {
-    provider.destroy();
+    disposePublicClient(client);
   }
 }
 
@@ -106,6 +121,8 @@ export type MaxUnshieldAmountHint = {
   estimatedGasFeeWei?: bigint;
   /** Railgun fee-token max used BPS-only because bundler gas price fetch failed. */
   railgunGasEstimateFailed?: boolean;
+  /** Railgun: raw spendable balance before fee reserves (for --amount-max refine). */
+  railgunBalance?: bigint;
 };
 
 export async function maxUnshieldAmountHint(
@@ -188,6 +205,7 @@ export async function maxUnshieldAmountHint(
         cap: amount,
         privacyPoolsLargestNote: false,
         estimatedGasFeeWei,
+        railgunBalance: sum,
       };
     } catch {
       // Soft fallback for prompts: treasury fee only (no gas reserve).
@@ -200,11 +218,12 @@ export async function maxUnshieldAmountHint(
         cap: amount,
         privacyPoolsLargestNote: false,
         railgunGasEstimateFailed: true,
+        railgunBalance: sum,
       };
     }
   }
 
-  return { cap: sum, privacyPoolsLargestNote: false };
+  return { cap: sum, privacyPoolsLargestNote: false, railgunBalance: sum };
 }
 
 export async function broadcastPreparedPrivateOp(
@@ -298,7 +317,7 @@ async function runUnshieldWithPlugin(
   if (opts.protocol === "railgun") {
     if (!opts.recipientPriv) {
       throw new Error(
-        "Railgun unshield requires a recipient public account from this wallet."
+        "Railgun unshield requires a recipient public or stealth account from this wallet."
       );
     }
     configureRailgunForUnshield(
@@ -309,18 +328,13 @@ async function runUnshieldWithPlugin(
       railgunPimlicoBundlerUrl(opts.chainId)
     );
   }
-  if (opts.protocol === "tornado" && !opts.recipientDerivationPath) {
-    throw new Error(
-      "Tornado unshield requires a wallet public-account derivation path for the EIP-7702 delegation."
-    );
-  }
 
   const maybeSync = plugin as { sync?: () => Promise<void> };
   if (
     (opts.protocol === "privacy-pools" || opts.protocol === "tornado") &&
     typeof maybeSync.sync === "function"
   ) {
-    opts.onStatus?.("Syncing private state…");
+    opts.onStatus?.("Syncing private state");
     await maybeSync.sync.call(plugin);
   }
 
@@ -350,7 +364,12 @@ async function runUnshieldWithPlugin(
 
   if (opts.protocol === "tornado") {
     assertTornadoPaymasterConfigured(opts.chainId);
-    assertTornadoUnshieldAmount(opts.chainId, opts.amount);
+    assertTornadoUnshieldAmountForToken(opts.chainId, opts.amount, {
+      isEth: opts.tokenMeta.isEth,
+      tokenAddress: opts.tokenMeta.tokenAddress,
+      symbol: opts.tokenMeta.symbol,
+      decimals: opts.tokenMeta.decimals,
+    });
   }
 
   let tornadoMaxFeePerGas: bigint | undefined;
@@ -368,12 +387,12 @@ async function runUnshieldWithPlugin(
 
   opts.onStatus?.(
     mode === "broadcast"
-      ? "Preparing unshield…"
+      ? "Preparing unshield"
       : opts.protocol === "railgun"
-        ? "Building Railgun unshield…"
+        ? "Building Railgun unshield"
         : opts.protocol === "tornado"
-          ? "Building Tornado Cash unshield…"
-          : "Building Privacy Pools unshield…"
+          ? "Building Tornado Cash unshield"
+          : "Building Privacy Pools unshield"
   );
 
   const privateOp =
@@ -385,7 +404,7 @@ async function runUnshieldWithPlugin(
             opts.recipient,
             opts.amount,
             tornadoMaxFeePerGas!,
-            opts.recipientDerivationPath!,
+            opts.recipientDerivationPath,
             tornadoWithdrawalCount!
           )
         )
@@ -407,7 +426,7 @@ async function runUnshieldWithPlugin(
     };
   }
 
-  opts.onStatus?.("Broadcasting unshield…");
+  opts.onStatus?.("Broadcasting unshield");
   return await broadcastPreparedPrivateOp(
     opts.protocol,
     host,

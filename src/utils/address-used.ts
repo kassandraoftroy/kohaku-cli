@@ -1,4 +1,4 @@
-import type { JsonRpcProvider } from "ethers";
+import type { KohakuPublicClient } from "./rpc.js";
 
 /**
  * HD-derived public addresses are expected to be plain EOAs: `eth_getCode` is `0x`
@@ -12,15 +12,15 @@ function hasNonEmptyCode(code: string): boolean {
 
 export async function isAddressUsed(
   address: string,
-  provider: JsonRpcProvider
+  client: KohakuPublicClient
 ): Promise<boolean> {
   const [nonce, balance, code] = await Promise.all([
-    provider.getTransactionCount(address),
-    provider.getBalance(address),
-    provider.getCode(address),
+    client.getTransactionCount({ address: address as `0x${string}` }),
+    client.getBalance({ address: address as `0x${string}` }),
+    client.getCode({ address: address as `0x${string}` }),
   ]);
   if (nonce > 0 || balance > 0n) {
     return true;
   }
-  return hasNonEmptyCode(code);
+  return hasNonEmptyCode(code ?? "0x");
 }

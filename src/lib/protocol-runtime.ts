@@ -1,8 +1,7 @@
 import type { Host } from "@kohaku-eth/plugins";
-import type { JsonRpcProvider } from "ethers";
 
 import { makeHost } from "../host/makeHost.js";
-import { makeEthersProvider } from "../utils/rpc.js";
+import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc.js";
 import { runWithWalletTrafficLog } from "../utils/tor.js";
 import {
   createProtocolPlugin,
@@ -41,7 +40,7 @@ export async function withProtocolRuntime<T>(
       return fn(host, plugin);
     }
 
-    const rpc = await makeEthersProvider(ctx.rpcUrl);
+    const rpc = await makePublicClient(ctx.rpcUrl);
     try {
       const host = await makeHost({
         rpc,
@@ -54,7 +53,7 @@ export async function withProtocolRuntime<T>(
       const plugin = await createProtocolPlugin(ctx.protocol, host, ctx.chainId);
       return await fn(host, plugin);
     } finally {
-      rpc.destroy();
+      disposePublicClient(rpc);
     }
   });
 }
@@ -62,11 +61,11 @@ export async function withProtocolRuntime<T>(
 /** Public-chain RPC for approvals / sends; reuses the Railgun session provider when active. */
 export async function rpcForWalletOps(
   ctx: ProtocolRuntimeContext
-): Promise<{ rpc: JsonRpcProvider; dispose: () => void }> {
+): Promise<{ rpc: KohakuPublicClient; dispose: () => void }> {
   if (ctx.protocol === "railgun") {
     const session = await acquireRailgunSession(ctx);
     return { rpc: session.rpc, dispose: () => {} };
   }
-  const rpc = await makeEthersProvider(ctx.rpcUrl);
-  return { rpc, dispose: () => rpc.destroy() };
+  const rpc = await makePublicClient(ctx.rpcUrl);
+  return { rpc, dispose: () => disposePublicClient(rpc) };
 }

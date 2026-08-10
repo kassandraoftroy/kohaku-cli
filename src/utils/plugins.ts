@@ -11,7 +11,7 @@ import {
   createRailgunPlugin,
   type LogLevel,
 } from "@kohaku-eth/railgun";
-import type { AssetAmount, Host } from "@kohaku-eth/plugins";
+import type { AssetAmount, Host, UnshieldOptions } from "@kohaku-eth/plugins";
 import {
   DepositStrategy,
   TornadoCashConfigs,
@@ -200,6 +200,10 @@ export function assertTornadoEthOnly(isEth: boolean): void {
   }
 }
 
+/**
+ * @deprecated Prefer {@link assertTornadoDepositAmount} from tornado-pools
+ * (saga-backed, supports ERC-20). Kept for ETH-only call sites mid-migration.
+ */
 export function assertTornadoShieldAmount(chainId: bigint, amount: bigint): void {
   const min = TORNADO_ETH_MIN_DENOMINATION_WEI[chainId.toString()];
   if (!min) {
@@ -246,6 +250,8 @@ export type AnyPlugin = {
   ): Promise<unknown>;
   sync?: () => Promise<void>;
   notes?: (...args: unknown[]) => Promise<unknown[]>;
+  /** Tornado Cash: register legacy note strings that match synced deposits. */
+  importNotes?: (notes: string | string[]) => Promise<unknown[]>;
 };
 
 export const ETH_AS_ERC20 = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -334,12 +340,31 @@ export type UnshieldTailCall = TornadoTailCall;
 const TAIL_FORWARD_FEE_PAD_NUM = 23n;
 const TAIL_FORWARD_FEE_PAD_DEN = 20n;
 
+/**
+ * Railgun unshield execution-phase tails. Unlike Tornado, do **not** bake a
+ * leftover-forward ETH transfer — unshielded funds already land at `to` via the
+ * privacy paymaster. Native unshield still prefixes `WETH.withdraw` in the SDK.
+ */
+export function railgunUnshieldOptions(
+  tailCalls: readonly UnshieldTailCall[] = []
+): UnshieldOptions | undefined {
+  if (tailCalls.length === 0) return undefined;
+  return {
+    tailCalls: async () => [...tailCalls],
+  };
+}
+
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
   recipient: `0x${string}`,
   amountWei: bigint,
   maxFeePerGas: bigint,
-  delegationPath: string,
+  /**
+   * Optional BIP-32 path for a recoverable batch delegator (public HD account).
+   * Omit for external / stealth recipients — the SDK uses an ephemeral delegator
+   * and forwards leftovers to `recipient`.
+   */
+  delegationPath: string | undefined,
   withdrawalCount: number,
   tailCalls: readonly UnshieldTailCall[] = [],
   /** Measured execution-tail gas for user `tailCalls` (SDK `tailCallsGasEstimate`). */
@@ -351,7 +376,9 @@ export function tornadoUnshieldOptions(
 
   const base: TCPaymasterUnshieldOptions = {
     mode: "paymaster",
-    delegation: { mode: "deterministic", path: delegationPath },
+    delegation: delegationPath
+      ? { mode: "deterministic", path: delegationPath }
+      : { mode: "deterministic" },
   };
 
   // No user tails: omit `tailCalls` so the SDK forwards leftovers with the
@@ -466,7 +493,8 @@ export async function prepareProtocolShield(
 ): Promise<unknown> {
   if (protocol === "tornado") {
     return plugin.prepareShield(asset, {
-      strategy: DepositStrategy.MaxAnonimitySet,
+      // Prefer larger denominations first (fewer deposits / aggregated approvals).
+      strategy: DepositStrategy.MinFee,
     });
   }
   return plugin.prepareShield(asset);
