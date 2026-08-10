@@ -19,4 +19,6 @@ export const cliOptions = {
     "Agent mode: print JSON instead of human-readable output (no prompts)",
   withoutTor:
     "Disable Tor for non-RPC HTTP (default: Tor on for private-protocol sync / shield / unshield). RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
+  stealthStartBlock:
+    "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan",
 } as const;

@@ -13,11 +13,17 @@ export const GNS_CONTRACT =
 export const WNS_CONTRACT =
   "0x0000000000696760E15f265e828DB644A0c242EB" as Address;
 
-/** namehash("gwei") — parent node / TLD id for top-level .gwei names. */
+/**
+ * namehash("gwei") — TLD node the contract uses when `parentId == 0`.
+ * Do not pass this to `isAvailable` for top-level names; use parentId `0`.
+ */
 export const GWEI_NODE =
   "0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f" as const;
 
-/** namehash("wei") — parent node / TLD id for top-level .wei names. */
+/**
+ * namehash("wei") — TLD node the contract uses when `parentId == 0`.
+ * Do not pass this to `isAvailable` for top-level names; use parentId `0`.
+ */
 export const WEI_NODE =
   "0xa82820059d5df798546bcc2985157a77c3eef25eba9ba01899927333efacbd6f" as const;
 

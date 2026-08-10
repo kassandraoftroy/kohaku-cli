@@ -32,6 +32,29 @@ export type StealthScanResult = {
   fullHistoryPass: boolean;
 };
 
+/** Parse `--stealth-start-block` (decimal or 0x-hex). */
+export function parseStealthStartBlock(raw: string): bigint {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error("--stealth-start-block must be a non-empty block number.");
+  }
+  if (!/^(0x[0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) {
+    throw new Error(
+      `--stealth-start-block must be a decimal or 0x-hex block number (got "${raw}").`
+    );
+  }
+  let block: bigint;
+  try {
+    block = BigInt(trimmed);
+  } catch {
+    throw new Error(`Invalid --stealth-start-block: ${raw}`);
+  }
+  if (block < 0n) {
+    throw new Error("--stealth-start-block must be >= 0.");
+  }
+  return block;
+}
+
 /**
  * Scan ERC-5564 announcements for payments to this wallet's stealth keys and
  * persist any new stealth accounts.
@@ -41,7 +64,8 @@ export type StealthScanResult = {
  *
  * History:
  * - First run (or stores that never completed a full pass): from announcer
- *   deploy block → latest, in KOHAKU_GETLOGS_MAX_BLOCK_SPAN chunks (default 499).
+ *   deploy block (or `startFromBlock` if higher) → latest, in
+ *   KOHAKU_GETLOGS_MAX_BLOCK_SPAN chunks (default 499).
  * - Later runs: lastScannedBlock+1 → latest only.
  */
 export async function scanAndImportStealthAnnouncements(opts: {
@@ -50,8 +74,14 @@ export async function scanAndImportStealthAnnouncements(opts: {
   password: string;
   keypair: StealthKeypair;
   chainId: bigint;
-  /** Force rescan from announcer deploy block (ignore lastScannedBlock). */
+  /** Force rescan from the scan floor (ignore lastScannedBlock). */
   fullRescan?: boolean;
+  /**
+   * Inclusive lower bound for the first/full history pass. Clamped to at least
+   * the announcer deploy block. Incremental scans still resume from
+   * lastScannedBlock+1.
+   */
+  startFromBlock?: bigint;
   onProgress?: (msg: string) => void;
 }): Promise<StealthScanResult> {
   // Creates stealth-accounts.json on first use for pre-existing wallets.
@@ -61,18 +91,27 @@ export async function scanAndImportStealthAnnouncements(opts: {
   }
 
   const latest = await opts.client.getBlockNumber();
-  const startDefault = stealthAnnouncerStartBlock(opts.chainId);
+  const announcerDeploy = stealthAnnouncerStartBlock(opts.chainId);
+  const startFloor =
+    opts.startFromBlock !== undefined && opts.startFromBlock > announcerDeploy
+      ? opts.startFromBlock
+      : announcerDeploy;
   const store = storage.getStore();
   const needsFullHistory =
     opts.fullRescan || !store.fullHistoryScanned;
 
   let fromBlock: bigint;
   if (needsFullHistory) {
-    // Always cover the entire announcer history at least once (chunked below).
-    fromBlock = startDefault;
+    // Resume mid-pass from lastScannedBlock when present; allow --stealth-start-block
+    // to jump the floor forward past an earlier cursor.
+    fromBlock = startFloor;
+    if (store.lastScannedBlock) {
+      const resume = BigInt(store.lastScannedBlock) + 1n;
+      if (resume > fromBlock) fromBlock = resume;
+    }
   } else {
     const stored = store.lastScannedBlock;
-    fromBlock = stored ? BigInt(stored) + 1n : startDefault;
+    fromBlock = stored ? BigInt(stored) + 1n : startFloor;
   }
 
   if (fromBlock > latest) {

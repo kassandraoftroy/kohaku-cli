@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { Command } from "commander";
 import { createEthereumNames } from "@1001-digital/ethereum-names";
-import { formatEther } from "viem";
+import { formatEther, namehash, type Address, type Hex } from "viem";
 
 import {
   addNameWalletOptions,
@@ -11,6 +11,8 @@ import {
 import { MIN_COMMITMENT_AGE_SECONDS } from "../lib/names/constants.js";
 import {
   defaultDurationSeconds,
+  nftContract,
+  prepareEnsPublicResolverSetText,
   prepareEnsRegister,
   prepareNftRegister,
   prepareSetReverse,
@@ -22,6 +24,8 @@ import {
   resolveNameSigner,
   resolveRegisterSigner,
 } from "../lib/names/ownership.js";
+import { makePublicAccountsStorage } from "../utils/public-accounts.js";
+import { parseFromIndex } from "../lib/shield-flow.js";
 import {
   parseManagedName,
   parseNameProtocol,
@@ -45,6 +49,19 @@ import {
 import { makeStealthAccountsStorage } from "../lib/stealth/storage.js";
 import { logCliJson } from "../utils/cli-quiet.js";
 import { cliError } from "../utils/cli-errors.js";
+import {
+  estimateEip7702BatchUserOpFee,
+  needsSimple7702Authorization,
+  sendEip7702BatchUserOperation,
+  type Eip7702BatchCall,
+} from "../utils/eip7702-batch-userop.js";
+import {
+  estimateEoaTxFeePreview,
+  feeConfirmLine,
+  printFeePreview,
+} from "../utils/fee-preview.js";
+import { NAME_NFT_ABI } from "../lib/names/abis.js";
+import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 
 type Opts = NameWalletOpts & {
   protocol?: string;
@@ -53,16 +70,62 @@ type Opts = NameWalletOpts & {
   years?: string;
 };
 
+function toBatchCall(t: PreparedTx): Eip7702BatchCall {
+  return { to: t.to, data: t.data, value: t.value };
+}
+
+function summarizeSteps(txs: PreparedTx[]): string {
+  return txs.map((t) => t.step).join(" + ");
+}
+
+/** Predicted GNS/WNS ownership before reveal (token id is deterministic). */
+async function predictNftOwnership(opts: {
+  client: Parameters<typeof readNameOwnership>[0];
+  parsed: { name: string; protocol: "gns" | "wns" };
+  owner: Address;
+}): Promise<NameOwnership> {
+  const contract = nftContract(opts.parsed.protocol);
+  const tokenId = await opts.client.readContract({
+    address: contract,
+    abi: NAME_NFT_ABI,
+    functionName: "computeId",
+    args: [opts.parsed.name],
+  });
+  return {
+    owner: opts.owner,
+    manager: opts.owner,
+    wrapped: false,
+    node: `0x${tokenId.toString(16).padStart(64, "0")}` as Hex,
+    tokenId,
+  };
+}
+
+function predictEnsOwnership(opts: {
+  parsed: { name: string };
+  owner: Address;
+}): NameOwnership {
+  return {
+    owner: opts.owner,
+    manager: opts.owner,
+    wrapped: false,
+    node: namehash(opts.parsed.name) as Hex,
+  };
+}
+
 /**
  * Bootstrap wallet stealth identity: optionally register a name + text/reverse,
  * always publish scheme-1 keys on the ERC-6538 registry for the chosen index.
+ *
+ * With a new name: commit (EOA) → wait 60s → one EIP-7702 UserOp for
+ * reveal/register + reverse + text + registerKeys.
+ * With `--no-name`: a single `registerKeys` EOA tx (no 7702).
  */
 export function registerInitWalletCommand(program: Command): void {
   addNameWalletOptions(
     program
       .command("init-wallet")
       .description(
-        "Publish stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 text record"
+        "Publish stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 (post-commit steps batched via EIP-7702)"
       )
       .option(
         "--name <label-or-name>",
@@ -95,11 +158,31 @@ export function registerInitWalletCommand(program: Command): void {
     }
 
     await withNameCommandContext(opts, async (ctx) => {
+      // Default index 0: persist the first public account if the wallet is empty
+      // so init-wallet works without a prior next-fresh-address / balances run.
+      const indexFlag = opts.index ?? "0";
+      const idx = parseFromIndex(indexFlag);
+      if (idx === 0) {
+        const publicStorage = makePublicAccountsStorage(
+          ctx.walletDir,
+          ctx.mnemonic,
+          ctx.password
+        );
+        if (!publicStorage.getAccount(0)) {
+          const [created] = publicStorage.addNextAccounts(1);
+          if (!ctx.nonInteractive) {
+            console.log(
+              chalk.dim(`Created public account index 0: ${created!.address}`)
+            );
+          }
+        }
+      }
+
       const signer = resolveRegisterSigner({
         walletDir: ctx.walletDir,
         mnemonic: ctx.mnemonic,
         password: ctx.password,
-        indexFlag: opts.index ?? "0",
+        indexFlag,
         ownerPriv: ctx.ownerPriv,
         dryRun: ctx.dryRun,
       });
@@ -249,14 +332,17 @@ export function registerInitWalletCommand(program: Command): void {
         needsRegister = true;
       }
 
+      /** Post-commit (or reuse) calls from the same EOA, batched via 7702 when 2+. */
+      let batchTxs: PreparedTx[] = [];
+      let finishStep = "reveal";
+
       if (needsRegister) {
         const secret = generateSecret();
         const years = Number(opts.years ?? "1");
         const durationSeconds = defaultDurationSeconds(years);
-        let commitTx;
-        let finishTx;
+        let commitTx: PreparedTx;
+        let finishTx: PreparedTx;
         let feeWei: bigint;
-        let finishStep: string;
 
         if (parsed.protocol === "ens") {
           const prepared = await prepareEnsRegister({
@@ -271,6 +357,10 @@ export function registerInitWalletCommand(program: Command): void {
           finishTx = prepared.register;
           feeWei = prepared.feeWei;
           finishStep = "register";
+          ownership = predictEnsOwnership({
+            parsed,
+            owner: signer.address,
+          });
         } else {
           if (years !== 1) {
             throw new Error(
@@ -287,7 +377,39 @@ export function registerInitWalletCommand(program: Command): void {
           finishTx = prepared.reveal;
           feeWei = prepared.feeWei;
           finishStep = "reveal";
+          ownership = await predictNftOwnership({
+            client: ctx.client,
+            parsed: { ...parsed, protocol: parsed.protocol },
+            owner: signer.address,
+          });
         }
+
+        const reverseTx =
+          parsed.protocol === "ens"
+            ? null // ENS register already sets reverseRecord: true
+            : prepareSetReverse({ parsed, ownership });
+
+        const textTx =
+          parsed.protocol === "ens"
+            ? prepareEnsPublicResolverSetText({
+                parsed,
+                key: STEALTH_TEXT_RECORD_KEY,
+                value: keypair.stealthMetaAddressURI,
+              })
+            : await prepareSetText({
+                client: ctx.client,
+                parsed,
+                ownership,
+                key: STEALTH_TEXT_RECORD_KEY,
+                value: keypair.stealthMetaAddressURI,
+              });
+
+        batchTxs = [
+          finishTx,
+          ...(reverseTx ? [reverseTx] : []),
+          textTx,
+          ...(registryTx ? [registryTx] : []),
+        ];
 
         if (!ctx.nonInteractive) {
           console.log(
@@ -295,64 +417,40 @@ export function registerInitWalletCommand(program: Command): void {
               `Register ${parsed.name} → ${signer.address} (fee ${formatEther(feeWei)} ETH)`
             )
           );
+          console.log(
+            chalk.dim(
+              `Plan: commit → wait 60s → one EIP-7702 UserOp (${summarizeSteps(batchTxs)})`
+            )
+          );
         }
 
         if (ctx.dryRun) {
           await simulatePreparedTxs(ctx.client, signer.address, [commitTx]);
-          const dryTxs = [
-            commitTx,
-            finishTx,
-            ...(registryTx ? [registryTx] : []),
-          ];
-          printPreparedTxs(dryTxs, signer.address, {
-            title: "init-wallet registration (not submitted)",
+          printPreparedTxs([commitTx], signer.address, {
+            title: "init-wallet step 1: commit (EOA, not submitted)",
           });
-        } else {
-          if (!signer.privateKey) {
-            throw new Error("Missing private key. Pass --owner-priv if needed.");
-          }
-          await maybeConfirm(
-            ctx.nonInteractive,
-            `Commit registration for ${parsed.name}?`
+          const needsDelegation = await needsSimple7702Authorization(
+            ctx.client,
+            signer.address
           );
-          const [commitHash] = await broadcastPreparedTxs({
+          const fees = await estimateEip7702BatchUserOpFee({
             client: ctx.client,
-            rpcUrl: ctx.rpcUrl,
+            chainId: ctx.chainId,
+            senderAddress: signer.address,
+            calls: batchTxs.map(toBatchCall),
             privateKey: signer.privateKey,
-            from: signer.address,
-            txs: [commitTx],
-            nonInteractive: true,
           });
-          hashes.push(commitHash!);
-          await waitUntilCommitmentAged({
-            client: ctx.client,
-            commitTxHash: commitHash!,
-            minAgeSeconds: MIN_COMMITMENT_AGE_SECONDS,
-            nonInteractive: ctx.nonInteractive,
+          printPreparedTxs(batchTxs, signer.address, {
+            title: "init-wallet step 2: EIP-7702 UserOp (not submitted)",
           });
-          await maybeConfirm(
-            ctx.nonInteractive,
-            `Submit ${finishStep} for ${parsed.name}?`
+          printFeePreview(fees);
+          console.log(
+            chalk.dim(
+              needsDelegation
+                ? "EIP-7702 delegation will be included in the UserOp."
+                : "Account already delegates to Simple7702; UserOp skips re-authorization."
+            )
           );
-          const [finishHash] = await broadcastPreparedTxs({
-            client: ctx.client,
-            rpcUrl: ctx.rpcUrl,
-            privateKey: signer.privateKey,
-            from: signer.address,
-            txs: [finishTx],
-            nonInteractive: true,
-          });
-          hashes.push(finishHash!);
-        }
-        ownership = await readNameOwnership(ctx.client, parsed).catch(
-          () => ownership
-        );
-      } else if (!ctx.nonInteractive) {
-        console.log(chalk.dim(`Reusing owned name ${parsed.name}`));
-      }
-
-      if (!ownership) {
-        if (ctx.dryRun && needsRegister) {
           if (ctx.nonInteractive) {
             logCliJson({
               action: "init-wallet",
@@ -361,34 +459,133 @@ export function registerInitWalletCommand(program: Command): void {
               owner: signer.address,
               stealthMetaAddressURI: keypair.stealthMetaAddressURI,
               dryRun: true,
-              note: "Registration payloads printed above; record updates require --broadcast after commit/reveal.",
+              mode: "commit-then-eip7702-userop",
+              implementation: SIMPLE_7702_IMPLEMENTATION,
+              commit: commitTx,
+              userOpCalls: batchTxs,
+              fees,
             });
-          } else {
-            console.log(
-              chalk.dim(
-                "Dry-run: register payloads printed. Re-run with --broadcast to register and set stealth text/reverse/registry."
-              )
-            );
-            console.log(
-              chalk.dim(
-                `Would publish ${STEALTH_TEXT_RECORD_KEY}=${keypair.stealthMetaAddressURI}`
-              )
-            );
-            if (registryTx) {
-              console.log(
-                chalk.dim(
-                  `Would registerKeys on ERC-6538 for ${signer.address}`
-                )
-              );
-            }
           }
           return;
         }
+
+        if (!signer.privateKey) {
+          throw new Error("Missing private key. Pass --owner-priv if needed.");
+        }
+
+        await maybeConfirm(
+          ctx.nonInteractive,
+          `Commit registration for ${parsed.name}?`
+        );
+        const [commitHash] = await broadcastPreparedTxs({
+          client: ctx.client,
+          rpcUrl: ctx.rpcUrl,
+          privateKey: signer.privateKey,
+          from: signer.address,
+          txs: [commitTx],
+          nonInteractive: true,
+        });
+        hashes.push(commitHash!);
+
+        await waitUntilCommitmentAged({
+          client: ctx.client,
+          commitTxHash: commitHash!,
+          minAgeSeconds: MIN_COMMITMENT_AGE_SECONDS,
+          nonInteractive: ctx.nonInteractive,
+        });
+
+        const fees = await estimateEip7702BatchUserOpFee({
+          client: ctx.client,
+          chainId: ctx.chainId,
+          senderAddress: signer.address,
+          calls: batchTxs.map(toBatchCall),
+          privateKey: signer.privateKey,
+        });
+        if (!ctx.nonInteractive) printFeePreview(fees);
+
+        await maybeConfirm(
+          ctx.nonInteractive,
+          `Submit ${summarizeSteps(batchTxs)} as one EIP-7702 UserOp from ${signer.address}?\n  ${feeConfirmLine(fees)}`
+        );
+
+        const sent = await sendEip7702BatchUserOperation({
+          client: ctx.client,
+          chainId: ctx.chainId,
+          privateKey: signer.privateKey,
+          calls: batchTxs.map(toBatchCall),
+        });
+        hashes.push(sent.txHash);
+
+        stealthStorage.setMeta({
+          metaAddressURI: keypair.stealthMetaAddressURI,
+          name: parsed.name,
+        });
+
+        try {
+          const ethNames = createEthereumNames({ rpcUrl: ctx.rpcUrl });
+          const published = await ethNames.getText(
+            parsed.name,
+            STEALTH_TEXT_RECORD_KEY
+          );
+          if (
+            published &&
+            published.toLowerCase() !==
+              keypair.stealthMetaAddressURI.toLowerCase()
+          ) {
+            console.log(
+              chalk.yellow(
+                `Warning: on-chain text record differs from expected meta URI.`
+              )
+            );
+          }
+        } catch {
+          // ignore verify failures
+        }
+
+        const result = {
+          action: "init-wallet",
+          name: parsed.name,
+          protocol: parsed.protocol,
+          owner: signer.address,
+          index: signer.index,
+          stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+          mode: "commit-then-eip7702-userop",
+          userOpHash: sent.userOpHash,
+          txs: hashes,
+          urls: hashes.map((h) => etherscanTxUrl(ctx.chainId, h)),
+        };
+        if (ctx.nonInteractive) logCliJson(result);
+        else {
+          console.log(
+            chalk.green(`Initialized wallet identity ${parsed.name}`)
+          );
+          console.log(
+            chalk.dim(`stealth meta: ${keypair.stealthMetaAddressURI}`)
+          );
+          console.log(
+            chalk.dim(
+              `Batched ${batchTxs.length} calls via EIP-7702 (${finishStep} + records${registryTx ? " + registerKeys" : ""}).`
+            )
+          );
+          for (const url of result.urls) console.log(chalk.dim(url));
+        }
+        return;
+      }
+
+      // Reuse owned name: skip commit/reveal; only apply missing reverse/text/registry.
+      if (!ctx.nonInteractive) {
+        console.log(chalk.dim(`Reusing owned name ${parsed.name}`));
+      }
+      if (!ownership) {
         ownership = await readNameOwnership(ctx.client, parsed);
       }
 
+      // Prefer owner for wrapped ENS (manager is the NameWrapper contract).
+      const recordAddress = ownership.wrapped
+        ? ownership.owner
+        : ownership.manager;
       const recordSigner = resolveNameSigner({
-        requiredAddress: ownership.manager,
+        requiredAddress: recordAddress,
         walletDir: ctx.walletDir,
         mnemonic: ctx.mnemonic,
         password: ctx.password,
@@ -397,46 +594,164 @@ export function registerInitWalletCommand(program: Command): void {
         dryRun: ctx.dryRun,
       });
 
-      const reverseTx =
-        parsed.protocol === "ens" && needsRegister
-          ? null // ENS register already set reverseRecord: true
-          : prepareSetReverse({ parsed, ownership });
+      const ethNames = createEthereumNames({ rpcUrl: ctx.rpcUrl });
+      const wantName = parsed.name.toLowerCase();
+      const wantMeta = keypair.stealthMetaAddressURI.toLowerCase();
 
-      const textTx = await prepareSetText({
-        client: ctx.client,
-        parsed,
-        ownership,
-        key: STEALTH_TEXT_RECORD_KEY,
-        value: keypair.stealthMetaAddressURI,
-      });
-
-      // Registry must be signed by the registrant (name owner / --index).
-      const recordTxs = [
-        ...(reverseTx ? [reverseTx] : []),
-        textTx,
-        ...(registryTx ? [registryTx] : []),
-      ];
-
-      if (ctx.dryRun) {
-        if (!needsRegister) {
-          const managerTxs = [
-            ...(reverseTx ? [reverseTx] : []),
-            textTx,
-          ];
-          if (managerTxs.length > 0) {
-            await simulatePreparedTxs(
-              ctx.client,
-              recordSigner.address,
-              managerTxs
+      let needsReverse = true;
+      try {
+        const primaries = await ethNames.reverseAll(recordSigner.address);
+        const current =
+          parsed.protocol === "ens"
+            ? primaries.ens
+            : parsed.protocol === "gns"
+              ? primaries.gns
+              : primaries.wns;
+        if (current && current.toLowerCase() === wantName) {
+          needsReverse = false;
+          if (!ctx.nonInteractive) {
+            console.log(
+              chalk.dim(
+                `Reverse already set to ${parsed.name}; skipping set-reverse.`
+              )
             );
           }
-          if (registryTx) {
-            await simulatePreparedTxs(ctx.client, signer.address, [registryTx]);
+        }
+      } catch {
+        needsReverse = true;
+      }
+
+      let needsText = true;
+      try {
+        const existingText = await ethNames.getText(
+          parsed.name,
+          STEALTH_TEXT_RECORD_KEY
+        );
+        if (existingText && existingText.toLowerCase() === wantMeta) {
+          needsText = false;
+          if (!ctx.nonInteractive) {
+            console.log(
+              chalk.dim(
+                `${STEALTH_TEXT_RECORD_KEY} already set; skipping set-text.`
+              )
+            );
           }
         }
-        printPreparedTxs(recordTxs, recordSigner.address, {
-          title: "init-wallet record updates (not submitted)",
+      } catch {
+        needsText = true;
+      }
+
+      if (!registryTx && !ctx.nonInteractive) {
+        console.log(
+          chalk.dim(
+            `ERC-6538 already has scheme-1 keys for ${signer.address}; skipping registerKeys.`
+          )
+        );
+      }
+
+      const reverseTx = needsReverse
+        ? prepareSetReverse({ parsed, ownership })
+        : null;
+      const textTx = needsText
+        ? await prepareSetText({
+            client: ctx.client,
+            parsed,
+            ownership,
+            key: STEALTH_TEXT_RECORD_KEY,
+            value: keypair.stealthMetaAddressURI,
+          })
+        : null;
+
+      const sameEoa =
+        recordSigner.address.toLowerCase() === signer.address.toLowerCase();
+      // Records from the name manager/owner; registry must be from the index EOA.
+      const recordBatch: PreparedTx[] = [
+        ...(reverseTx ? [reverseTx] : []),
+        ...(textTx ? [textTx] : []),
+        ...(registryTx && sameEoa ? [registryTx] : []),
+      ];
+      const separateRegistry =
+        registryTx && !sameEoa ? registryTx : null;
+
+      if (recordBatch.length === 0 && !separateRegistry) {
+        stealthStorage.setMeta({
+          metaAddressURI: keypair.stealthMetaAddressURI,
+          name: parsed.name,
         });
+        const result = {
+          action: "init-wallet",
+          name: parsed.name,
+          protocol: parsed.protocol,
+          owner: signer.address,
+          index: signer.index,
+          stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+          mode: "reuse-noop",
+          txs: [] as string[],
+          urls: [] as string[],
+        };
+        if (ctx.nonInteractive) logCliJson(result);
+        else {
+          console.log(
+            chalk.green(
+              `${parsed.name} already initialized for ${signer.address} (nothing to submit)`
+            )
+          );
+          console.log(
+            chalk.dim(`stealth meta: ${keypair.stealthMetaAddressURI}`)
+          );
+        }
+        return;
+      }
+
+      if (ctx.dryRun) {
+        if (recordBatch.length >= 2) {
+          const needsDelegation = await needsSimple7702Authorization(
+            ctx.client,
+            recordSigner.address
+          );
+          const fees = await estimateEip7702BatchUserOpFee({
+            client: ctx.client,
+            chainId: ctx.chainId,
+            senderAddress: recordSigner.address,
+            calls: recordBatch.map(toBatchCall),
+            privateKey: recordSigner.privateKey,
+          });
+          printPreparedTxs(recordBatch, recordSigner.address, {
+            title: "init-wallet EIP-7702 UserOp (not submitted)",
+          });
+          printFeePreview(fees);
+          console.log(
+            chalk.dim(
+              needsDelegation
+                ? "EIP-7702 delegation will be included in the UserOp."
+                : "Account already delegates to Simple7702; UserOp skips re-authorization."
+            )
+          );
+        } else if (recordBatch.length === 1) {
+          await simulatePreparedTxs(
+            ctx.client,
+            recordSigner.address,
+            recordBatch
+          );
+          printPreparedTxs(recordBatch, recordSigner.address, {
+            title: "init-wallet EOA tx (not submitted)",
+          });
+          const fees = await estimateEoaTxFeePreview(ctx.client, {
+            to: recordBatch[0]!.to,
+            from: recordSigner.address,
+            data: recordBatch[0]!.data,
+            value: recordBatch[0]!.value,
+          });
+          printFeePreview(fees);
+        }
+        if (separateRegistry) {
+          await simulatePreparedTxs(ctx.client, signer.address, [
+            separateRegistry,
+          ]);
+          printPreparedTxs([separateRegistry], signer.address, {
+            title: "init-wallet registerKeys (separate EOA, not submitted)",
+          });
+        }
         if (ctx.nonInteractive) {
           logCliJson({
             action: "init-wallet",
@@ -445,68 +760,97 @@ export function registerInitWalletCommand(program: Command): void {
             owner: signer.address,
             stealthMetaAddressURI: keypair.stealthMetaAddressURI,
             dryRun: true,
+            mode:
+              recordBatch.length >= 2
+                ? "eip7702-userop"
+                : recordBatch.length === 1
+                  ? "eoa"
+                  : "registry-only",
+            skipped: {
+              reverse: !needsReverse,
+              text: !needsText,
+              registerKeys: !registryTx,
+            },
+            userOpCalls: recordBatch.length >= 2 ? recordBatch : undefined,
+            eoaCalls: recordBatch.length === 1 ? recordBatch : undefined,
+            separateRegistry: separateRegistry ?? undefined,
           });
         }
         return;
       }
 
-      if (!recordSigner.privateKey) {
+      if (recordBatch.length > 0 && !recordSigner.privateKey) {
         throw new Error("Missing private key for record updates.");
       }
-      if (registryTx && !signer.privateKey) {
+      if (separateRegistry && !signer.privateKey) {
         throw new Error("Missing private key for ERC-6538 registerKeys.");
       }
 
-      if (reverseTx) {
+      if (recordBatch.length >= 2 && recordSigner.privateKey) {
+        const fees = await estimateEip7702BatchUserOpFee({
+          client: ctx.client,
+          chainId: ctx.chainId,
+          senderAddress: recordSigner.address,
+          calls: recordBatch.map(toBatchCall),
+          privateKey: recordSigner.privateKey,
+        });
+        if (!ctx.nonInteractive) printFeePreview(fees);
         await maybeConfirm(
           ctx.nonInteractive,
-          `Set reverse record ${parsed.name} for ${recordSigner.address}?`
+          `Submit ${summarizeSteps(recordBatch)} as one EIP-7702 UserOp from ${recordSigner.address}?\n  ${feeConfirmLine(fees)}`
+        );
+        const sent = await sendEip7702BatchUserOperation({
+          client: ctx.client,
+          chainId: ctx.chainId,
+          privateKey: recordSigner.privateKey,
+          calls: recordBatch.map(toBatchCall),
+        });
+        hashes.push(sent.txHash);
+      } else if (recordBatch.length === 1 && recordSigner.privateKey) {
+        const only = recordBatch[0]!;
+        const fees = await estimateEoaTxFeePreview(ctx.client, {
+          to: only.to,
+          from: recordSigner.address,
+          data: only.data,
+          value: only.value,
+        });
+        if (!ctx.nonInteractive) printFeePreview(fees);
+        await maybeConfirm(
+          ctx.nonInteractive,
+          `Submit ${only.step} from ${recordSigner.address}?\n  ${feeConfirmLine(fees)}`
         );
         const [h] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
           privateKey: recordSigner.privateKey,
           from: recordSigner.address,
-          txs: [reverseTx],
+          txs: [only],
           nonInteractive: true,
         });
         hashes.push(h!);
       }
 
-      await maybeConfirm(
-        ctx.nonInteractive,
-        `Set ${STEALTH_TEXT_RECORD_KEY} on ${parsed.name}?`
-      );
-      const [textHash] = await broadcastPreparedTxs({
-        client: ctx.client,
-        rpcUrl: ctx.rpcUrl,
-        privateKey: recordSigner.privateKey,
-        from: recordSigner.address,
-        txs: [textTx],
-        nonInteractive: true,
-      });
-      hashes.push(textHash!);
-
-      if (registryTx && signer.privateKey) {
+      if (separateRegistry && signer.privateKey) {
+        const fees = await estimateEoaTxFeePreview(ctx.client, {
+          to: separateRegistry.to,
+          from: signer.address,
+          data: separateRegistry.data,
+          value: separateRegistry.value,
+        });
+        if (!ctx.nonInteractive) printFeePreview(fees);
         await maybeConfirm(
           ctx.nonInteractive,
-          `Register scheme-1 stealth keys on ERC-6538 for ${signer.address}?`
+          `Register scheme-1 stealth keys on ERC-6538 for ${signer.address}?\n  ${feeConfirmLine(fees)}`
         );
         const [regHash] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
           privateKey: signer.privateKey,
           from: signer.address,
-          txs: [registryTx],
+          txs: [separateRegistry],
           nonInteractive: true,
         });
         hashes.push(regHash!);
-      } else if (!registryTx && !ctx.nonInteractive) {
-        console.log(
-          chalk.dim(
-            `ERC-6538 already has scheme-1 keys for ${signer.address}; skipping registerKeys.`
-          )
-        );
       }
 
       stealthStorage.setMeta({
@@ -515,7 +859,6 @@ export function registerInitWalletCommand(program: Command): void {
       });
 
       try {
-        const ethNames = createEthereumNames({ rpcUrl: ctx.rpcUrl });
         const published = await ethNames.getText(
           parsed.name,
           STEALTH_TEXT_RECORD_KEY
@@ -542,6 +885,12 @@ export function registerInitWalletCommand(program: Command): void {
         owner: signer.address,
         index: signer.index,
         stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+        mode: "reuse",
+        skipped: {
+          reverse: !needsReverse,
+          text: !needsText,
+          registerKeys: !registryTx,
+        },
         txs: hashes,
         urls: hashes.map((h) => etherscanTxUrl(ctx.chainId, h)),
       };

@@ -17,9 +17,7 @@ import {
   ENS_REGISTRY,
   ENS_REVERSE_REGISTRAR,
   GNS_CONTRACT,
-  GWEI_NODE,
   ONE_YEAR_SECONDS,
-  WEI_NODE,
   WNS_CONTRACT,
 } from "./constants.js";
 import {
@@ -42,8 +40,14 @@ export function nftContract(protocol: "gns" | "wns"): Address {
   return protocol === "gns" ? GNS_CONTRACT : WNS_CONTRACT;
 }
 
-export function nftParentId(protocol: "gns" | "wns"): bigint {
-  return BigInt(protocol === "gns" ? GWEI_NODE : WEI_NODE);
+/**
+ * Parent token id for GNS/WNS `isAvailable(label, parentId)`.
+ * Top-level `.gwei` / `.wei` names use `0` — the contract maps that to the
+ * TLD namehash internally. Passing `namehash("gwei")` / `namehash("wei")` is
+ * wrong (treated as a subdomain under a non-existent parent token).
+ */
+export function nftParentId(_protocol: "gns" | "wns"): bigint {
+  return 0n;
 }
 
 export function ensLabelTokenId(label: string): bigint {
@@ -425,6 +429,28 @@ export function prepareTransfer(opts: {
     );
   }
   return txs;
+}
+
+/**
+ * ENS `setText` against the public resolver. Use when batching with a fresh
+ * `register(..., resolver: ENS_PUBLIC_RESOLVER, ...)` in the same UserOp —
+ * reading the resolver from chain would still see address(0) before register.
+ */
+export function prepareEnsPublicResolverSetText(opts: {
+  parsed: ParsedName;
+  key: string;
+  value: string;
+}): PreparedTx {
+  const node = namehash(opts.parsed.name) as Hex;
+  return tx(
+    "set-text",
+    ENS_PUBLIC_RESOLVER,
+    encodeFunctionData({
+      abi: ENS_RESOLVER_ABI,
+      functionName: "setText",
+      args: [node, opts.key, opts.value],
+    })
+  );
 }
 
 export async function prepareSetText(opts: {

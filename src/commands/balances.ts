@@ -10,6 +10,7 @@ import {
   formatNoteAssetLabel,
   type PrivateNoteRow,
 } from "../lib/private-notes";
+import { parseStealthStartBlock } from "../lib/stealth/scan.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -41,6 +42,7 @@ type BalancesOpts = {
   tokensList?: string;
   dataDir?: string;
   withoutTor?: boolean;
+  stealthStartBlock?: string;
 };
 
 function stringifyBalancesJson(payload: unknown): string {
@@ -337,8 +339,19 @@ export function registerBalancesCommand(program: Command): void {
       "Extra ERC20 addresses (comma/space); merged with chain defaults, deduped"
     )
     .option("--without-tor", cliOptions.withoutTor)
+    .option("--stealth-start-block <block>", cliOptions.stealthStartBlock)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: BalancesOpts) => {
+      let stealthStartBlock: bigint | undefined;
+      if (opts.stealthStartBlock !== undefined) {
+        try {
+          stealthStartBlock = parseStealthStartBlock(opts.stealthStartBlock);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
         dataDir,
@@ -421,6 +434,7 @@ export function registerBalancesCommand(program: Command): void {
               includeProtocols,
               verbose: !!opts.verbose,
               withoutTor: opts.withoutTor,
+              stealthStartBlock,
               onTorStatus: (message) => {
                 if (!quiet) loading.start(message);
               },

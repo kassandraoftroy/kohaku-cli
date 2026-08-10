@@ -31,23 +31,20 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Wait until on-chain time is past the commit block's timestamp + min age.
- * Wall-clock sleeps after send (or even after receipt) can still be early if the
- * commit landed with a block.timestamp behind local time — registrars check
- * `block.timestamp - commitmentTimestamp`, so we poll chain time from the
- * inclusion block.
+ * After commit is mined: wait `minAgeSeconds` from the commit *block timestamp*
+ * (registrars require `block.timestamp - commitmentTimestamp >= minAge`).
+ *
+ * Uses a single wall-clock sleep from that timestamp, then a quick chain-time
+ * check in case the local clock is ahead of the chain.
  */
 export async function waitUntilCommitmentAged(opts: {
   client: KohakuPublicClient;
   commitTxHash: `0x${string}`;
   /** Minimum seconds after the commit block timestamp (default 60). */
   minAgeSeconds?: bigint;
-  /** Extra seconds beyond min age before reveal/register (default 2). */
-  bufferSeconds?: bigint;
   nonInteractive: boolean;
 }): Promise<void> {
   const minAge = opts.minAgeSeconds ?? MIN_COMMITMENT_AGE_SECONDS;
-  const buffer = opts.bufferSeconds ?? 2n;
   const receipt = await opts.client.getTransactionReceipt({
     hash: opts.commitTxHash,
   });
@@ -59,27 +56,37 @@ export async function waitUntilCommitmentAged(opts: {
   const commitBlock = await opts.client.getBlock({
     blockNumber: receipt.blockNumber,
   });
-  const readyAt = commitBlock.timestamp + minAge + buffer;
+  const readyAtUnix = commitBlock.timestamp + minAge;
+  const nowUnix = BigInt(Math.floor(Date.now() / 1000));
+  const waitSec =
+    readyAtUnix > nowUnix ? Number(readyAtUnix - nowUnix) : 0;
 
   if (!opts.nonInteractive) {
     console.log(
       chalk.dim(
-        `Waiting until chain time ≥ commit block + ${minAge + buffer}s ` +
-          `(commit block ${receipt.blockNumber}, ts ${commitBlock.timestamp})…`
+        waitSec > 0
+          ? `Waiting ${waitSec}s for commitment age (60s from commit block ${receipt.blockNumber})…`
+          : `Commitment age already elapsed (commit block ${receipt.blockNumber}).`
       )
     );
   }
+  if (waitSec > 0) {
+    await sleep(waitSec * 1000);
+  }
 
+  // Local clock can run ahead of chain time; wait out any remaining skew once.
   for (;;) {
     const latest = await opts.client.getBlock({ blockTag: "latest" });
-    if (latest.timestamp >= readyAt) return;
-    const remainingSec = Number(readyAt - latest.timestamp);
-    // Sleep most of the remaining window, but re-check at least every 5s near the end.
-    const sleepMs = Math.max(1_000, Math.min(remainingSec * 1000, 5_000));
+    if (latest.timestamp >= readyAtUnix) return;
+    const remainingSec = Number(readyAtUnix - latest.timestamp);
     if (!opts.nonInteractive) {
-      console.log(chalk.dim(`  ~${remainingSec}s left (chain ts ${latest.timestamp})`));
+      console.log(
+        chalk.dim(
+          `  Chain still ${remainingSec}s short of commit+${minAge.toString()}s; waiting…`
+        )
+      );
     }
-    await sleep(sleepMs);
+    await sleep(Math.max(1_000, remainingSec * 1000));
   }
 }
 

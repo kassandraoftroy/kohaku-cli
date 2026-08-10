@@ -57,6 +57,8 @@ export type CreateWalletOnDiskInput = {
   rpcUrl?: string;
   /** With rpcUrl import: also scan ERC-5564 announcements for stealth payments. */
   includeStealth?: boolean;
+  /** Inclusive lower bound for the stealth announcement scan (see scan startFromBlock). */
+  stealthStartBlock?: bigint;
 };
 
 export async function createWalletOnDisk(
@@ -114,6 +116,7 @@ export async function createWalletOnDisk(
         keypair,
         chainId,
         fullRescan: true,
+        startFromBlock: input.stealthStartBlock,
       });
       stealthImported = result.newlyImported.length;
     } finally {

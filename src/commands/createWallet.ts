@@ -10,6 +10,7 @@ import {
   createWalletOnDisk,
   generateMnemonic,
 } from "../lib/create-wallet";
+import { parseStealthStartBlock } from "../lib/stealth/scan.js";
 import {
   DEFAULT_DATA_DIR,
   resolveRpcUrl,
@@ -29,6 +30,7 @@ type CreateWalletOpts = {
   testnet?: boolean;
   longSeed?: boolean;
   includeStealth?: boolean;
+  stealthStartBlock?: string;
   dataDir?: string;
 };
 
@@ -100,6 +102,7 @@ export function registerCreateWalletCommand(program: Command): void {
       "--include-stealth",
       "With --import: also scan the ERC-5564 announcer and import matching stealth payments"
     )
+    .option("--stealth-start-block <block>", cliOptions.stealthStartBlock)
     .option(
       "--long-seed",
       "Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit)"
@@ -179,6 +182,20 @@ export function registerCreateWalletCommand(program: Command): void {
         cliError("--include-stealth only applies with --import.");
         return;
       }
+      if (opts.stealthStartBlock !== undefined && !opts.includeStealth) {
+        cliError("--stealth-start-block only applies with --include-stealth.");
+        return;
+      }
+
+      let stealthStartBlock: bigint | undefined;
+      if (opts.stealthStartBlock !== undefined) {
+        try {
+          stealthStartBlock = parseStealthStartBlock(opts.stealthStartBlock);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
 
       try {
         const created = await createWalletOnDisk({
@@ -189,6 +206,7 @@ export function registerCreateWalletCommand(program: Command): void {
           testnet: !!opts.testnet,
           rpcUrl: opts.import ? rpcUrl : undefined,
           includeStealth: !!opts.includeStealth,
+          stealthStartBlock,
         });
         if (
           !opts.nonInteractive &&

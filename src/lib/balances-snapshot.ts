@@ -161,7 +161,7 @@ async function loadPrivateBalancesForProtocol(
   );
 }
 
-const TORNADO_BALANCE_TIMEOUT_MS = 600_000;
+const TORNADO_BALANCE_TIMEOUT_MS = 360_000;
 
 export async function loadTornadoPrivateBalances(
   rpcUrl: string,
@@ -183,7 +183,7 @@ export async function loadTornadoPrivateBalances(
       setTimeout(() => {
         reject(
           new Error(
-            "Tornado Cash sync timed out after 10 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain)."
+            "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain)."
           )
         );
       }, TORNADO_BALANCE_TIMEOUT_MS);
@@ -229,6 +229,11 @@ export type LoadBalancesSnapshotOptions = {
   /** Skip Tor for privacy HTTP (default: Tor on when private protocols sync). */
   withoutTor?: boolean;
   onTorStatus?: (message: string) => void;
+  /**
+   * Lower bound for the ERC-5564 announcement scan (inclusive).
+   * When set on a first/full history pass, skips announcer history before this block.
+   */
+  stealthStartBlock?: bigint;
 };
 
 export type PrivateBalancesSnapshot = {
@@ -480,6 +485,7 @@ async function loadBalancesSnapshotInner(
         password,
         keypair,
         chainId,
+        startFromBlock: opts.stealthStartBlock,
         onProgress: (msg) => onWarning?.(msg),
       });
     } catch (e) {
