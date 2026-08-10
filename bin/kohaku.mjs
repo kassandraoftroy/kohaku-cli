@@ -20,6 +20,15 @@ function hasResolvableExt(specifier) {
 /** Specifiers to try after the default resolver fails. */
 function alternatives(specifier) {
   if (hasResolvableExt(specifier)) return [];
+
+  // Directory self-imports used by some packages (e.g. stealth-address-sdk `from '.'`).
+  if (specifier === "." || specifier === "./") {
+    return ["./index.js"];
+  }
+  if (specifier === ".." || specifier === "../") {
+    return ["../index.js"];
+  }
+
   const alts = [];
   if (
     specifier.startsWith("./") ||
@@ -27,11 +36,14 @@ function alternatives(specifier) {
     specifier.startsWith("/") ||
     specifier.startsWith("file:")
   ) {
-    alts.push(`${specifier}.js`);
-    alts.push(`${specifier.replace(/\/$/, "")}/index.js`);
+    const trimmed = specifier.replace(/\/$/, "");
+    // Prefer explicit file, then directory index (covers `./types` → `./types/index.js`).
+    alts.push(`${trimmed}.js`);
+    alts.push(`${trimmed}/index.js`);
   } else if (specifier.includes("/")) {
     // Bare package subpath without extension, e.g. maci-crypto/build/ts/hashing
     alts.push(`${specifier}.js`);
+    alts.push(`${specifier}/index.js`);
   }
   return alts;
 }
