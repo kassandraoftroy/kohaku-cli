@@ -3,6 +3,7 @@ import "./reselect-init";
 
 import { Command } from "commander";
 
+import packageJson from "../package.json" with { type: "json" };
 import { registerBalancesCommand } from "./commands/balances";
 import { registerCreateWalletCommand } from "./commands/createWallet";
 import { registerExportPrivateKeyCommand } from "./commands/exportPrivateKey";
@@ -33,7 +34,7 @@ async function main(): Promise<void> {
   program
     .name("kohaku")
     .description("Kohaku CLI")
-    .version("0.0.1");
+    .version(packageJson.version);
 
   registerCreateWalletCommand(program);
   registerExportPrivateKeyCommand(program);
