@@ -1,9 +1,9 @@
 import "./bigint-json";
 import "./reselect-init";
 
+import { createRequire } from "node:module";
 import { Command } from "commander";
 
-import packageJson from "../package.json" with { type: "json" };
 import { registerBalancesCommand } from "./commands/balances";
 import { registerCreateWalletCommand } from "./commands/createWallet";
 import { registerExportPrivateKeyCommand } from "./commands/exportPrivateKey";
@@ -28,13 +28,18 @@ import { registerSetNameReverseRecordCommand } from "./commands/set-name-reverse
 import { registerInitProfileCommand } from "./commands/init-profile";
 import { cliErrorFromCaught } from "./utils/cli-errors";
 
+const require = createRequire(import.meta.url);
+const { version: cliVersion } = require("../package.json") as {
+  version: string;
+};
+
 async function main(): Promise<void> {
   const program = new Command();
 
   program
     .name("kohaku")
     .description("Kohaku CLI")
-    .version(packageJson.version);
+    .version(cliVersion);
 
   registerCreateWalletCommand(program);
   registerExportPrivateKeyCommand(program);
