@@ -425,6 +425,8 @@ export function registerInitProfileCommand(program: Command): void {
         }
 
         if (ctx.dryRun) {
+          // Reveal/register + records cannot be UserOp-simulated until the
+          // commitment exists on-chain (and would AA21/prefund-fail anyway).
           await simulatePreparedTxs(ctx.client, signer.address, [commitTx]);
           printPreparedTxs([commitTx], signer.address, {
             title: "init-profile step 1: commit (EOA, not submitted)",
@@ -433,17 +435,14 @@ export function registerInitProfileCommand(program: Command): void {
             ctx.client,
             signer.address
           );
-          const fees = await estimateEip7702BatchUserOpFee({
-            client: ctx.client,
-            chainId: ctx.chainId,
-            senderAddress: signer.address,
-            calls: batchTxs.map(toBatchCall),
-            privateKey: signer.privateKey,
-          });
           printPreparedTxs(batchTxs, signer.address, {
-            title: "init-profile step 2: EIP-7702 UserOp (not submitted)",
+            title: "init-profile step 2: EIP-7702 UserOp (planned, not simulated)",
           });
-          printFeePreview(fees);
+          console.log(
+            chalk.dim(
+              `Step 2 (${summarizeSteps(batchTxs)}) runs after commit + ${MIN_COMMITMENT_AGE_SECONDS}s wait; skipped UserOp simulation until then.`
+            )
+          );
           console.log(
             chalk.dim(
               needsDelegation
@@ -463,7 +462,7 @@ export function registerInitProfileCommand(program: Command): void {
               implementation: SIMPLE_7702_IMPLEMENTATION,
               commit: commitTx,
               userOpCalls: batchTxs,
-              fees,
+              userOpSimulated: false,
             });
           }
           return;
