@@ -46,7 +46,10 @@ import {
   needsStealthRegistryUpdate,
   prepareRegisterStealthKeys,
 } from "../lib/stealth/registry.js";
-import { makeStealthAccountsStorage } from "../lib/stealth/storage.js";
+import {
+  makeStealthAccountsStorage,
+  type StealthAccountsStorage,
+} from "../lib/stealth/storage.js";
 import { logCliJson } from "../utils/cli-quiet.js";
 import { cliError } from "../utils/cli-errors.js";
 import {
@@ -72,6 +75,25 @@ type Opts = NameWalletOpts & {
 
 function toBatchCall(t: PreparedTx): Eip7702BatchCall {
   return { to: t.to, data: t.data, value: t.value };
+}
+
+/** Persist wallet identity on stealth-accounts (`profile` + synced name/URI). */
+function persistWalletProfile(
+  stealthStorage: StealthAccountsStorage,
+  opts: {
+    name: string;
+    index: number | null;
+    address: Address;
+    stealthMetaAddressURI: string;
+    fallbackIndex: number;
+  }
+): void {
+  stealthStorage.setProfile({
+    name: opts.name,
+    index: opts.index ?? opts.fallbackIndex,
+    address: opts.address,
+    stealthMetaAddressURI: opts.stealthMetaAddressURI,
+  });
 }
 
 function summarizeSteps(txs: PreparedTx[]): string {
@@ -162,6 +184,10 @@ export function registerInitProfileCommand(program: Command): void {
       // so init-profile works without a prior next-fresh-address / balances run.
       const indexFlag = opts.index ?? "0";
       const idx = parseFromIndex(indexFlag);
+      if (idx === null) {
+        cliError("--index must be a non-negative integer.");
+        return;
+      }
       if (idx === 0) {
         const publicStorage = makePublicAccountsStorage(
           ctx.walletDir,
@@ -209,8 +235,12 @@ export function registerInitProfileCommand(program: Command): void {
 
       if (noName) {
         if (!registryTx) {
-          stealthStorage.setMeta({
-            metaAddressURI: keypair.stealthMetaAddressURI,
+          persistWalletProfile(stealthStorage, {
+            name: signer.address,
+            index: signer.index,
+            address: signer.address,
+            stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+            fallbackIndex: idx,
           });
           const result = {
             action: "init-profile",
@@ -271,8 +301,12 @@ export function registerInitProfileCommand(program: Command): void {
         });
         hashes.push(h!);
 
-        stealthStorage.setMeta({
-          metaAddressURI: keypair.stealthMetaAddressURI,
+        persistWalletProfile(stealthStorage, {
+          name: signer.address,
+          index: signer.index,
+          address: signer.address,
+          stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+          fallbackIndex: idx,
         });
 
         const result = {
@@ -515,9 +549,12 @@ export function registerInitProfileCommand(program: Command): void {
         });
         hashes.push(sent.txHash);
 
-        stealthStorage.setMeta({
-          metaAddressURI: keypair.stealthMetaAddressURI,
+        persistWalletProfile(stealthStorage, {
           name: parsed.name,
+          index: signer.index,
+          address: signer.address,
+          stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+          fallbackIndex: idx,
         });
 
         try {
@@ -673,9 +710,12 @@ export function registerInitProfileCommand(program: Command): void {
         registryTx && !sameEoa ? registryTx : null;
 
       if (recordBatch.length === 0 && !separateRegistry) {
-        stealthStorage.setMeta({
-          metaAddressURI: keypair.stealthMetaAddressURI,
+        persistWalletProfile(stealthStorage, {
           name: parsed.name,
+          index: signer.index,
+          address: signer.address,
+          stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+          fallbackIndex: idx,
         });
         const result = {
           action: "init-profile",
@@ -852,9 +892,12 @@ export function registerInitProfileCommand(program: Command): void {
         hashes.push(regHash!);
       }
 
-      stealthStorage.setMeta({
-        metaAddressURI: keypair.stealthMetaAddressURI,
+      persistWalletProfile(stealthStorage, {
         name: parsed.name,
+        index: signer.index,
+        address: signer.address,
+        stealthMetaAddressURI: keypair.stealthMetaAddressURI,
+        fallbackIndex: idx,
       });
 
       try {

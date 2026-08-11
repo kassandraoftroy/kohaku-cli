@@ -40,6 +40,17 @@ function redactNote(note: string): string {
   return `${trimmed.slice(0, 20)}…${trimmed.slice(-8)}`;
 }
 
+/**
+ * Accept classic `tornado-<currency>-…` notes and the shorter
+ * `<currency>-…` form (prefix is redundant on this command).
+ */
+export function normalizeTornadoNoteInput(note: string): string {
+  const trimmed = note.trim();
+  if (!trimmed) return trimmed;
+  if (/^tornado-/i.test(trimmed)) return trimmed;
+  return `tornado-${trimmed}`;
+}
+
 function printResults(results: ImportNoteResult[]): void {
   for (const result of results) {
     if (result.status === "imported") {
@@ -65,7 +76,7 @@ export function registerImportTornadoNoteCommand(program: Command): void {
     )
     .argument(
       "<notes...>",
-      "Legacy note string(s): tornado-<currency>-<denom>-<chainId>-0x…"
+      "Note string(s): <currency>-<denom>-<chainId>-0x… (optional tornado- prefix)"
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
@@ -74,7 +85,9 @@ export function registerImportTornadoNoteCommand(program: Command): void {
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (notesArg: string[], opts: ImportTornadoNoteOpts) => {
-      const notes = notesArg.map((n) => n.trim()).filter(Boolean);
+      const notes = notesArg
+        .map((n) => normalizeTornadoNoteInput(n))
+        .filter(Boolean);
       if (notes.length === 0) {
         cliError("Provide at least one Tornado Cash note string.");
         return;
