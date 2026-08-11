@@ -31,6 +31,7 @@ export type NameCommandContext = {
   dryRun: boolean;
   ownerPriv: boolean;
   dataDir: string;
+  withoutTor: boolean;
 };
 
 export type NameWalletOpts = {
@@ -42,6 +43,7 @@ export type NameWalletOpts = {
   ownerPriv?: boolean;
   dataDir?: string;
   index?: string;
+  withoutTor?: boolean;
 };
 
 /**
@@ -112,6 +114,7 @@ export async function withNameCommandContext(
         dryRun: !broadcast,
         ownerPriv: !!opts.ownerPriv,
         dataDir,
+        withoutTor: !!opts.withoutTor,
       });
     });
   } catch (e) {
@@ -136,5 +139,6 @@ export function addNameWalletOptions(cmd: Command): Command {
       "Derive --index from the seed when that account is not yet in public accounts"
     )
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir);
 }

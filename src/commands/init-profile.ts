@@ -76,6 +76,7 @@ import {
 import { NAME_NFT_ABI } from "../lib/names/abis.js";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import type { KohakuPublicClient } from "../utils/rpc.js";
+import { withTor } from "../utils/tor.js";
 
 type Opts = NameWalletOpts & {
   protocol?: string;
@@ -723,26 +724,39 @@ export function registerInitProfileCommand(program: Command): void {
           nonInteractive: ctx.nonInteractive,
         });
 
-        const fees = await estimateEip7702BatchUserOpFee({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          senderAddress: signer.address,
-          calls: batchTxs.map(toBatchCall),
-          privateKey: signer.privateKey,
-        });
-        if (!ctx.nonInteractive) printFeePreview(fees);
+        const eip7702Tor = {
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          withoutTor: ctx.withoutTor,
+        };
+        const sent = await withTor(
+          !ctx.withoutTor,
+          { rpcUrl: ctx.rpcUrl, walletDir: ctx.walletDir },
+          async () => {
+            const fees = await estimateEip7702BatchUserOpFee({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              senderAddress: signer.address,
+              calls: batchTxs.map(toBatchCall),
+              privateKey: signer.privateKey,
+              ...eip7702Tor,
+            });
+            if (!ctx.nonInteractive) printFeePreview(fees);
 
-        await maybeConfirm(
-          ctx.nonInteractive,
-          `Submit ${summarizeSteps(batchTxs)} as one EIP-7702 UserOp from ${signer.address}?\n  ${feeConfirmLine(fees)}`
+            await maybeConfirm(
+              ctx.nonInteractive,
+              `Submit ${summarizeSteps(batchTxs)} as one EIP-7702 UserOp from ${signer.address}?\n  ${feeConfirmLine(fees)}`
+            );
+
+            return sendEip7702BatchUserOperation({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              privateKey: signer.privateKey!,
+              calls: batchTxs.map(toBatchCall),
+              ...eip7702Tor,
+            });
+          }
         );
-
-        const sent = await sendEip7702BatchUserOperation({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          privateKey: signer.privateKey,
-          calls: batchTxs.map(toBatchCall),
-        });
         hashes.push(sent.txHash);
 
         persistWalletProfile(stealthStorage, {
@@ -950,6 +964,9 @@ export function registerInitProfileCommand(program: Command): void {
             senderAddress: recordSigner.address,
             calls: recordBatch.map(toBatchCall),
             privateKey: recordSigner.privateKey,
+            rpcUrl: ctx.rpcUrl,
+            walletDir: ctx.walletDir,
+            withoutTor: ctx.withoutTor,
           });
           printPreparedTxs(recordBatch, recordSigner.address, {
             title: "init-profile EIP-7702 UserOp (not submitted)",
@@ -1022,24 +1039,37 @@ export function registerInitProfileCommand(program: Command): void {
       }
 
       if (recordBatch.length >= 2 && recordSigner.privateKey) {
-        const fees = await estimateEip7702BatchUserOpFee({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          senderAddress: recordSigner.address,
-          calls: recordBatch.map(toBatchCall),
-          privateKey: recordSigner.privateKey,
-        });
-        if (!ctx.nonInteractive) printFeePreview(fees);
-        await maybeConfirm(
-          ctx.nonInteractive,
-          `Submit ${summarizeSteps(recordBatch)} as one EIP-7702 UserOp from ${recordSigner.address}?\n  ${feeConfirmLine(fees)}`
+        const eip7702Tor = {
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          withoutTor: ctx.withoutTor,
+        };
+        const sent = await withTor(
+          !ctx.withoutTor,
+          { rpcUrl: ctx.rpcUrl, walletDir: ctx.walletDir },
+          async () => {
+            const fees = await estimateEip7702BatchUserOpFee({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              senderAddress: recordSigner.address,
+              calls: recordBatch.map(toBatchCall),
+              privateKey: recordSigner.privateKey,
+              ...eip7702Tor,
+            });
+            if (!ctx.nonInteractive) printFeePreview(fees);
+            await maybeConfirm(
+              ctx.nonInteractive,
+              `Submit ${summarizeSteps(recordBatch)} as one EIP-7702 UserOp from ${recordSigner.address}?\n  ${feeConfirmLine(fees)}`
+            );
+            return sendEip7702BatchUserOperation({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              privateKey: recordSigner.privateKey!,
+              calls: recordBatch.map(toBatchCall),
+              ...eip7702Tor,
+            });
+          }
         );
-        const sent = await sendEip7702BatchUserOperation({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          privateKey: recordSigner.privateKey,
-          calls: recordBatch.map(toBatchCall),
-        });
         hashes.push(sent.txHash);
       } else if (recordBatch.length === 1 && recordSigner.privateKey) {
         const only = recordBatch[0]!;
