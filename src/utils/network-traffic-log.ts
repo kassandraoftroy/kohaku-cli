@@ -144,7 +144,12 @@ export function categorizeUrl(urlStr: string): TrafficCategory {
   if (lower.includes("pimlico.io")) return "pimlico";
   if (lower.includes("squids.live") || lower.includes("subsquid")) return "subsquid";
   if (lower.includes("ppoi.") || lower.includes("/poi")) return "ppoi";
-  if (lower.includes("saga.fatsolutions")) return "saga";
+  if (
+    lower.includes("saga-pp-state.global.ssl.fastly.net") ||
+    lower.includes("saga.fatsolutions")
+  ) {
+    return "saga";
+  }
   if (lower.includes("0xbow.io")) return "asp";
   if (lower.includes("fastrelay.xyz")) return "fastrelay";
   if (

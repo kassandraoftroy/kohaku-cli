@@ -13,7 +13,7 @@
  * CDN / artifact GETs try Tor first with a short timeout, then fall back to
  * clearnet on failure, timeout, or non-2xx:
  * - GitHub proving artifacts → `clearnetReason: "artifact-fallback"`
- * - saga.fatsolutions.xyz (Tornado cold sync) → `clearnetReason: "saga-fallback"`
+ * - saga-pp-state Fastly CDN (Tornado cold sync) → `clearnetReason: "saga-fallback"`
  *
  * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor/fallback logs on stderr.
  * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps the Tor attempt.
@@ -328,10 +328,14 @@ function isGithubArtifactUrl(urlStr: string): boolean {
   }
 }
 
-/** FAT Solutions saga CDN used for Tornado Cash cold event sync. */
+/** Saga CDN (Fastly proxy, or legacy fatsolutions host) for Tornado cold sync. */
 function isSagaCdnUrl(urlStr: string): boolean {
   try {
-    return new URL(urlStr).hostname.toLowerCase().includes("saga.fatsolutions");
+    const host = new URL(urlStr).hostname.toLowerCase();
+    return (
+      host === "saga-pp-state.global.ssl.fastly.net" ||
+      host.includes("saga.fatsolutions")
+    );
   } catch {
     return false;
   }
