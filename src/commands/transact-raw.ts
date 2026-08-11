@@ -231,10 +231,6 @@ export function registerTransactRawCommand(program: Command): void {
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransactRawOpts) => {
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-      if (!rpcUrl) {
-        cliError("Missing --rpc-url (or environment variable RPC_URL).");
-        return;
-      }
 
       let targets: string[];
       let payloads: string[];

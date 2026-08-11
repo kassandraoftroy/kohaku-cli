@@ -4,7 +4,7 @@
  */
 export const cliOptions = {
   password: "Wallet password (required with --non-interactive; else prompted)",
-  rpcUrl: "RPC URL (or set RPC_URL in env)",
+  rpcUrl: "RPC URL (or set RPC_URL in env; default: http://localhost:8545)",
   dataDir: "Kohaku data directory (default: ~/.kohaku-cli)",
   walletPickList: "Wallet name (omit to choose interactively from the list)",
   walletBalancesOptional:

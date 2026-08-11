@@ -536,10 +536,6 @@ export function registerBalancesCommand(program: Command): void {
       });
       if (!walletName) return;
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-      if (!rpcUrl) {
-        cliError("Missing --rpc-url (or environment variable RPC_URL).");
-        return;
-      }
 
       let walletDir: string;
       try {

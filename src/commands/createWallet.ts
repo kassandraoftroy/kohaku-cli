@@ -95,7 +95,7 @@ export function registerCreateWalletCommand(program: Command): void {
       "Password to encrypt this wallet (required with --non-interactive; else prompted)"
     )
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
-    .option("--rpc-url <url>", "RPC URL (required with --import; or set RPC_URL). Optional for new wallets when recording the stealth scan floor")
+    .option("--rpc-url <url>", "RPC URL (or set RPC_URL; default http://localhost:8545). New wallets fall back to public RPCs if the preferred endpoint fails")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
       "--stealth-start-block <block>",
@@ -144,12 +144,6 @@ export function registerCreateWalletCommand(program: Command): void {
           return;
         }
         importRpcUrl = resolveRpcUrl(opts.rpcUrl);
-        if (!importRpcUrl) {
-          cliError(
-            "Missing --rpc-url (or environment variable RPC_URL) when using --import."
-          );
-          return;
-        }
         try {
           mnemonicPhrase = normalizeValidatedMnemonic(pasted ?? "");
         } catch (e) {
@@ -193,10 +187,10 @@ export function registerCreateWalletCommand(program: Command): void {
         }
       }
 
-      // New wallets: prefer --rpc-url / RPC_URL for the tip; else public RPCs.
+      // Prefer --rpc-url / RPC_URL / localhost default; create-wallet falls back to public RPCs on failure.
       const preferredRpcUrl = opts.import
         ? importRpcUrl
-        : resolveRpcUrl(opts.rpcUrl) || undefined;
+        : resolveRpcUrl(opts.rpcUrl);
 
       try {
         const created = await createWalletOnDisk({
