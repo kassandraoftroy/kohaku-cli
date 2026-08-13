@@ -10,13 +10,14 @@
  *    fetches the configured bundler URL. Pointing that URL at 127.0.0.1 covers
  *    both. Loopback requests stay on clearnet (they hit this proxy).
  *
- * CDN / artifact GETs try Tor first with a short timeout, then fall back to
- * clearnet on failure, timeout, or non-2xx:
- * - GitHub proving artifacts → `clearnetReason: "artifact-fallback"`
- * - saga-pp-state Fastly CDN (Tornado cold sync) → `clearnetReason: "saga-fallback"`
+ * Proving artifacts: served from the on-disk cache when present; otherwise
+ * fetched via Tor from `KOHAKU_ARTIFACTS_BASE_URL` (default:
+ * https://artifacts.0000000000.org). No clearnet fallback.
+ * Saga CDN: Tor-or-fail (no clearnet fallback). Pre-warm with
+ * `kohaku fetch-artifacts` (optionally `--without-tor`).
  *
- * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor/fallback logs on stderr.
- * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps the Tor attempt.
+ * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr.
+ * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps large Tor GETs.
  *
  * Ethereum RPC stays clearnet: viem http transport uses fetch (not Tor by default). Hosts
  * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
@@ -24,7 +25,7 @@
 import { existsSync, rmSync } from "node:fs";
 import http from "node:http";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { TorClient } from "tor-js/wasm-file";
 
@@ -34,6 +35,15 @@ import {
   runWithTrafficLogWallet,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
+import {
+  artifactRelativeKeyFromUrl,
+  buildLocalArtifactResponse,
+  getArtifactsDataDir,
+  readCachedArtifact,
+  remoteUrlForArtifactKey,
+  setArtifactsDataDir,
+  writeCachedArtifact,
+} from "./proving-artifacts.js";
 
 /** tor-js Arti directory cache (`createAutoStorage('tor-js')`). */
 export function torJsCacheDir(): string {
@@ -55,7 +65,7 @@ export function clearTorJsCache(): { cleared: boolean; path: string } {
 const PIMLICO_ORIGIN = "https://public.pimlico.io";
 const PIMLICO_ALLOWED_PATH = /^\/v2\/\d+\/rpc$/;
 
-/** Default Tor attempt budget before CDN/artifact clearnet fallback. */
+/** Default Tor attempt budget for large CDN/artifact GETs (then fail). */
 const DEFAULT_TOR_CDN_TIMEOUT_MS = 45_000;
 
 type ActiveTorSession = {
@@ -68,8 +78,6 @@ type ActiveTorSession = {
 let activeSession: ActiveTorSession | null = null;
 let clearnetFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 let fetchPatched = false;
-let warnedSagaFallback = false;
-let warnedArtifactFallback = false;
 
 function torDebug(...args: unknown[]): void {
   if (process.env.KOHAKU_TOR_DEBUG?.trim()) {
@@ -314,7 +322,7 @@ function withRequestUrl(res: Response, requestUrl: string): Response {
   return res;
 }
 
-/** GitHub-hosted proving artifacts (Railgun / Tornado keys) — Tor-hostile / redirecty. */
+/** GitHub-hosted proving artifacts (Railgun / Tornado keys). */
 function isGithubArtifactUrl(urlStr: string): boolean {
   try {
     const host = new URL(urlStr).hostname.toLowerCase();
@@ -328,7 +336,7 @@ function isGithubArtifactUrl(urlStr: string): boolean {
   }
 }
 
-/** Saga CDN (Fastly proxy, or legacy fatsolutions host) for Tornado cold sync. */
+/** Saga CDN (Fastly, or legacy fatsolutions host) for Tornado cold sync. */
 function isSagaCdnUrl(urlStr: string): boolean {
   try {
     const host = new URL(urlStr).hostname.toLowerCase();
@@ -341,37 +349,13 @@ function isSagaCdnUrl(urlStr: string): boolean {
   }
 }
 
-type CdnFallbackKind = "artifact-fallback" | "saga-fallback";
-
-function clearnetFallbackKind(
-  urlStr: string,
-  method: string
-): CdnFallbackKind | null {
-  if (method !== "GET" && method !== "HEAD") return null;
-  if (isSagaCdnUrl(urlStr)) return "saga-fallback";
-  if (isGithubArtifactUrl(urlStr)) return "artifact-fallback";
-  return null;
-}
-
-function warnClearnetFallbackOnce(
-  kind: CdnFallbackKind,
-  url: string,
-  detail: string
-): void {
-  if (kind === "saga-fallback") {
-    if (!warnedSagaFallback) {
-      warnedSagaFallback = true;
-      console.error(
-        `[kohaku] Tor saga CDN fetch ${detail}; falling back to clearnet for Tornado sync (further saga fallbacks are quieter). Set KOHAKU_TOR_DEBUG=1 for details.`
-      );
-    }
-  } else if (!warnedArtifactFallback) {
-    warnedArtifactFallback = true;
-    console.error(
-      `[kohaku] Tor proving-artifact fetch ${detail}; falling back to clearnet (further artifact fallbacks are quieter). Set KOHAKU_TOR_DEBUG=1 for details.`
-    );
-  }
-  torDebug(`${kind}: ${detail}`, url);
+/** Large GETs that use a hard Tor timeout (no clearnet fallback). */
+function needsTorHardTimeout(urlStr: string, method: string): boolean {
+  if (method !== "GET" && method !== "HEAD") return false;
+  if (isSagaCdnUrl(urlStr)) return true;
+  if (artifactRelativeKeyFromUrl(urlStr)) return true;
+  if (isGithubArtifactUrl(urlStr)) return true;
+  return false;
 }
 
 async function raceTorFetch(
@@ -407,23 +391,118 @@ function resolveRequestMethod(
   return method.toUpperCase();
 }
 
+function artifactFailHint(): string {
+  return "Try: kohaku fetch-artifacts   (or --without-tor if Tor cannot carry the download)";
+}
+
 /**
  * Fetch that uses Tor when a session is active (except loopback / allowlisted
  * RPC hosts). Safe to bind as `Host.network.fetch` — always checks live session.
  * Always records traffic when a wallet log context is active.
  *
- * Saga CDN + GitHub artifact GETs: Tor first (with timeout), then clearnet
- * fallback on failure / timeout / non-2xx.
+ * Proving artifacts: local disk cache first; else Tor (or clearnet only when
+ * no Tor session) from KOHAKU_ARTIFACTS_BASE_URL — never a Tor→clearnet retry.
+ * Saga CDN: Tor-or-fail with hard timeout.
  */
 export async function kohakuFetch(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> {
   const url = resolveRequestUrl(input);
+  const method = resolveRequestMethod(input, init);
 
   // Hits to the local Pimlico proxy are logged in the proxy (upstream Tor URL).
   if (isActivePimlicoProxyUrl(url)) {
     return clearnetFetch(input, init);
+  }
+
+  const artifactKey =
+    method === "GET" || method === "HEAD"
+      ? artifactRelativeKeyFromUrl(url)
+      : null;
+
+  if (artifactKey) {
+    const cached = readCachedArtifact(getArtifactsDataDir(), artifactKey);
+    if (cached) {
+      torDebug("local-artifact", method, artifactKey);
+      return loggedFetch(
+        input,
+        init,
+        {
+          via: "clearnet",
+          clearnetReason: "local-artifact",
+          url,
+        },
+        async () => buildLocalArtifactResponse(url, cached)
+      );
+    }
+
+    const remoteUrl = remoteUrlForArtifactKey(artifactKey);
+    const decision = shouldUseClearnet(remoteUrl);
+    if (decision.clearnet) {
+      torDebug("artifact clearnet (no tor session)", method, remoteUrl);
+      return loggedFetch(
+        input,
+        init,
+        {
+          via: "clearnet",
+          clearnetReason: decision.reason,
+          url: remoteUrl,
+        },
+        async () => {
+          const res = await clearnetFetch(remoteUrl, init);
+          if (!res.ok) {
+            throw new Error(
+              `Proving artifact fetch failed (HTTP ${res.status}) for ${artifactKey}. ${artifactFailHint()}`
+            );
+          }
+          const buf = Buffer.from(await res.arrayBuffer());
+          writeCachedArtifact(getArtifactsDataDir(), artifactKey, buf);
+          return buildLocalArtifactResponse(url, buf);
+        }
+      );
+    }
+
+    const torInit = await toTorInit(input, init);
+    const requestBytes = estimateBodyBytes(torInit.body);
+    const timeoutMs = resolveTorCdnTimeoutMs();
+    torDebug(`tor artifact (${timeoutMs}ms)`, method, remoteUrl);
+
+    try {
+      return await raceTorFetch(
+        () =>
+          loggedFetch(
+            input,
+            init,
+            {
+              via: "tor",
+              url: remoteUrl,
+              requestBytes,
+            },
+            async () => {
+              const res = withRequestUrl(
+                await activeSession!.client.fetch(remoteUrl, torInit),
+                url
+              );
+              if (!res.ok) {
+                throw new Error(
+                  `Proving artifact Tor fetch returned HTTP ${res.status} for ${artifactKey}. ${artifactFailHint()}`
+                );
+              }
+              const buf = Buffer.from(await res.arrayBuffer());
+              writeCachedArtifact(getArtifactsDataDir(), artifactKey, buf);
+              return buildLocalArtifactResponse(url, buf);
+            }
+          ),
+        timeoutMs
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/fetch-artifacts/i.test(msg)) throw e;
+      throw new Error(
+        `Proving artifact Tor fetch failed for ${artifactKey}: ${msg}. ${artifactFailHint()}`
+      );
+    }
   }
 
   const decision = shouldUseClearnet(url);
@@ -442,10 +521,9 @@ export async function kohakuFetch(
 
   const torInit = await toTorInit(input, init);
   const requestBytes = estimateBodyBytes(torInit.body);
-  const method = resolveRequestMethod(input, init);
-  const fallbackKind = clearnetFallbackKind(url, method);
+  const hardTimeout = needsTorHardTimeout(url, method);
 
-  if (!fallbackKind) {
+  if (!hardTimeout) {
     torDebug("tor", method, url);
     return loggedFetch(
       input,
@@ -461,12 +539,10 @@ export async function kohakuFetch(
   }
 
   const timeoutMs = resolveTorCdnTimeoutMs();
-  torDebug(`tor+fallback(${fallbackKind}, ${timeoutMs}ms)`, method, url);
+  torDebug(`tor hard-timeout(${timeoutMs}ms)`, method, url);
 
-  let torRes: Response | undefined;
-  let torFailDetail = "failed";
   try {
-    torRes = await raceTorFetch(
+    const torRes = await raceTorFetch(
       () =>
         loggedFetch(
           input,
@@ -481,37 +557,25 @@ export async function kohakuFetch(
         ),
       timeoutMs
     );
-  } catch (e) {
-    torFailDetail =
-      e instanceof Error && /timed out/i.test(e.message)
-        ? "timed out"
-        : "failed";
-    torDebug("tor attempt error:", e instanceof Error ? e.message : e);
-  }
-
-  // Non-2xx includes unfollowed GitHub 302s (empty body → brotli EOF upstream).
-  if (torRes?.ok) {
-    torDebug("tor ok", url, torRes.status);
+    if (!torRes.ok) {
+      throw new Error(
+        `Tor fetch returned HTTP ${torRes.status} for ${url}` +
+          (isSagaCdnUrl(url)
+            ? " (saga CDN). Check Tor / KOHAKU_TOR_DEBUG=1."
+            : "")
+      );
+    }
     return torRes;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/Tor fetch returned HTTP/i.test(msg)) throw e;
+    throw new Error(
+      `Tor fetch failed for ${url}: ${msg}` +
+        (isSagaCdnUrl(url)
+          ? " (saga CDN; no clearnet fallback)."
+          : "")
+    );
   }
-
-  if (torRes && !torRes.ok) {
-    torFailDetail = `returned HTTP ${torRes.status}`;
-  }
-
-  warnClearnetFallbackOnce(fallbackKind, url, torFailDetail);
-
-  return loggedFetch(
-    input,
-    init,
-    {
-      via: "clearnet",
-      clearnetReason: fallbackKind,
-      url,
-      requestBytes,
-    },
-    () => clearnetFetch(input, init)
-  );
 }
 
 /** Install logging/Tor fetch wrapper for the process (idempotent; kept for life). */
@@ -656,6 +720,8 @@ export function runWithWalletTrafficLog<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   ensureKohakuFetchPatch();
+  // `<dataDir>/<wallet>` — keep proving-artifact cache under the same dataDir.
+  setArtifactsDataDir(dirname(walletDir));
   return runWithTrafficLogWallet(walletDir, fn);
 }
 

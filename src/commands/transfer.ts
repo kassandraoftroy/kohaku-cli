@@ -43,7 +43,7 @@ import {
   disposePublicClient,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { runWithWalletTrafficLog } from "../utils/tor";
+import { withTor } from "../utils/tor";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
@@ -73,6 +73,7 @@ type TransferOpts = {
   broadcast?: boolean;
   stealth?: boolean;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 type TxPayloadJson = {
@@ -228,6 +229,7 @@ export function registerTransferCommand(program: Command): void {
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransferOpts) => {
       const amountFlags = [opts.amountWei, opts.amountFormatted, opts.amountMax].filter(
@@ -580,7 +582,7 @@ export function registerTransferCommand(program: Command): void {
         ? [stealthPlan.transferTx, stealthPlan.announceTx]
         : [buildTransferTx(tokenMeta, recipientAddress, amount)];
 
-      await runWithWalletTrafficLog(walletDir, async () => {
+      await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;

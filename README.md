@@ -156,7 +156,7 @@ Global behavior:
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
 | **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
 | **`--password`** | Wallet unlock password. In non-interactive mode, required where the wallet is encrypted. Value can be a literal string or a path to a file containing the password. |
-| **`--without-tor`** | On `balances`, `shield`, and `unshield`: disable Tor for non-RPC HTTP (default: Tor on). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
+| **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
 
 ---
 
@@ -670,6 +670,36 @@ kohaku set-name-reverse-record --wallet testWallet --name alice.eth --broadcast
 
 ---
 
+### `fetch-artifacts`
+
+Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later shield/unshield/sync can prove from disk without re-fetching (and without Tor→clearnet fallback).
+
+With no selectors, downloads the **full set** (~260 MB). Or narrow the download:
+
+| Option / args | Description |
+|---------------|-------------|
+| *(none)* | Full Railgun modern `.br` set (transact + POI) + Tornado circuit/key. |
+| `--variant <NNxMM>` | Railgun transact variant(s), e.g. `01x03` (repeatable; 3 files each). |
+| `--poi <NNxMM>` | POI variant(s): `03x03` or `13x13` (repeatable). |
+| `--tornado` | Tornado circuit JSON + proving key only. |
+| `[keys...]` | Explicit relative paths, e.g. `railgun/01x03/proving_key.bin.br`. |
+| `--without-tor` | Download over clearnet. Reveals that this IP fetched kohaku proving artifacts; subsequent private ops stay Tor-only from the local cache (except RPC). Or set `KOHAKU_WITHOUT_TOR=1`. |
+| `--dataDir <path>` | Data root (cache lives at `<dataDir>/proving-artifacts`). |
+| `--non-interactive` | JSON summary only. |
+
+Remote base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`, same path layout as MacWha `artifacts/`).
+
+**Examples:**
+
+```bash
+kohaku fetch-artifacts
+kohaku fetch-artifacts --without-tor
+kohaku fetch-artifacts --variant 01x03 --poi 03x03 --tornado
+kohaku fetch-artifacts railgun/01x03/proving_key.bin.br
+```
+
+---
+
 ### `view-network-traffic`
 
 Browse the per-wallet network traffic log (what the CLI contacted, when, and whether the request went over Tor). Useful for reviewing anonymity risk.
@@ -735,7 +765,7 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 ## Tips
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, `unshield`, `init-profile`, and the name commands default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
-- **Tor (all-but-RPC):** Private-protocol HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, and Tornado note import/export. Ethereum RPC stays clearnet (ethers does not use `fetch`; the RPC hostname is also allowlisted for ox/USD quotes). Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and GitHub proving artifacts** try Tor first (default 45s, override with `KOHAKU_TOR_CDN_TIMEOUT_MS`) then fall back to clearnet on hang/failure (`saga-fallback` / `artifact-fallback` in the traffic log). Set `KOHAKU_TOR_DEBUG=1` for per-request Tor/fallback logs on stderr. A keyed RPC URL still identifies you to that provider regardless of Tor. Review what was contacted with `view-network-traffic --wallet <name>`.
+- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and proving artifacts are Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). Artifacts are served from `<dataDir>/proving-artifacts` when cached; otherwise fetched from `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`). Pre-warm with `kohaku fetch-artifacts` (optionally `--without-tor` for a one-shot clearnet download). Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Profile / stealth:** Prefer `init-profile` to publish ERC-6538 keys (and optionally a name). Unshield to stored stealth accounts with `--to s0`. Print the meta URI with `see-stealth-meta-address`. New wallets store `.stealth-start-block` at creation so first `balances` stealth scans skip pre-wallet announcer history; imports can set the same via `create-wallet --import --stealth-start-block`.
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
