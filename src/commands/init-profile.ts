@@ -1,3 +1,4 @@
+import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 import { createEthereumNames } from "@1001-digital/ethereum-names";
@@ -8,7 +9,15 @@ import {
   withNameCommandContext,
   type NameWalletOpts,
 } from "../lib/names/cli.js";
-import { MIN_COMMITMENT_AGE_SECONDS } from "../lib/names/constants.js";
+import {
+  MIN_COMMITMENT_AGE_SECONDS,
+  PROTOCOL_META,
+  type NameProtocol,
+} from "../lib/names/constants.js";
+import {
+  probeNameStatus,
+  type NameProbeStatus,
+} from "../lib/names/availability.js";
 import {
   defaultDurationSeconds,
   nftContract,
@@ -28,6 +37,7 @@ import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import { parseFromIndex } from "../lib/shield-flow.js";
 import {
   parseManagedName,
+  parseNameLabelOrFull,
   parseNameProtocol,
   parseRegisterName,
 } from "../lib/names/parse.js";
@@ -65,12 +75,23 @@ import {
 } from "../utils/fee-preview.js";
 import { NAME_NFT_ABI } from "../lib/names/abis.js";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
+import type { KohakuPublicClient } from "../utils/rpc.js";
+import { withTor } from "../utils/tor.js";
 
 type Opts = NameWalletOpts & {
   protocol?: string;
   name?: string;
   noName?: boolean;
   years?: string;
+};
+
+type InitProfileNameChoice =
+  | { mode: "no-name" }
+  | { mode: "name"; name: string; protocol?: string };
+
+type NameOffer = {
+  parsed: ReturnType<typeof parseRegisterName>;
+  status: Exclude<NameProbeStatus, "unavailable">;
 };
 
 function toBatchCall(t: PreparedTx): Eip7702BatchCall {
@@ -98,6 +119,172 @@ function persistWalletProfile(
 
 function summarizeSteps(txs: PreparedTx[]): string {
   return txs.map((t) => t.step).join(" + ");
+}
+
+function protocolsToProbe(chainId: bigint, fixed?: NameProtocol): NameProtocol[] {
+  if (fixed) return [fixed];
+  const out: NameProtocol[] = ["gns", "wns"];
+  if (chainId === 1n) out.unshift("ens");
+  return out;
+}
+
+async function probeOffers(opts: {
+  client: KohakuPublicClient;
+  chainId: bigint;
+  registrant: Address;
+  rawName: string;
+}): Promise<NameOffer[]> {
+  const parsedInput = parseNameLabelOrFull(opts.rawName);
+  const protocols = protocolsToProbe(
+    opts.chainId,
+    parsedInput.kind === "full" ? parsedInput.parsed!.protocol : undefined
+  );
+  const offers: NameOffer[] = [];
+  for (const protocol of protocols) {
+    let parsed: ReturnType<typeof parseRegisterName>;
+    try {
+      parsed =
+        parsedInput.kind === "full"
+          ? parsedInput.parsed!
+          : parseRegisterName(parsedInput.label, protocol);
+    } catch {
+      continue;
+    }
+    const status = await probeNameStatus({
+      client: opts.client,
+      parsed,
+      registrant: opts.registrant,
+    });
+    if (status === "available" || status === "owned-by-us") {
+      offers.push({ parsed, status });
+    }
+  }
+  return offers;
+}
+
+/**
+ * Interactive / flag resolution for `--name` vs `--no-name`.
+ * In interactive mode with neither flag, prompts for a name or no-name path.
+ */
+async function resolveInitProfileNameChoice(opts: {
+  name?: string;
+  noName?: boolean;
+  protocol?: string;
+  nonInteractive: boolean;
+  client: KohakuPublicClient;
+  chainId: bigint;
+  registrant: Address;
+}): Promise<InitProfileNameChoice | null> {
+  const hasName = !!opts.name?.trim();
+  const noName = !!opts.noName;
+
+  if (hasName && noName) {
+    cliError("Provide only one of --name <…> or --no-name.");
+    return null;
+  }
+  if (hasName) {
+    return {
+      mode: "name",
+      name: opts.name!.trim(),
+      protocol: opts.protocol,
+    };
+  }
+  if (noName) {
+    return { mode: "no-name" };
+  }
+
+  if (opts.nonInteractive) {
+    cliError(
+      "Provide exactly one of --name <…> or --no-name (required with --non-interactive)."
+    );
+    return null;
+  }
+
+  const top = await select({
+    message: "How do you want to set up this profile?",
+    choices: [
+      {
+        name: "Choose a name (.eth / .gwei / .wei)",
+        value: "name" as const,
+      },
+      {
+        name: "Continue without a name (stealth keys only)",
+        value: "no-name" as const,
+      },
+    ],
+  });
+  if (top === "no-name") return { mode: "no-name" };
+
+  for (;;) {
+    const raw = (
+      await input({
+        message: "Name (e.g. alice or alice.gwei)",
+        validate: (v) => {
+          try {
+            parseNameLabelOrFull(v);
+            return true;
+          } catch (e) {
+            return e instanceof Error ? e.message : String(e);
+          }
+        },
+      })
+    ).trim();
+
+    console.log(chalk.dim("Checking availability…"));
+    let offers: NameOffer[];
+    try {
+      offers = await probeOffers({
+        client: opts.client,
+        chainId: opts.chainId,
+        registrant: opts.registrant,
+        rawName: raw,
+      });
+    } catch (e) {
+      console.log(
+        chalk.yellow(e instanceof Error ? e.message : String(e))
+      );
+      continue;
+    }
+
+    if (offers.length === 0) {
+      console.log(
+        chalk.yellow(
+          "That name is not available to register or reuse on any supported protocol. Try another."
+        )
+      );
+      continue;
+    }
+
+    let chosen: NameOffer;
+    if (offers.length === 1) {
+      chosen = offers[0]!;
+      const verb =
+        chosen.status === "owned-by-us" ? "reuse (owned by you)" : "register";
+      console.log(
+        chalk.dim(
+          `Using ${chosen.parsed.name} (${PROTOCOL_META[chosen.parsed.protocol].label}) — ${verb}`
+        )
+      );
+    } else {
+      const value = await select({
+        message: "Select a name / protocol",
+        choices: offers.map((o) => ({
+          name:
+            o.status === "owned-by-us"
+              ? `${o.parsed.name} — reuse (owned by you)`
+              : `${o.parsed.name} — register new`,
+          value: o.parsed.name,
+        })),
+      });
+      chosen = offers.find((o) => o.parsed.name === value)!;
+    }
+
+    return {
+      mode: "name",
+      name: chosen.parsed.name,
+      protocol: chosen.parsed.protocol,
+    };
+  }
 }
 
 /** Predicted GNS/WNS ownership before reveal (token id is deterministic). */
@@ -147,19 +334,19 @@ export function registerInitProfileCommand(program: Command): void {
     program
       .command("init-profile")
       .description(
-        "Publish profile stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 (post-commit steps batched via EIP-7702)"
+        "Publish profile stealth keys on ERC-6538; optionally register a .eth/.gwei/.wei name + stealth-address-scheme-1 (post-commit steps batched via EIP-7702). Interactive mode prompts for name vs no-name when flags are omitted."
       )
       .option(
         "--name <label-or-name>",
-        "Bare label or full name (alice / alice.gwei). Existing owned names are reused"
+        "Bare label or full name (alice / alice.gwei). Existing owned names are reused. Optional in interactive mode"
       )
       .option(
         "--no-name",
-        "Skip name registration; only register stealth keys for --index on ERC-6538"
+        "Skip name registration; only register stealth keys for --index on ERC-6538. Optional in interactive mode"
       )
       .option(
         "--protocol <ens|gns|wns>",
-        "Required when --name is a bare label (no TLD)"
+        "Required with bare --name (no TLD); interactive mode can pick a protocol instead"
       )
       .option(
         "--index <n>",
@@ -172,13 +359,6 @@ export function registerInitProfileCommand(program: Command): void {
         "1"
       )
   ).action(async (opts: Opts) => {
-    const hasName = !!opts.name?.trim();
-    const noName = !!opts.noName;
-    if (hasName === noName) {
-      cliError("Provide exactly one of --name <…> or --no-name.");
-      return;
-    }
-
     await withNameCommandContext(opts, async (ctx) => {
       // Default index 0: persist the first public account if the wallet is empty
       // so init-profile works without a prior next-fresh-address / balances run.
@@ -212,6 +392,23 @@ export function registerInitProfileCommand(program: Command): void {
         ownerPriv: ctx.ownerPriv,
         dryRun: ctx.dryRun,
       });
+
+      const nameChoice = await resolveInitProfileNameChoice({
+        name: opts.name,
+        noName: opts.noName,
+        protocol: opts.protocol,
+        nonInteractive: ctx.nonInteractive,
+        client: ctx.client,
+        chainId: ctx.chainId,
+        registrant: signer.address,
+      });
+      if (!nameChoice) return;
+
+      const noName = nameChoice.mode === "no-name";
+      const effectiveName =
+        nameChoice.mode === "name" ? nameChoice.name : undefined;
+      const effectiveProtocol =
+        nameChoice.mode === "name" ? nameChoice.protocol : opts.protocol;
 
       const keypair = deriveStealthKeypair(ctx.mnemonic, ctx.chainId);
       const stealthStorage = makeStealthAccountsStorage(
@@ -334,12 +531,12 @@ export function registerInitProfileCommand(program: Command): void {
       }
 
       // --name path
-      const rawName = opts.name!.trim();
+      const rawName = effectiveName!.trim();
       const hasTld = /\.(eth|gwei|wei)$/i.test(rawName);
       const protocol = hasTld
         ? parseManagedName(rawName).protocol
-        : parseNameProtocol(opts.protocol);
-      if (!hasTld && !opts.protocol) {
+        : parseNameProtocol(effectiveProtocol);
+      if (!hasTld && !effectiveProtocol) {
         throw new Error(
           "Bare --name requires --protocol <ens|gns|wns> (or pass a full name like alice.gwei)."
         );
@@ -527,26 +724,39 @@ export function registerInitProfileCommand(program: Command): void {
           nonInteractive: ctx.nonInteractive,
         });
 
-        const fees = await estimateEip7702BatchUserOpFee({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          senderAddress: signer.address,
-          calls: batchTxs.map(toBatchCall),
-          privateKey: signer.privateKey,
-        });
-        if (!ctx.nonInteractive) printFeePreview(fees);
+        const eip7702Tor = {
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          withoutTor: ctx.withoutTor,
+        };
+        const sent = await withTor(
+          !ctx.withoutTor,
+          { rpcUrl: ctx.rpcUrl, walletDir: ctx.walletDir },
+          async () => {
+            const fees = await estimateEip7702BatchUserOpFee({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              senderAddress: signer.address,
+              calls: batchTxs.map(toBatchCall),
+              privateKey: signer.privateKey,
+              ...eip7702Tor,
+            });
+            if (!ctx.nonInteractive) printFeePreview(fees);
 
-        await maybeConfirm(
-          ctx.nonInteractive,
-          `Submit ${summarizeSteps(batchTxs)} as one EIP-7702 UserOp from ${signer.address}?\n  ${feeConfirmLine(fees)}`
+            await maybeConfirm(
+              ctx.nonInteractive,
+              `Submit ${summarizeSteps(batchTxs)} as one EIP-7702 UserOp from ${signer.address}?\n  ${feeConfirmLine(fees)}`
+            );
+
+            return sendEip7702BatchUserOperation({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              privateKey: signer.privateKey!,
+              calls: batchTxs.map(toBatchCall),
+              ...eip7702Tor,
+            });
+          }
         );
-
-        const sent = await sendEip7702BatchUserOperation({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          privateKey: signer.privateKey,
-          calls: batchTxs.map(toBatchCall),
-        });
         hashes.push(sent.txHash);
 
         persistWalletProfile(stealthStorage, {
@@ -754,6 +964,9 @@ export function registerInitProfileCommand(program: Command): void {
             senderAddress: recordSigner.address,
             calls: recordBatch.map(toBatchCall),
             privateKey: recordSigner.privateKey,
+            rpcUrl: ctx.rpcUrl,
+            walletDir: ctx.walletDir,
+            withoutTor: ctx.withoutTor,
           });
           printPreparedTxs(recordBatch, recordSigner.address, {
             title: "init-profile EIP-7702 UserOp (not submitted)",
@@ -826,24 +1039,37 @@ export function registerInitProfileCommand(program: Command): void {
       }
 
       if (recordBatch.length >= 2 && recordSigner.privateKey) {
-        const fees = await estimateEip7702BatchUserOpFee({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          senderAddress: recordSigner.address,
-          calls: recordBatch.map(toBatchCall),
-          privateKey: recordSigner.privateKey,
-        });
-        if (!ctx.nonInteractive) printFeePreview(fees);
-        await maybeConfirm(
-          ctx.nonInteractive,
-          `Submit ${summarizeSteps(recordBatch)} as one EIP-7702 UserOp from ${recordSigner.address}?\n  ${feeConfirmLine(fees)}`
+        const eip7702Tor = {
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          withoutTor: ctx.withoutTor,
+        };
+        const sent = await withTor(
+          !ctx.withoutTor,
+          { rpcUrl: ctx.rpcUrl, walletDir: ctx.walletDir },
+          async () => {
+            const fees = await estimateEip7702BatchUserOpFee({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              senderAddress: recordSigner.address,
+              calls: recordBatch.map(toBatchCall),
+              privateKey: recordSigner.privateKey,
+              ...eip7702Tor,
+            });
+            if (!ctx.nonInteractive) printFeePreview(fees);
+            await maybeConfirm(
+              ctx.nonInteractive,
+              `Submit ${summarizeSteps(recordBatch)} as one EIP-7702 UserOp from ${recordSigner.address}?\n  ${feeConfirmLine(fees)}`
+            );
+            return sendEip7702BatchUserOperation({
+              client: ctx.client,
+              chainId: ctx.chainId,
+              privateKey: recordSigner.privateKey!,
+              calls: recordBatch.map(toBatchCall),
+              ...eip7702Tor,
+            });
+          }
         );
-        const sent = await sendEip7702BatchUserOperation({
-          client: ctx.client,
-          chainId: ctx.chainId,
-          privateKey: recordSigner.privateKey,
-          calls: recordBatch.map(toBatchCall),
-        });
         hashes.push(sent.txHash);
       } else if (recordBatch.length === 1 && recordSigner.privateKey) {
         const only = recordBatch[0]!;

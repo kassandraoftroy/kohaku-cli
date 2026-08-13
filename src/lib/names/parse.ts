@@ -21,6 +21,13 @@ export function parseNameProtocol(raw: string | undefined): NameProtocol {
   return v as NameProtocol;
 }
 
+/** Detect protocol from a full name ending in .eth / .gwei / .wei. */
+export function protocolFromNameTld(raw: string): NameProtocol | null {
+  const lower = raw.trim().toLowerCase();
+  const tld = Object.keys(TLD_TO_PROTOCOL).find((t) => lower.endsWith(t));
+  return tld ? TLD_TO_PROTOCOL[tld]! : null;
+}
+
 /**
  * Parse a manage-command `--name` that must include a supported TLD.
  * Rejects subdomains (more than one label before the TLD).
@@ -45,10 +52,39 @@ export function parseManagedName(raw: string): ParsedName {
 }
 
 /**
+ * Parse interactive / register name input: bare label or full TLD name.
+ */
+export function parseNameLabelOrFull(raw: string): {
+  kind: "bare" | "full";
+  label: string;
+  parsed?: ParsedName;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error("Name must not be empty.");
+  }
+  const lower = trimmed.toLowerCase();
+  const tld = Object.keys(TLD_TO_PROTOCOL).find((t) => lower.endsWith(t));
+  if (tld) {
+    const parsed = parseManagedName(trimmed);
+    return { kind: "full", label: parsed.label, parsed };
+  }
+  if (trimmed.includes(".")) {
+    throw new Error(
+      `Unsupported TLD in "${trimmed}". Use .eth, .gwei, .wei, or a bare label.`
+    );
+  }
+  return { kind: "bare", label: trimmed };
+}
+
+/**
  * Parse a register `--name` which may be a bare label or a full name.
  * When a TLD is present it must match `--protocol`.
  */
-export function parseRegisterName(raw: string, protocol: NameProtocol): ParsedName {
+export function parseRegisterName(
+  raw: string,
+  protocol: NameProtocol
+): ParsedName {
   const trimmed = raw.trim();
   const lower = trimmed.toLowerCase();
   const tld = Object.keys(TLD_TO_PROTOCOL).find((t) => lower.endsWith(t));
