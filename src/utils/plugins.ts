@@ -28,6 +28,7 @@ import {
 import { createTorAwarePaymasterBroadcaster } from "./tornado-paymaster-broadcaster.js";
 import type { TornadoTailCall } from "./tornado-tail-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
+import { makeTornadoArtifactsLoader } from "./proving-artifacts.js";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
@@ -573,6 +574,7 @@ export async function createProtocolPlugin(
       accountIndex: 0,
       protocolConfig: config,
       minExternalSyncBlocksAmount: TORNADO_MIN_EXTERNAL_SYNC_BLOCKS,
+      artifactsLoader: makeTornadoArtifactsLoader(),
       ...(paymasterConfig ? { paymasterConfig: paymasterConfig as never } : {}),
     }) as AnyPlugin;
   }

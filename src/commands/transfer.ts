@@ -74,6 +74,7 @@ type TransferOpts = {
   stealth?: boolean;
   withoutTor?: boolean;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 type TxPayloadJson = {
@@ -582,7 +583,7 @@ export function registerTransferCommand(program: Command): void {
         ? [stealthPlan.transferTx, stealthPlan.announceTx]
         : [buildTransferTx(tokenMeta, recipientAddress, amount)];
 
-      await runWithWalletTrafficLog(walletDir, async () => {
+      await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;

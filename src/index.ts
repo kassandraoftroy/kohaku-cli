@@ -20,6 +20,7 @@ import { registerTransferCommand } from "./commands/transfer";
 import { registerTransactRawCommand } from "./commands/transact-raw";
 import { registerViewNetworkTrafficCommand } from "./commands/viewNetworkTraffic";
 import { registerClearTorCacheCommand } from "./commands/clear-tor-cache";
+import { registerFetchArtifactsCommand } from "./commands/fetch-artifacts";
 import { registerRegisterNameCommand } from "./commands/register-name";
 import { registerRenewNameCommand } from "./commands/renew-name";
 import { registerTransferNameCommand } from "./commands/transfer-name";
@@ -65,6 +66,7 @@ async function main(): Promise<void> {
   registerSeeStealthMetaAddressCommand(program);
   registerViewNetworkTrafficCommand(program);
   registerClearTorCacheCommand(program);
+  registerFetchArtifactsCommand(program);
 
   await program.parseAsync(process.argv);
 }

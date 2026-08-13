@@ -11,7 +11,7 @@ import {
   resolveRpcUrl,
   type KohakuPublicClient,
 } from "../../utils/rpc.js";
-import { runWithWalletTrafficLog } from "../../utils/tor.js";
+import { withTor } from "../../utils/tor.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -100,7 +100,7 @@ export async function withNameCommandContext(
   const broadcast = !!opts.broadcast;
   const client = await makePublicClient(rpcUrl);
   try {
-    await runWithWalletTrafficLog(walletDir, async () => {
+    await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       await run({
         walletName,
         walletDir,

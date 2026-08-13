@@ -175,7 +175,7 @@ export async function loadTornadoPrivateBalances(
   const tick = setInterval(() => {
     const secs = Math.round((Date.now() - started) / 1000);
     onProgress?.(
-      `Tornado Cash still syncing (${secs}s)… first run pulls saga CDN + proving artifacts (Tor may fall back to clearnet)`
+      `Tornado Cash still syncing (${secs}s)… first run pulls saga CDN + proving artifacts over Tor (or use local cache from \`kohaku fetch-artifacts\`)`
     );
   }, 15_000);
   try {
@@ -192,7 +192,7 @@ export async function loadTornadoPrivateBalances(
         setTimeout(() => {
           reject(
             new Error(
-              "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain). If this persists with Tor, retry with --without-tor or check `view-network-traffic --category saga` / KOHAKU_TOR_DEBUG=1."
+              "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain). Pre-warm with `kohaku fetch-artifacts` (optionally `--without-tor`), or check `view-network-traffic --category saga` / KOHAKU_TOR_DEBUG=1. Tor has no clearnet fallback for saga/artifacts."
             )
           );
         }, TORNADO_BALANCE_TIMEOUT_MS);

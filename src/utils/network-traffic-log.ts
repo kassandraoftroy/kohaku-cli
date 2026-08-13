@@ -31,9 +31,11 @@ export type TrafficClearnetReason =
   | "rpc-allowlist"
   | "tor-disabled"
   | "rpc"
-  /** Tor failed for a GitHub proving-artifact download; retried on clearnet. */
+  /** Served from ~/.kohaku-cli/proving-artifacts (no network). */
+  | "local-artifact"
+  /** @deprecated Legacy log rows only — clearnet artifact fallback removed. */
   | "artifact-fallback"
-  /** Tor failed/timed out for saga CDN (Tornado cold sync); retried on clearnet. */
+  /** @deprecated Legacy log rows only — clearnet saga fallback removed. */
   | "saga-fallback";
 
 export type TrafficCategory =
@@ -144,15 +146,23 @@ export function categorizeUrl(urlStr: string): TrafficCategory {
   if (lower.includes("pimlico.io")) return "pimlico";
   if (lower.includes("squids.live") || lower.includes("subsquid")) return "subsquid";
   if (lower.includes("ppoi.") || lower.includes("/poi")) return "ppoi";
-  if (lower.includes("saga.fatsolutions")) return "saga";
+  if (
+    lower.includes("saga-pp-state.global.ssl.fastly.net") ||
+    lower.includes("saga.fatsolutions")
+  ) {
+    return "saga";
+  }
   if (lower.includes("0xbow.io")) return "asp";
   if (lower.includes("fastrelay.xyz")) return "fastrelay";
   if (
     lower.includes("githubusercontent.com") ||
     lower.includes("privacy-protocol-artifacts") ||
+    lower.includes("artifacts.0000000000.org") ||
     lower.includes("tornadoprowing") ||
     lower.includes("tornado.json") ||
-    lower.includes("provingkey")
+    lower.includes("provingkey") ||
+    lower.includes("proving_key.bin") ||
+    lower.includes("matrices.bin")
   ) {
     return "artifacts";
   }
@@ -249,7 +259,12 @@ export function clearNetworkTrafficLog(walletDir: string): boolean {
 }
 
 export function isLocalEntry(entry: NetworkTrafficEntry): boolean {
-  if (entry.clearnetReason === "loopback") return true;
+  if (
+    entry.clearnetReason === "loopback" ||
+    entry.clearnetReason === "local-artifact"
+  ) {
+    return true;
+  }
   try {
     const h = new URL(entry.url).hostname.toLowerCase();
     return (
