@@ -263,10 +263,6 @@ export function registerShieldCommand(program: Command): void {
       }
 
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-      if (!rpcUrl) {
-        cliError("Missing --rpc-url (or environment variable RPC_URL).");
-        return;
-      }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({

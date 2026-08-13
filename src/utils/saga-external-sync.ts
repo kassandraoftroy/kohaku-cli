@@ -31,8 +31,8 @@ type SagaIndex = {
 /** CDN base URL for historical event sync (mainnet vs Sepolia). */
 export function sagaBaseUrlForChain(chainId: bigint): string {
   return chainId === 11155111n
-    ? "https://saga.fatsolutions.xyz/sepolia"
-    : "https://saga.fatsolutions.xyz";
+    ? "https://saga-pp-state.global.ssl.fastly.net/sepolia"
+    : "https://saga-pp-state.global.ssl.fastly.net";
 }
 
 function normalizeAddress(address: Hex): string {

@@ -1,4 +1,7 @@
 import { createEthereumNames } from "@1001-digital/ethereum-names";
+import {
+  resolveStealthMetaAddress,
+} from "eth-stealth-address-resolver";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
@@ -11,12 +14,18 @@ import {
   formatNoteAssetLabel,
   type PrivateNoteRow,
 } from "../lib/private-notes";
+import { parseFromIndex } from "../lib/shield-flow.js";
 import { parseStealthStartBlock } from "../lib/stealth/scan.js";
 import { readStealthStartBlock } from "../lib/stealth/start-block-file.js";
+import {
+  hasCachedStealthProfile,
+  makeStealthAccountsStorage,
+  type StealthWalletProfile,
+} from "../lib/stealth/storage.js";
+import { resolveRegisterSigner } from "../lib/names/ownership.js";
 import { cliOptions } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
-import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -46,6 +55,8 @@ type BalancesOpts = {
   dataDir?: string;
   withoutTor?: boolean;
   stealthStartBlock?: string;
+  resyncProfile?: boolean;
+  profileIndex?: string;
 };
 
 function stringifyBalancesJson(payload: unknown): string {
@@ -57,44 +68,142 @@ function stringifyBalancesJson(payload: unknown): string {
 }
 
 type WalletProfile = {
-  /** Reverse-resolved ENS/GNS/WNS primary for HD index 0, or empty. */
+  /** Preferred name, or registrant address when no reverse name. */
   name: string;
-  /** HD index 0 public address used for reverse lookup, when present. */
+  /** Human label for the balances header. */
+  displayName: string;
+  index?: number;
   account?: string;
+  stealthMetaAddressURI?: string;
+  /** Show “run init-profile …” under (none). */
+  needsInit: boolean;
 };
 
+function profileDisplayName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "";
+  if (isAddress(trimmed)) {
+    return `${getAddress(trimmed)} (no name)`;
+  }
+  return trimmed;
+}
+
+function walletProfileFromCached(p: StealthWalletProfile): WalletProfile {
+  return {
+    name: p.name,
+    displayName: profileDisplayName(p.name),
+    index: p.index,
+    account: p.address,
+    stealthMetaAddressURI: p.stealthMetaAddressURI,
+    needsInit: false,
+  };
+}
+
 /**
- * Profile header for balances: reverse name for public index 0.
+ * Profile header for balances: prefer stealth-accounts `profile` cache;
+ * otherwise onchain reverse (GNS→ENS→WNS) + stealth meta via resolver.
  */
 async function resolveWalletProfile(opts: {
   rpcUrl: string;
+  chainId: bigint;
   walletDir: string;
   mnemonic: string;
   password: string;
+  resyncProfile: boolean;
+  profileIndexFlag?: string;
 }): Promise<WalletProfile> {
-  const publicStorage = makePublicAccountsStorage(
+  const stealthStorage = makeStealthAccountsStorage(
     opts.walletDir,
-    opts.mnemonic,
     opts.password
   );
-  const acct0 = publicStorage.getAccount(0);
-  if (!acct0) {
-    return { name: "" };
+  const store = stealthStorage.getStore();
+
+  if (!opts.resyncProfile && hasCachedStealthProfile(store)) {
+    return walletProfileFromCached(store.profile);
   }
 
-  const account = getAddress(acct0.address);
-  let name = "";
+  let lookupIndex = 0;
+  if (opts.profileIndexFlag !== undefined && opts.profileIndexFlag !== "") {
+    const parsed = parseFromIndex(opts.profileIndexFlag);
+    if (parsed === null) {
+      throw new Error("--profile-index must be a non-negative integer.");
+    }
+    lookupIndex = parsed;
+  } else if (hasCachedStealthProfile(store)) {
+    lookupIndex = store.profile.index;
+  }
+
+  const empty = (): WalletProfile => {
+    if (opts.resyncProfile) {
+      stealthStorage.clearProfile();
+    }
+    return { name: "", displayName: "", needsInit: true };
+  };
+
+  let account: string;
+  let index: number;
+  try {
+    const signer = resolveRegisterSigner({
+      walletDir: opts.walletDir,
+      mnemonic: opts.mnemonic,
+      password: opts.password,
+      indexFlag: String(lookupIndex),
+      ownerPriv: true,
+      dryRun: true,
+    });
+    account = signer.address;
+    index = signer.index ?? lookupIndex;
+  } catch {
+    return empty();
+  }
+
+  const reversePriority = ["gns", "ens", "wns"] as const;
+  let reverseName = "";
   try {
     const names = createEthereumNames({
       rpcUrl: opts.rpcUrl,
-      reversePriority: ["ens", "gns", "wns"],
+      reversePriority: [...reversePriority],
     });
-    name = (await names.reverse(account))?.trim() ?? "";
+    reverseName = (await names.reverse(account))?.trim() ?? "";
   } catch {
-    name = "";
+    reverseName = "";
   }
 
-  return { name, account };
+  try {
+    if (reverseName) {
+      const resolved = await resolveStealthMetaAddress({
+        input: reverseName,
+        rpcUrl: opts.rpcUrl,
+        chainId: opts.chainId,
+        reversePriority: [...reversePriority],
+      });
+      const profile: StealthWalletProfile = {
+        name: reverseName,
+        index,
+        address: account,
+        stealthMetaAddressURI: resolved.uri,
+      };
+      stealthStorage.setProfile(profile);
+      return walletProfileFromCached(profile);
+    }
+
+    const resolved = await resolveStealthMetaAddress({
+      input: account,
+      rpcUrl: opts.rpcUrl,
+      chainId: opts.chainId,
+      reversePriority: [...reversePriority],
+    });
+    const profile: StealthWalletProfile = {
+      name: account,
+      index,
+      address: account,
+      stealthMetaAddressURI: resolved.uri,
+    };
+    stealthStorage.setProfile(profile);
+    return walletProfileFromCached(profile);
+  } catch {
+    return empty();
+  }
 }
 
 function parseTokensList(raw: string | undefined): `0x${string}`[] {
@@ -271,8 +380,17 @@ function printHumanBalances(opts: {
   console.log();
   console.log(
     chalk.dim("  wallet profile name: ") +
-      (opts.profile.name ? chalk.cyan(opts.profile.name) : chalk.dim("(none)"))
+      (opts.profile.displayName
+        ? chalk.cyan(opts.profile.displayName)
+        : chalk.dim("(none)"))
   );
+  if (opts.profile.needsInit) {
+    console.log(
+      chalk.yellow(
+        "  run init-profile command to initialize your profile"
+      )
+    );
+  }
   console.log();
 
   printAggregatedTotalsTable(opts.publicAggregated);
@@ -390,6 +508,14 @@ export function registerBalancesCommand(program: Command): void {
     )
     .option("--without-tor", cliOptions.withoutTor)
     .option("--stealth-start-block <block>", cliOptions.stealthStartBlock)
+    .option(
+      "--resync-profile",
+      "Ignore cached stealth-accounts profile and re-resolve from chain (clears cache if nothing found)"
+    )
+    .option(
+      "--profile-index <n>",
+      "HD index to check for onchain profile discovery (default: cached index, else 0)"
+    )
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: BalancesOpts) => {
       let stealthStartBlockFlag: bigint | undefined;
@@ -410,10 +536,6 @@ export function registerBalancesCommand(program: Command): void {
       });
       if (!walletName) return;
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-      if (!rpcUrl) {
-        cliError("Missing --rpc-url (or environment variable RPC_URL).");
-        return;
-      }
 
       let walletDir: string;
       try {
@@ -507,9 +629,12 @@ export function registerBalancesCommand(program: Command): void {
 
             const profile = await resolveWalletProfile({
               rpcUrl,
+              chainId: chainIdBn,
               walletDir,
               mnemonic,
               password,
+              resyncProfile: !!opts.resyncProfile,
+              profileIndexFlag: opts.profileIndex,
             });
 
             const privateNotesOut = snap.privateNotes;
@@ -526,7 +651,17 @@ export function registerBalancesCommand(program: Command): void {
             }
 
             const payload: Record<string, unknown> = {
-              wallet_profile_name: profile.name,
+              wallet_profile_name: profile.displayName || null,
+              wallet_profile: profile.stealthMetaAddressURI
+                ? {
+                    name: profile.name,
+                    displayName: profile.displayName,
+                    index: profile.index,
+                    address: profile.account,
+                    stealthMetaAddressURI: profile.stealthMetaAddressURI,
+                  }
+                : null,
+              wallet_profile_needs_init: profile.needsInit,
               public_balances_aggregated: snap.publicAggregated,
               public_balances_by_address: snap.publicByAddress,
               private_balances: privateBalances,

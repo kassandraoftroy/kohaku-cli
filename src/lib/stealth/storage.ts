@@ -20,12 +20,31 @@ export type StealthAccount = {
   erc20Balances: Record<string, string>;
 };
 
+/** Cached wallet identity from init-profile / balances onchain discovery. */
+export type StealthWalletProfile = {
+  /** Preferred GNS/ENS/WNS name, or the registrant 0x address when no reverse name. */
+  name: string;
+  /** HD index that owns/registered the profile. */
+  index: number;
+  /** Checksummed registrant address. */
+  address: string;
+  /** `st:<chain>:0x…` stealth meta-address URI. */
+  stealthMetaAddressURI: string;
+};
+
 export type StealthAccountsStore = {
   nextStealthIndex: number;
-  /** Our published meta-address URI (from init-profile / derive). */
+  /** Our published meta-address URI (from init-profile / derive). Synced from `profile`. */
   metaAddressURI?: string;
-  /** Primary name used as wallet identifier (set by init-profile). */
+  /** Primary name / address label (synced from `profile`). */
   name?: string;
+  /**
+   * Wallet identity profile.
+   * - missing / undefined: legacy store — needs onchain check once
+   * - null: explicitly cleared (e.g. failed --resync-profile) — needs onchain check
+   * - object: stable cached profile — skip network unless --resync-profile
+   */
+  profile?: StealthWalletProfile | null;
   /** Inclusive last block scanned for announcements. */
   lastScannedBlock?: string;
   /**
@@ -44,7 +63,11 @@ export type StealthAccountsStorage = {
   getAccount(stealthIndex: number): StealthAccount | null;
   findByAddress(address: string): StealthAccount | undefined;
   upsertAccount(acct: Omit<StealthAccount, "stealthIndex"> & { stealthIndex?: number }): StealthAccount;
+  /** Legacy partial meta write; prefer {@link setProfile} for identity. */
   setMeta(meta: { metaAddressURI?: string; name?: string }): void;
+  setProfile(profile: StealthWalletProfile): void;
+  /** Mark profile as needing onchain re-check (`null`); clears synced name/URI. */
+  clearProfile(): void;
   setLastScannedBlock(block: bigint): void;
   markFullHistoryScanned(): void;
 };
@@ -116,6 +139,24 @@ export function makeStealthAccountsStorage(
       if (meta.name !== undefined) store.name = meta.name;
       persist();
     },
+    setProfile: (profile) => {
+      const address = getAddress(profile.address);
+      store.profile = {
+        name: profile.name,
+        index: profile.index,
+        address,
+        stealthMetaAddressURI: profile.stealthMetaAddressURI,
+      };
+      store.name = profile.name;
+      store.metaAddressURI = profile.stealthMetaAddressURI;
+      persist();
+    },
+    clearProfile: () => {
+      store.profile = null;
+      delete store.name;
+      delete store.metaAddressURI;
+      persist();
+    },
     setLastScannedBlock: (block) => {
       store.lastScannedBlock = block.toString();
       persist();
@@ -138,4 +179,11 @@ export function parseStealthIndex(fromValue: string): number | null {
 
 export function formatStealthSelector(stealthIndex: number): string {
   return `s${stealthIndex}`;
+}
+
+/** True when `profile` is a stable cached object (not missing/null). */
+export function hasCachedStealthProfile(
+  store: StealthAccountsStore
+): store is StealthAccountsStore & { profile: StealthWalletProfile } {
+  return store.profile != null && typeof store.profile === "object";
 }

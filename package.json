@@ -1,6 +1,6 @@
 {
     "name": "kohaku-cli",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "type": "module",
     "engines": {
         "node": ">=22"
@@ -19,17 +19,17 @@
         "@1001-digital/ethereum-names": "0.3.0",
         "@clack/prompts": "0.7.0",
         "@inquirer/prompts": "8.3.2",
-        "@kohaku-eth/plugins": "^0.0.1-alpha.12",
-        "@kohaku-eth/privacy-pools": "^0.0.2-alpha.15",
-        "@kohaku-eth/railgun": "^0.0.1-alpha.29",
-        "@kohaku-eth/tornado-cash": "^0.0.2-alpha.20",
-        "@noble/secp256k1": "^2.3.0",
-        "@scopelift/stealth-address-sdk": "^1.0.0-beta.5",
+        "@kohaku-eth/plugins": "0.0.1-alpha.12",
+        "@kohaku-eth/privacy-pools": "0.0.2-alpha.15",
+        "@kohaku-eth/railgun": "0.0.1-alpha.29",
+        "@kohaku-eth/tornado-cash": "0.0.2-alpha.20",
+        "@noble/secp256k1": "2.3.0",
+        "@scopelift/stealth-address-sdk": "1.0.0-beta.5",
         "chalk": "5.6.2",
         "commander": "14.0.3",
         "derive-railgun-keys": "0.1.0",
         "eth-prices": "1.1.0",
-        "eth-stealth-address-resolver": "^0.1.0",
+        "eth-stealth-address-resolver": "0.2.0",
         "ox": "0.12.0",
         "tor-js": "0.4.0",
         "viem": "2.52.2"

@@ -19,6 +19,9 @@ export type KohakuPublicClient = PublicClient<Transport, Chain>;
 /** Default Kohaku data root: `~/.kohaku-cli`. */
 export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
 
+/** Used when neither `--rpc-url` nor `RPC_URL` is set (local node). */
+export const DEFAULT_RPC_URL = "http://localhost:8545";
+
 function chainForId(chainId: bigint, rpcUrl: string): Chain {
   if (chainId === 1n) return mainnet;
   if (chainId === 11155111n) return sepolia;
@@ -126,11 +129,18 @@ export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClie
 export function disposePublicClient(_client?: KohakuPublicClient): void {}
 
 /**
- * RPC endpoint from `--rpc-url` or the `RPC_URL` environment variable (trimmed).
- * Returns empty string if neither is set.
+ * RPC endpoint from `--rpc-url`, else `RPC_URL`, else {@link DEFAULT_RPC_URL}.
+ * Warns on stderr when the localhost default is used as a fallback.
  */
 export function resolveRpcUrl(optsRpcUrl?: string): string {
-  return optsRpcUrl?.trim() || process.env.RPC_URL?.trim() || "";
+  const fromOpt = optsRpcUrl?.trim();
+  if (fromOpt) return fromOpt;
+  const fromEnv = process.env.RPC_URL?.trim();
+  if (fromEnv) return fromEnv;
+  console.warn(
+    `No --rpc-url / RPC_URL set; using default ${DEFAULT_RPC_URL}`
+  );
+  return DEFAULT_RPC_URL;
 }
 
 /** Pimlico public ERC-4337 bundler (no API key). Uses Tor localhost proxy when a Tor session is active. */

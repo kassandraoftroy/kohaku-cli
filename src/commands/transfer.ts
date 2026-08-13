@@ -43,7 +43,7 @@ import {
   disposePublicClient,
   resolveRpcUrl,
 } from "../utils/rpc";
-import { runWithWalletTrafficLog } from "../utils/tor";
+import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
@@ -73,6 +73,7 @@ type TransferOpts = {
   broadcast?: boolean;
   stealth?: boolean;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 type TxPayloadJson = {
@@ -228,6 +229,7 @@ export function registerTransferCommand(program: Command): void {
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransferOpts) => {
       const amountFlags = [opts.amountWei, opts.amountFormatted, opts.amountMax].filter(
@@ -241,10 +243,6 @@ export function registerTransferCommand(program: Command): void {
       }
 
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-      if (!rpcUrl) {
-        cliError("Missing --rpc-url (or environment variable RPC_URL).");
-        return;
-      }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
@@ -584,7 +582,7 @@ export function registerTransferCommand(program: Command): void {
         ? [stealthPlan.transferTx, stealthPlan.announceTx]
         : [buildTransferTx(tokenMeta, recipientAddress, amount)];
 
-      await runWithWalletTrafficLog(walletDir, async () => {
+      await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
@@ -613,38 +611,26 @@ export function registerTransferCommand(program: Command): void {
           );
         }
 
-        let fees: FeePreview;
-        if (batchAsUserOp) {
-          fees = await estimateEip7702BatchUserOpFee({
+        const eip7702Tor = {
+          rpcUrl,
+          walletDir,
+          withoutTor: !!opts.withoutTor,
+        };
+
+        // Dry-run: estimate once. Broadcast UserOp: one Tor session for estimate+send.
+        if (batchAsUserOp && dryRun) {
+          const fees = await estimateEip7702BatchUserOpFee({
             client,
             chainId,
             senderAddress,
             calls: txs,
             privateKey: senderPrivateKey,
+            ...eip7702Tor,
           });
-        } else {
-          fees = (
-            await estimateEoaTxFeePreview(
-              client,
-              {
-                to: txs[0]!.to,
-                from: senderAddress,
-                data: txs[0]!.data,
-                value: txs[0]!.value,
-              },
-              tokenMeta.isEth ? 21_000n : 65_000n
-            )
+          const needsDelegation = await needsSimple7702Authorization(
+            client,
+            senderAddress as `0x${string}`
           );
-        }
-
-        if (dryRun) {
-          let needsDelegation: boolean | undefined;
-          if (batchAsUserOp) {
-            needsDelegation = await needsSimple7702Authorization(
-              client,
-              senderAddress as `0x${string}`
-            );
-          }
 
           if (opts.nonInteractive) {
             logCliJson({
@@ -655,44 +641,70 @@ export function registerTransferCommand(program: Command): void {
               amount: amount.toString(),
               token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
               fees,
-              ...(batchAsUserOp
-                ? {
-                    mode: "eip7702-userop",
-                    implementation: SIMPLE_7702_IMPLEMENTATION,
-                    delegation: needsDelegation
-                      ? "will-include-in-userop"
-                      : "already-set",
-                    calls: payloads,
-                  }
-                : { transactions: payloads }),
+              mode: "eip7702-userop",
+              implementation: SIMPLE_7702_IMPLEMENTATION,
+              delegation: needsDelegation
+                ? "will-include-in-userop"
+                : "already-set",
+              calls: payloads,
             });
           } else {
-            if (batchAsUserOp) {
-              console.log();
-              console.log(
-                chalk.bold("Planned EIP-7702 UserOperation (not submitted)")
-              );
-              console.log(
-                chalk.dim(
-                  "Add --broadcast to submit transfer + announce as one Pimlico UserOp (EIP-7702 Simple7702Account)."
-                )
-              );
-              console.log();
-              console.log(
-                chalk.dim(
-                  `Stealth transfer ${amountPreview} from ${senderAddress} → ${recipientAddress}`
-                )
-              );
-              console.log(chalk.dim(`Implementation: ${SIMPLE_7702_IMPLEMENTATION}`));
-              console.log(chalk.cyan("Transfer call:"), jsonStringifyWithBigInt(payloads[0]!));
-              console.log(chalk.cyan("Announce call:"), jsonStringifyWithBigInt(payloads[1]!));
-              console.log(
-                chalk.dim(
-                  needsDelegation
-                    ? "EIP-7702 delegation will be included in the UserOp."
-                    : "Account already delegates to Simple7702; UserOp skips re-authorization."
-                )
-              );
+            console.log();
+            console.log(
+              chalk.bold("Planned EIP-7702 UserOperation (not submitted)")
+            );
+            console.log(
+              chalk.dim(
+                "Add --broadcast to submit transfer + announce as one Pimlico UserOp (EIP-7702 Simple7702Account)."
+              )
+            );
+            console.log();
+            console.log(
+              chalk.dim(
+                `Stealth transfer ${amountPreview} from ${senderAddress} → ${recipientAddress}`
+              )
+            );
+            console.log(chalk.dim(`Implementation: ${SIMPLE_7702_IMPLEMENTATION}`));
+            console.log(chalk.cyan("Transfer call:"), jsonStringifyWithBigInt(payloads[0]!));
+            console.log(chalk.cyan("Announce call:"), jsonStringifyWithBigInt(payloads[1]!));
+            console.log(
+              chalk.dim(
+                needsDelegation
+                  ? "EIP-7702 delegation will be included in the UserOp."
+                  : "Account already delegates to Simple7702; UserOp skips re-authorization."
+              )
+            );
+            printFeePreview(fees);
+            console.log(chalk.green("✔ Transfer dry run complete."));
+          }
+          return;
+        }
+
+        let fees: FeePreview;
+        if (!batchAsUserOp) {
+          fees = await estimateEoaTxFeePreview(
+            client,
+            {
+              to: txs[0]!.to,
+              from: senderAddress,
+              data: txs[0]!.data,
+              value: txs[0]!.value,
+            },
+            tokenMeta.isEth ? 21_000n : 65_000n
+          );
+
+          if (dryRun) {
+            if (opts.nonInteractive) {
+              logCliJson({
+                stealth: !!stealthPlan,
+                stealthMetaAddressURI: stealthMetaURI ?? undefined,
+                recipient: recipientAddress,
+                ephemeralPublicKey: stealthPlan?.ephemeralPublicKey,
+                amount: amount.toString(),
+                token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
+                fees,
+                transactions: payloads,
+              });
             } else {
               printTransferDryRunInteractive(
                 txs[0]!,
@@ -702,11 +714,11 @@ export function registerTransferCommand(program: Command): void {
                 amount,
                 tokenMeta.decimals
               );
+              printFeePreview(fees);
+              console.log(chalk.green("✔ Transfer dry run complete."));
             }
-            printFeePreview(fees);
-            console.log(chalk.green("✔ Transfer dry run complete."));
+            return;
           }
-          return;
         }
 
         if (!senderPrivateKey) {
@@ -717,29 +729,46 @@ export function registerTransferCommand(program: Command): void {
         }
 
         if (batchAsUserOp) {
-          await maybeConfirm(
-            !!opts.nonInteractive,
-            `Submit stealth transfer of ${amountPreview} as one EIP-7702 UserOp (transfer + announce) from ${senderAddress}?\n  ${feeConfirmLine(fees)}`
-          );
-
-          const sent = await runQuietSpinner(
-            quiet,
-            txSpinner,
-            {
-              start: "Submitting EIP-7702 stealth UserOp (transfer + announce)...",
-              failure: "EIP-7702 stealth UserOp failed.",
-            },
-            async () =>
-              sendEip7702BatchUserOperation({
+          let fees: FeePreview;
+          const sent = await withTor(
+            !opts.withoutTor,
+            { rpcUrl, walletDir },
+            async () => {
+              fees = await estimateEip7702BatchUserOpFee({
                 client,
-                privateKey: senderPrivateKey,
                 chainId,
+                senderAddress,
                 calls: txs,
-              }),
-            (t) =>
-              `UserOp mined: ${t.txHash}${
-                t.delegatedInUserOp ? " (delegation included)" : ""
-              }`
+                privateKey: senderPrivateKey,
+                ...eip7702Tor,
+              });
+              await maybeConfirm(
+                !!opts.nonInteractive,
+                `Submit stealth transfer of ${amountPreview} as one EIP-7702 UserOp (transfer + announce) from ${senderAddress}?\n  ${feeConfirmLine(fees)}`
+              );
+
+              return runQuietSpinner(
+                quiet,
+                txSpinner,
+                {
+                  start:
+                    "Submitting EIP-7702 stealth UserOp (transfer + announce)...",
+                  failure: "EIP-7702 stealth UserOp failed.",
+                },
+                async () =>
+                  sendEip7702BatchUserOperation({
+                    client,
+                    privateKey: senderPrivateKey,
+                    chainId,
+                    calls: txs,
+                    ...eip7702Tor,
+                  }),
+                (t) =>
+                  `UserOp mined: ${t.txHash}${
+                    t.delegatedInUserOp ? " (delegation included)" : ""
+                  }`
+              );
+            }
           );
 
           if (opts.nonInteractive) {
@@ -760,7 +789,7 @@ export function registerTransferCommand(program: Command): void {
               amount: amount.toString(),
               token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
               calls: payloads,
-              fees,
+              fees: fees!,
             });
           } else {
             console.log();

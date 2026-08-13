@@ -114,7 +114,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
           const raw = opts.address!;
           let normalized: string;
           try {
-            normalized = await resolveAddressOrName(raw, resolveRpcUrl(opts.rpcUrl) ?? undefined);
+            normalized = await resolveAddressOrName(raw, resolveRpcUrl(opts.rpcUrl));
           } catch (e) {
             cliErrorFromCaught(e);
             return;

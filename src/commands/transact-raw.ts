@@ -36,7 +36,7 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
-import { runWithWalletTrafficLog } from "../utils/tor";
+import { withTor } from "../utils/tor";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
 import { makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
@@ -58,6 +58,7 @@ type TransactRawOpts = {
   nonInteractive?: boolean;
   broadcast?: boolean;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 type RawTx = {
@@ -228,13 +229,10 @@ export function registerTransactRawCommand(program: Command): void {
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransactRawOpts) => {
       const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-      if (!rpcUrl) {
-        cliError("Missing --rpc-url (or environment variable RPC_URL).");
-        return;
-      }
 
       let targets: string[];
       let payloads: string[];
@@ -378,7 +376,7 @@ export function registerTransactRawCommand(program: Command): void {
       }
 
       const rawTxs = buildRawTransactions(targets, payloads, values);
-      await runWithWalletTrafficLog(walletDir, async () => {
+      await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
       const quiet = quietNonInteractive(opts.nonInteractive);
