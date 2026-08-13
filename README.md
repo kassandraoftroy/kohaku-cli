@@ -156,7 +156,8 @@ Global behavior:
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
 | **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
 | **`--password`** | Wallet unlock password. In non-interactive mode, required where the wallet is encrypted. Value can be a literal string or a path to a file containing the password. |
-| **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
+| **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands, including `transfer` / `transact-raw` / names). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
+| **Proving artifacts** | Railgun/Tornado keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
 
 ---
 
@@ -246,6 +247,7 @@ Provide exactly one of `--name` or `--no-name`.
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit on-chain. Omit to simulate / print payloads. |
 | `--owner-priv` | Derive `--index` from the seed when that account is not yet in public accounts. |
+| `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico when using EIP-7702, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON where applicable; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
 
@@ -353,6 +355,7 @@ Transfer ETH or ERC-20 tokens from one wallet public account to any public addre
 | `--amount-max` | Send the full ERC-20 balance, or the maximum ETH balance after reserving estimated gas. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit on-chain. Omit to simulate and print the transaction payload. |
+| `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico UserOps, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, `--to`, and one amount flag. |
 | `--dataDir <path>` | Data root. |
 
@@ -385,6 +388,7 @@ Simulate or submit one or more raw contract calls from a public account.
 | `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit on-chain (single EOA tx, or one batched UserOp for 2+ calls). Omit to simulate and print payloads. |
+| `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico UserOps, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, and `--from`. |
 | `--dataDir <path>` | Data root. |
 
@@ -545,6 +549,7 @@ Commands below manage top-level ENS (`.eth`), GNS (`.gwei`), and WNS (`.wei`) na
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit on-chain. Omit to simulate / print payloads. |
 | `--owner-priv` | Derive `--index` from the seed when that account is not yet in public accounts. |
+| `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico when broadcasting UserOps, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON where applicable; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
 
@@ -730,6 +735,23 @@ kohaku view-network-traffic --wallet testWallet --clear
 
 ---
 
+### `clear-tor-cache`
+
+Delete the on-disk [tor-js](https://github.com/privacy-ethereum/tor-js) Arti cache (`~/.local/share/tor-js`). Use after Tor bootstrap failures such as corrupted cache / “Unable to bootstrap a working directory”. The next Tor start re-downloads consensus (slower first bootstrap).
+
+| Option | Description |
+|--------|-------------|
+| `--non-interactive` | Print JSON `{ cleared, path }` instead of a human message. |
+
+**Examples:**
+
+```bash
+kohaku clear-tor-cache
+kohaku clear-tor-cache --non-interactive
+```
+
+---
+
 ### `see-stealth-meta-address`
 
 Print this wallet’s scheme-1 stealth meta-address URI (`st:<network>:0x…`). Derived from the seed; no RPC required.
@@ -765,7 +787,7 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 ## Tips
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, `unshield`, `init-profile`, and the name commands default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
-- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and proving artifacts are Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). Artifacts are served from `<dataDir>/proving-artifacts` when cached; otherwise fetched from `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`). Pre-warm with `kohaku fetch-artifacts` (optionally `--without-tor` for a one-shot clearnet download). Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
+- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and proving artifacts are Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). Artifacts are served from `<dataDir>/proving-artifacts` when cached; otherwise fetched from `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`). Pre-warm with `kohaku fetch-artifacts` (optionally `--without-tor` for a one-shot clearnet download). After Tor bootstrap corruption, run `kohaku clear-tor-cache`. Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Profile / stealth:** Prefer `init-profile` to publish ERC-6538 keys (and optionally a name). Unshield to stored stealth accounts with `--to s0`. Print the meta URI with `see-stealth-meta-address`. New wallets store `.stealth-start-block` at creation so first `balances` stealth scans skip pre-wallet announcer history; imports can set the same via `create-wallet --import --stealth-start-block`.
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.

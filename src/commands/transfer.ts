@@ -72,7 +72,6 @@ type TransferOpts = {
   nonInteractive?: boolean;
   broadcast?: boolean;
   stealth?: boolean;
-  withoutTor?: boolean;
   dataDir?: string;
   withoutTor?: boolean;
 };
