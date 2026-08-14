@@ -35,6 +35,7 @@ import {
   runWithTrafficLogWallet,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
+import { withTorBootstrapHint } from "./cli-errors.js";
 import {
   artifactRelativeKeyFromUrl,
   buildLocalArtifactResponse,
@@ -812,6 +813,14 @@ async function withTorInner<T>(
     }
   } catch (err) {
     client.close();
+    // Enrich tor-js "Bootstrap failed: tor: …" so callers that print
+    // `err.message` (not only cliError) still see the clear-tor-cache hint.
+    if (err instanceof Error) {
+      const hinted = withTorBootstrapHint(err.message);
+      if (hinted !== err.message) {
+        throw new Error(hinted, { cause: err });
+      }
+    }
     throw err;
   }
 }
