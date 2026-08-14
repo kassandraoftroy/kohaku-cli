@@ -178,7 +178,11 @@ export function requiredAddressForTransfer(
   return ownership.owner;
 }
 
-/** Record updates need the manager (ENS) / owner (GNS/WNS). */
+/**
+ * Record updates need the manager.
+ * ENS docs: unwrapped → Registry.owner; wrapped → NameWrapper.ownerOf
+ * (both exposed as `ownership.manager` after readNameOwnership).
+ */
 export function requiredAddressForRecords(ownership: NameOwnership): Address {
   return ownership.manager;
 }

@@ -30,6 +30,7 @@ import {
 } from "../lib/names/ops.js";
 import {
   generateSecret,
+  requiredAddressForRecords,
   resolveNameSigner,
   resolveRegisterSigner,
 } from "../lib/names/ownership.js";
@@ -826,12 +827,8 @@ export function registerInitProfileCommand(program: Command): void {
         ownership = await readNameOwnership(ctx.client, parsed);
       }
 
-      // Prefer owner for wrapped ENS (manager is the NameWrapper contract).
-      const recordAddress = ownership.wrapped
-        ? ownership.owner
-        : ownership.manager;
       const recordSigner = resolveNameSigner({
-        requiredAddress: recordAddress,
+        requiredAddress: requiredAddressForRecords(ownership),
         walletDir: ctx.walletDir,
         mnemonic: ctx.mnemonic,
         password: ctx.password,

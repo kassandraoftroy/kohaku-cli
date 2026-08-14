@@ -22,8 +22,9 @@ export type NameOwnership = {
   /** NFT registrant / wrapped owner (who can transfer / renew as owner). */
   owner: Address;
   /**
-   * ENS registry owner ("manager") who can update records.
-   * For GNS/WNS this equals `owner` (no separate manager role).
+   * Record manager. Unwrapped ENS: `ENSRegistry.owner(node)`.
+   * Wrapped ENS: same as `owner` (`NameWrapper.ownerOf(node)`).
+   * GNS/WNS: always equals `owner` (no separate manager role).
    */
   manager: Address;
   /** True when ENS name is wrapped in NameWrapper. Always false for GNS/WNS. */
