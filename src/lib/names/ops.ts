@@ -71,6 +71,9 @@ export async function readNameOwnership(
     assertEnsMainnet(BigInt(client.chain?.id ?? 0));
     const node = namehash(parsed.name) as Hex;
     const labelId = ensLabelTokenId(parsed.label);
+    // Docs: wrapped iff registry.owner(node) === NameWrapper; then the
+    // effective owner/manager is NameWrapper.ownerOf(node). Unwrapped .eth
+    // 2LDs keep separate registrant (BaseRegistrar) vs manager (registry).
     const [registryOwner, baseOwner] = await Promise.all([
       client.readContract({
         address: ENS_REGISTRY,
@@ -86,10 +89,10 @@ export async function readNameOwnership(
       }),
     ]);
     const wrapped =
-      getAddress(baseOwner).toLowerCase() === ENS_NAME_WRAPPER.toLowerCase();
-    let owner: Address;
+      getAddress(registryOwner).toLowerCase() ===
+      ENS_NAME_WRAPPER.toLowerCase();
     if (wrapped) {
-      owner = getAddress(
+      const wrappedOwner = getAddress(
         await client.readContract({
           address: ENS_NAME_WRAPPER,
           abi: ENS_NAME_WRAPPER_ABI,
@@ -97,13 +100,17 @@ export async function readNameOwnership(
           args: [BigInt(node)],
         })
       );
-    } else {
-      owner = getAddress(baseOwner);
+      return {
+        owner: wrappedOwner,
+        manager: wrappedOwner,
+        wrapped: true,
+        node,
+      };
     }
     return {
-      owner,
+      owner: getAddress(baseOwner),
       manager: getAddress(registryOwner),
-      wrapped,
+      wrapped: false,
       node,
     };
   }
