@@ -336,12 +336,12 @@ function isGithubArtifactUrl(urlStr: string): boolean {
   }
 }
 
-/** Saga CDN (Tor-friendly fatsolutions host; legacy Fastly / fatsolutions still detected). */
+/** Saga CDN (gordosoluciones host; legacy Fastly / fatsolutions still detected). */
 function isSagaCdnUrl(urlStr: string): boolean {
   try {
     const host = new URL(urlStr).hostname.toLowerCase();
     return (
-      host === "torsaga.fatsolutions.xyz" ||
+      host === "saga.gordosoluciones.xyz" ||
       host === "saga-pp-state.global.ssl.fastly.net" ||
       host.includes("saga.fatsolutions")
     );

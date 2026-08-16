@@ -31,8 +31,8 @@ type SagaIndex = {
 /** CDN base URL for historical event sync (mainnet vs Sepolia). */
 export function sagaBaseUrlForChain(chainId: bigint): string {
   return chainId === 11155111n
-    ? "https://torsaga.fatsolutions.xyz/sepolia"
-    : "https://torsaga.fatsolutions.xyz";
+    ? "https://saga.gordosoluciones.xyz/sepolia"
+    : "https://saga.gordosoluciones.xyz";
 }
 
 function normalizeAddress(address: Hex): string {
@@ -113,7 +113,7 @@ async function readGunzipLines(
 }
 
 /**
- * Host {@link ExternalSyncProvider} backed by the FAT Solutions saga CDN.
+ * Host {@link ExternalSyncProvider} backed by the saga CDN.
  * Tornado Cash reads bulk historical logs from here during cold sync.
  */
 export function createSagaExternalSyncProvider(opts: {

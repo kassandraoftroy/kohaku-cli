@@ -147,7 +147,7 @@ export function categorizeUrl(urlStr: string): TrafficCategory {
   if (lower.includes("squids.live") || lower.includes("subsquid")) return "subsquid";
   if (lower.includes("ppoi.") || lower.includes("/poi")) return "ppoi";
   if (
-    lower.includes("torsaga.fatsolutions.xyz") ||
+    lower.includes("saga.gordosoluciones.xyz") ||
     lower.includes("saga-pp-state.global.ssl.fastly.net") ||
     lower.includes("saga.fatsolutions")
   ) {
