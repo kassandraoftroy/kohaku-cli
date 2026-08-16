@@ -1,13 +1,13 @@
 # kohaku-cli
 
 > [!IMPORTANT]
-> NOTICE: this CLI has **NOT BEEN AUDITED** and **IS UNDER ACTIVE DEVELOPMENT** and **HAS BEEN WRITTEN WITH HELP FROM CLAUDE** et al. **DO NOT USE ON MAINNET** without understanding **YOU RISK CATASTROPHIC LOSS OF FUNDS**.
+> NOTICE: this CLI has **NOT BEEN AUDITED** and **IS UNDER ACTIVE DEVELOPMENT** and **HAS BEEN WRITTEN WITH HELP FROM CLAUDE** et al. **DO NOT USE ON MAINNET** unless you know **EXACTLY WHAT YOU ARE DOING** and understand **YOU RISK CATASTROPHIC LOSS OF FUNDS**.
 
 A command line interface wallet for moving funds between **public** Ethereum accounts (derived from your seed) and **private** balances on Tornado Cash, Railgun and Privacy Pools (V1) -- whose credentials also conveniently live on the wallet seed phrase. It also covers **ENS / GNS / WNS** names, **EIP-5564 stealth address** "profile" concept, and Tornado note import/export. The CLI encrypts your seed on disk, walks you through shield / unshield with prompts, and can run headlessly with `--non-interactive` for scripts and agents.
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
-See [Kohaku CLI Wiki](https://tatsumaki.gwei.domains) for a practical guide to using kohaku-cli as a wallet solution "in real life"
+See [Kohaku CLI Wiki](https://kohaku.gwei.domains) for a practical guide to using kohaku-cli as a wallet solution "in real life"
 
 See README below for quick testnet demo and other technical details.
 
