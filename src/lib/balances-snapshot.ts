@@ -344,7 +344,14 @@ async function resolvePrivateBalanceItems(
       );
       protocolAvailable.tornado = true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      // A worker can preserve `message` while stripping the Error prototype.
+      const msg =
+        typeof e === "object" &&
+        e !== null &&
+        "message" in e &&
+        typeof e.message === "string"
+          ? e.message
+          : String(e);
       onWarning?.(`Tornado Cash private balances unavailable: ${msg}`);
       protocolAvailable.tornado = false;
     }
