@@ -337,11 +337,12 @@ function isGithubArtifactUrl(urlStr: string): boolean {
   }
 }
 
-/** Saga CDN (Fastly, or legacy fatsolutions host) for Tornado cold sync. */
+/** Saga CDN (gordosoluciones host; legacy Fastly / fatsolutions still detected). */
 function isSagaCdnUrl(urlStr: string): boolean {
   try {
     const host = new URL(urlStr).hostname.toLowerCase();
     return (
+      host === "saga.gordosoluciones.xyz" ||
       host === "saga-pp-state.global.ssl.fastly.net" ||
       host.includes("saga.fatsolutions")
     );
