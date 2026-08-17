@@ -1,6 +1,7 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import { formatUnits, getAddress, isAddress } from "viem";
 
+import { formatCaughtError } from "../utils/cli-errors";
 import { makePublicClient, disposePublicClient } from "../utils/rpc";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
@@ -308,8 +309,9 @@ async function resolvePrivateBalanceItems(
       );
       protocolAvailable.railgun = true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      onWarning?.(`Railgun private balances unavailable: ${msg}`);
+      onWarning?.(
+        `Railgun private balances unavailable: ${formatCaughtError(e)}`
+      );
       protocolAvailable.railgun = false;
     }
   }
@@ -326,8 +328,9 @@ async function resolvePrivateBalanceItems(
       );
       protocolAvailable["privacy-pools"] = true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      onWarning?.(`Privacy pools private balances unavailable: ${msg}`);
+      onWarning?.(
+        `Privacy pools private balances unavailable: ${formatCaughtError(e)}`
+      );
       protocolAvailable["privacy-pools"] = false;
     }
   }
@@ -344,8 +347,12 @@ async function resolvePrivateBalanceItems(
       );
       protocolAvailable.tornado = true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      onWarning?.(`Tornado Cash private balances unavailable: ${msg}`);
+      onWarning?.(
+        `Tornado Cash private balances unavailable: ${formatCaughtError(e)}\n` +
+          `  → Tornado cold sync pulls saga CDN + proving artifacts over Tor (no clearnet fallback). ` +
+          `Debug: KOHAKU_TOR_DEBUG=1, \`view-network-traffic --category saga\`, ` +
+          `\`kohaku fetch-artifacts\`, or raise KOHAKU_TOR_CDN_TIMEOUT_MS.`
+      );
       protocolAvailable.tornado = false;
     }
   }
@@ -504,16 +511,16 @@ async function loadBalancesSnapshotInner(
         onProgress: (msg) => onWarning?.(msg),
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      onWarning?.(`Stealth announcement scan skipped: ${msg}`);
+      onWarning?.(
+        `Stealth announcement scan skipped: ${formatCaughtError(e)}`
+      );
     }
     stealthAccounts = makeStealthAccountsStorage(walletDir, password).getAccounts();
     for (const acct of stealthAccounts) {
       stealthAccountIndexByAddress[acct.address] = acct.stealthIndex;
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    onWarning?.(`Stealth accounts unavailable: ${msg}`);
+    onWarning?.(`Stealth accounts unavailable: ${formatCaughtError(e)}`);
   }
 
   const publicByAddress: Record<string, BalanceItem[]> = {};
@@ -561,14 +568,15 @@ async function loadBalancesSnapshotInner(
           );
           privateNotes[protocol] = filterNonZeroNotes(rows);
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
           const label =
             protocol === "privacy-pools"
               ? "Privacy pools"
               : protocol === "tornado"
                 ? "Tornado Cash"
                 : "Railgun";
-          onWarning?.(`${label} notes unavailable: ${msg}`);
+          onWarning?.(
+            `${label} notes unavailable: ${formatCaughtError(e)}`
+          );
           privateNotes[protocol] = [];
         }
       }
