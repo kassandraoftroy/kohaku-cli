@@ -35,7 +35,7 @@ import {
   runWithTrafficLogWallet,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
-import { withTorBootstrapHint } from "./cli-errors.js";
+import { formatCaughtError, withTorBootstrapHint } from "./cli-errors.js";
 import {
   artifactRelativeKeyFromUrl,
   buildLocalArtifactResponse,
@@ -499,7 +499,7 @@ export async function kohakuFetch(
         timeoutMs
       );
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = formatCaughtError(e);
       if (/fetch-artifacts/i.test(msg)) throw e;
       throw new Error(
         `Proving artifact Tor fetch failed for ${artifactKey}: ${msg}. ${artifactFailHint()}`
@@ -569,7 +569,7 @@ export async function kohakuFetch(
     }
     return torRes;
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = formatCaughtError(e);
     if (/Tor fetch returned HTTP/i.test(msg)) throw e;
     throw new Error(
       `Tor fetch failed for ${url}: ${msg}` +
