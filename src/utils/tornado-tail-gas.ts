@@ -9,6 +9,7 @@ import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "
 import { SIMPLE_7702_IMPLEMENTATION } from "./simple-7702.js";
 import {
   estimateTornadoPaymasterFee,
+  padTornadoTailForwardFee,
   tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
 
@@ -32,7 +33,12 @@ const EXECUTE_ABI = parseAbi([
   "function executeBatch((address target, uint256 value, bytes data)[] calls)",
 ]);
 
-const ERC20_ABI = parseAbi(["function balanceOf(address) view returns (uint256)"]);
+const ERC20_BALANCE_ABI = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+]);
+const ERC20_TRANSFER_ABI = parseAbi([
+  "function transfer(address to, uint256 amount) returns (bool)",
+]);
 
 /** ~10% headroom on measured execution-tail gas before feeding SDK fee math. */
 const TAIL_GAS_OVERHEAD_NUM = 11n;
@@ -47,6 +53,23 @@ type JsonRpcProviderLike = Pick<KohakuPublicClient, "request">;
 export type TornadoTailFundAsset =
   | { kind: "native" }
   | { kind: "erc20"; token: `0x${string}` };
+
+/** Leftover `token.transfer(to, amount)` baked ahead of user `--tail-calls`. */
+export function encodeTornadoErc20TransferTailCall(
+  token: `0x${string}`,
+  to: `0x${string}`,
+  amount: bigint
+): TornadoTailCall {
+  return {
+    to: token,
+    value: 0n,
+    data: encodeFunctionData({
+      abi: ERC20_TRANSFER_ABI,
+      functionName: "transfer",
+      args: [to, amount],
+    }),
+  };
+}
 
 type StateOverride = Record<
   string,
@@ -122,7 +145,7 @@ async function readErc20Balance(
   stateOverride?: StateOverride
 ): Promise<bigint> {
   const data = encodeFunctionData({
-    abi: ERC20_ABI,
+    abi: ERC20_BALANCE_ABI,
     functionName: "balanceOf",
     args: [account],
   });
@@ -314,9 +337,12 @@ export async function estimateTornadoTailCallsGas(opts: {
 function buildSimulationPlan(opts: {
   recipient: `0x${string}`;
   amountWei: bigint;
+  /** Paymaster fee already in unshield-asset units (wei or token). */
   estimatedFee: bigint;
   userTailCalls: readonly TornadoTailCall[];
   asset: TornadoTailFundAsset;
+  /** Prepend leftover `token.transfer(recipient)` (external / stealth `--to`). */
+  bakeErc20Forward?: boolean;
 }): {
   calls: TornadoTailCall[];
   nativeBalanceWei: bigint;
@@ -325,15 +351,29 @@ function buildSimulationPlan(opts: {
   const afterFee = opts.amountWei - opts.estimatedFee;
   if (afterFee <= 0n) {
     throw new Error(
-      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${opts.estimatedFee.toString()} wei).`
+      `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${opts.estimatedFee.toString()} base units).`
     );
   }
 
   if (opts.asset.kind === "erc20") {
-    // User tails move the token; do not auto-forward native. Account needs an
-    // ETH stipend so from=account estimateGas can pay for the simulated call.
+    const userTailValue = opts.userTailCalls.reduce(
+      (sum, call) => sum + call.value,
+      0n
+    );
+    if (userTailValue > 0n) {
+      throw new Error(
+        "Tornado --tail-calls cannot include msg.value when unshielding an ERC-20: the 7702 account does not receive native ETH."
+      );
+    }
+    const leftover = opts.bakeErc20Forward
+      ? encodeTornadoErc20TransferTailCall(
+          opts.asset.token,
+          opts.recipient,
+          afterFee
+        )
+      : undefined;
     return {
-      calls: [...opts.userTailCalls],
+      calls: leftover ? [leftover, ...opts.userTailCalls] : [...opts.userTailCalls],
       nativeBalanceWei: TORNADO_TAIL_SIM_GAS_STIPEND_WEI,
       erc20: { token: opts.asset.token, amount: afterFee },
     };
@@ -375,11 +415,28 @@ export async function resolveTornadoTailCallsGasEstimate(opts: {
   userTailCalls: readonly TornadoTailCall[];
   /** Unshielded asset that lands on `account` before tail calls run. */
   asset?: TornadoTailFundAsset;
+  /**
+   * Convert padded fee wei into unshield-asset units. ETH: omit (identity).
+   * ERC-20: paymaster `quoteWeiInToken`.
+   */
+  feeWeiToAsset?: (feeWei: bigint) => Promise<bigint>;
+  /**
+   * When the asset is ERC-20 and leftover must be sent to `--to` (not already
+   * on the 7702 delegator), simulate the baked `transfer` as well.
+   */
+  bakeErc20Forward?: boolean;
+  /** Recipient of leftover ERC-20 transfer; defaults to `account`. */
+  leftoverRecipient?: `0x${string}`;
 }): Promise<bigint | undefined> {
   if (opts.userTailCalls.length === 0) return undefined;
 
   const asset: TornadoTailFundAsset = opts.asset ?? { kind: "native" };
   const isERC20 = asset.kind === "erc20";
+  if (isERC20 && !opts.feeWeiToAsset) {
+    throw new Error(
+      "ERC-20 Tornado tail-call gas estimate requires feeWeiToAsset (quoteWeiInToken)."
+    );
+  }
 
   let executionTail = tornadoWithdrawalCallGasLimit(0, undefined, isERC20);
   let measured = 0n;
@@ -390,16 +447,21 @@ export async function resolveTornadoTailCallsGasEstimate(opts: {
       executionTail,
       isERC20
     );
-    const fee = estimateTornadoPaymasterFee(opts.maxFeePerGas, {
+    const feeWei = estimateTornadoPaymasterFee(opts.maxFeePerGas, {
       callGasLimit,
       isERC20,
     });
+    const feeReserveWei = padTornadoTailForwardFee(feeWei);
+    const estimatedFee = opts.feeWeiToAsset
+      ? await opts.feeWeiToAsset(feeReserveWei)
+      : feeReserveWei;
     const plan = buildSimulationPlan({
-      recipient: opts.account,
+      recipient: opts.leftoverRecipient ?? opts.account,
       amountWei: opts.amountWei,
-      estimatedFee: fee,
+      estimatedFee,
       userTailCalls: opts.userTailCalls,
       asset,
+      bakeErc20Forward: isERC20 && !!opts.bakeErc20Forward,
     });
     measured = await estimateTornadoTailCallsGas({
       rpcUrl: opts.rpcUrl,

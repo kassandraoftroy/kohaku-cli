@@ -23,10 +23,14 @@ import {
 } from "@kohaku-eth/tornado-cash";
 import {
   estimateTornadoPaymasterFee,
+  padTornadoTailForwardFee,
   tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
 import { createTorAwarePaymasterBroadcaster } from "./tornado-paymaster-broadcaster.js";
-import type { TornadoTailCall } from "./tornado-tail-gas.js";
+import {
+  encodeTornadoErc20TransferTailCall,
+  type TornadoTailCall,
+} from "./tornado-tail-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { makeTornadoArtifactsLoader } from "./proving-artifacts.js";
 import { railgunPimlicoBundlerUrl } from "./rpc";
@@ -334,14 +338,6 @@ export function assertTornadoPaymasterConfigured(chainId: bigint): void {
 export type UnshieldTailCall = TornadoTailCall;
 
 /**
- * Extra pad on top of `estimateTornadoPaymasterFee` when the CLI must bake an
- * ETH forward into user `tailCalls` (SDK will not run its own `forwardCalls`).
- * Absorbs bundler gas refine making the proof fee higher than our pre-estimate.
- */
-const TAIL_FORWARD_FEE_PAD_NUM = 23n;
-const TAIL_FORWARD_FEE_PAD_DEN = 20n;
-
-/**
  * Railgun unshield execution-phase tails. Unlike Tornado, do **not** bake a
  * leftover-forward ETH transfer — unshielded funds already land at `to` via the
  * privacy paymaster. Native unshield still prefixes `WETH.withdraw` in the SDK.
@@ -354,6 +350,17 @@ export function railgunUnshieldOptions(
     tailCalls: async () => [...tailCalls],
   };
 }
+
+export type TornadoErc20TailForward = {
+  token: `0x${string}`;
+  /** Padded paymaster fee already quoted in token base units. */
+  feeReserveToken: bigint;
+  /**
+   * Prepend leftover `token.transfer(recipient)`. False when recipient is the
+   * 7702 delegator (`--next` / HD `--to`) — tokens already sit on the account.
+   */
+  bakeForward: boolean;
+};
 
 /** Tornado unshield via Pimlico bundler + on-chain paymaster (not ENS relayers). */
 export function tornadoUnshieldOptions(
@@ -369,7 +376,9 @@ export function tornadoUnshieldOptions(
   withdrawalCount: number,
   tailCalls: readonly UnshieldTailCall[] = [],
   /** Measured execution-tail gas for user `tailCalls` (SDK `tailCallsGasEstimate`). */
-  tailCallsGasEstimate?: bigint
+  tailCallsGasEstimate?: bigint,
+  /** When set, unshield asset is an ERC-20 (fee already quoted in token units). */
+  erc20?: TornadoErc20TailForward
 ): TCPaymasterUnshieldOptions {
   if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
     throw new Error("Tornado unshield requires at least one withdrawal.");
@@ -389,16 +398,49 @@ export function tornadoUnshieldOptions(
     return base;
   }
 
+  const isERC20 = erc20 != null;
+  if (isERC20) {
+    const userTailValue = tailCalls.reduce((sum, call) => sum + call.value, 0n);
+    if (userTailValue > 0n) {
+      throw new Error(
+        "Tornado --tail-calls cannot include msg.value when unshielding an ERC-20: the 7702 account does not receive native ETH."
+      );
+    }
+    const afterFee = amountWei - erc20.feeReserveToken;
+    if (afterFee <= 0n) {
+      throw new Error(
+        `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${erc20.feeReserveToken.toString()} token base units).`
+      );
+    }
+    return {
+      ...base,
+      ...(tailCallsGasEstimate !== undefined ? { tailCallsGasEstimate } : {}),
+      tailCalls: async () => [
+        ...(erc20.bakeForward && afterFee > 0n
+          ? [
+              encodeTornadoErc20TransferTailCall(
+                erc20.token,
+                recipient,
+                afterFee
+              ),
+            ]
+          : []),
+        ...tailCalls,
+      ],
+    };
+  }
+
   const extraWithdrawals = Math.max(0, withdrawalCount - 1);
   const feeCallGasLimit = tornadoWithdrawalCallGasLimit(
     extraWithdrawals,
-    tailCallsGasEstimate
+    tailCallsGasEstimate,
+    false
   );
   const estimatedFee = estimateTornadoPaymasterFee(maxFeePerGas, {
     callGasLimit: feeCallGasLimit,
+    isERC20: false,
   });
-  const feeReserve =
-    (estimatedFee * TAIL_FORWARD_FEE_PAD_NUM) / TAIL_FORWARD_FEE_PAD_DEN;
+  const feeReserve = padTornadoTailForwardFee(estimatedFee);
   const afterFee = amountWei - feeReserve;
   if (afterFee <= 0n) {
     throw new Error(
