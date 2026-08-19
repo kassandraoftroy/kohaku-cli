@@ -310,6 +310,8 @@ Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus a
 
 By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (if set). Otherwise only public balances are shown, with a short warning. Pass `--include` to sync one or more protocols explicitly (required for multiple protocols at once, or for any private balance when the env is unset).
 
+`balances` always loads **already-imported** stealth accounts into public totals. It also scans ERC-5564 announcements for new payments (same spinner progress as protocol first-sync). `--stealth-start-block` only sets the history floor; use `--skip-stealth-scan` to skip discovery for a faster run.
+
 | Option | Description |
 |--------|-------------|
 | `--wallet <name>` | Wallet (optional in interactive mode). |
@@ -319,7 +321,8 @@ By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (i
 | `--verbose` | Human: per-address public breakdown + private note list for included protocols. JSON: adds `public_account_indexes_by_address` and `private_notes`. |
 | `--tokensList <addrs>` | Extra ERC-20 addresses (comma- or space-separated), merged with chain defaults. |
 | `--without-tor` | Disable Tor for privacy HTTP when syncing private protocols (default: Tor on). Covers Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, etc. RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
-| `--stealth-start-block <block>` | Start ERC-5564 announcement scan at this block (decimal or `0x`-hex); skips older history on first/full scan. When omitted, uses the wallet’s `.stealth-start-block` file if present (written by `create-wallet`). |
+| `--stealth-start-block <block>` | Floor for the ERC-5564 announcement **scan** (decimal or `0x`-hex); skips older history on first/full scan. When omitted, uses the wallet’s `.stealth-start-block` file if present (written by `create-wallet`). Not a way to skip scanning. |
+| `--skip-stealth-scan` | Skip announcement discovery for this run. **Already-imported** stealth accounts still appear in public balances. |
 | `--non-interactive` | JSON only; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
 
@@ -334,6 +337,7 @@ kohaku balances --wallet testWallet --include tornado
 kohaku balances --wallet testWallet --include railgun,tornado --verbose
 kohaku balances --wallet testWallet --verbose --include privacy-pools --tokensList 0xYourToken
 kohaku balances --wallet testWallet --include tornado --without-tor
+kohaku balances --wallet testWallet --skip-stealth-scan
 ```
 
 ---

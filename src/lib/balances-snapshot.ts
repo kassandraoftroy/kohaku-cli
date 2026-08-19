@@ -214,6 +214,11 @@ export type LoadBalancesSnapshotOptions = {
    * When set on a first/full history pass, skips announcer history before this block.
    */
   stealthStartBlock?: bigint;
+  /**
+   * Skip ERC-5564 announcement discovery. Already-imported stealth accounts
+   * are still included in public balances.
+   */
+  skipStealthScan?: boolean;
 };
 
 export type PrivateBalancesSnapshot = {
@@ -422,6 +427,7 @@ async function loadBalancesSnapshotInner(
     withoutTor,
     onTorStatus,
     onSyncProgress,
+    skipStealthScan,
   } = opts;
   const chainIdString = chainId.toString();
 
@@ -467,23 +473,28 @@ async function loadBalancesSnapshotInner(
   let stealthAccounts: ReturnType<
     ReturnType<typeof makeStealthAccountsStorage>["getAccounts"]
   > = [];
-  try {
-    // Discover new stealth payments before aggregating public balances.
     try {
-      const keypair = deriveStealthKeypair(mnemonic, chainId);
-      await scanAndImportStealthAnnouncements({
-        client: rpcForPublic,
-        walletDir,
-        password,
-        keypair,
-        chainId,
-        startFromBlock: opts.stealthStartBlock,
-        onProgress: (msg) => onWarning?.(msg),
-      });
-    } catch (e) {
-      onWarning?.(
-        `Stealth announcement scan skipped: ${formatCaughtError(e)}`
-      );
+    // Discover new stealth payments before aggregating public balances.
+    if (!skipStealthScan) {
+      try {
+        const keypair = deriveStealthKeypair(mnemonic, chainId);
+        await runWithSyncProgress(
+          { protocol: "stealth", onUpdate: onSyncProgress },
+          () =>
+            scanAndImportStealthAnnouncements({
+              client: rpcForPublic,
+              walletDir,
+              password,
+              keypair,
+              chainId,
+              startFromBlock: opts.stealthStartBlock,
+            })
+        );
+      } catch (e) {
+        onWarning?.(
+          `Stealth announcement scan skipped: ${formatCaughtError(e)}`
+        );
+      }
     }
     stealthAccounts = makeStealthAccountsStorage(walletDir, password).getAccounts();
     for (const acct of stealthAccounts) {

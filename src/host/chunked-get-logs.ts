@@ -100,7 +100,7 @@ function asLogArray(result: unknown): unknown[] {
   throw new Error(`expected eth_getLogs result to be an array, got ${typeof result}`);
 }
 
-function estimatedWindowCount(
+export function estimatedGetLogsWindowCount(
   fromBn: bigint,
   toBn: bigint,
   chunkSpan: bigint
@@ -124,7 +124,7 @@ async function fetchLogsChunked(
   const out: unknown[] = [];
   let windowFrom = fromBn;
   let w = 0;
-  const total = estimatedWindowCount(fromBn, toBn, chunkSpan);
+  const total = estimatedGetLogsWindowCount(fromBn, toBn, chunkSpan);
   while (windowFrom <= toBn) {
     const windowTo =
       windowFrom + chunkSpan - 1n > toBn ? toBn : windowFrom + chunkSpan - 1n;

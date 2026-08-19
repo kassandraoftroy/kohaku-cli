@@ -55,6 +55,7 @@ type BalancesOpts = {
   dataDir?: string;
   withoutTor?: boolean;
   stealthStartBlock?: string;
+  skipStealthScan?: boolean;
   resyncProfile?: boolean;
   profileIndex?: string;
 };
@@ -509,6 +510,10 @@ export function registerBalancesCommand(program: Command): void {
     .option("--without-tor", cliOptions.withoutTor)
     .option("--stealth-start-block <block>", cliOptions.stealthStartBlock)
     .option(
+      "--skip-stealth-scan",
+      "Skip ERC-5564 announcement discovery; still show already-imported stealth account balances"
+    )
+    .option(
       "--resync-profile",
       "Ignore cached stealth-accounts profile and re-resolve from chain (clears cache if nothing found)"
     )
@@ -617,6 +622,7 @@ export function registerBalancesCommand(program: Command): void {
               verbose: !!opts.verbose,
               withoutTor: opts.withoutTor,
               stealthStartBlock,
+              skipStealthScan: !!opts.skipStealthScan,
               onTorStatus: (message) => {
                 loading.start(message);
               },

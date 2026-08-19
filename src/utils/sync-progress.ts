@@ -2,6 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { SupportedProtocol } from "./plugins.js";
 
+/** Privacy-protocol sync, or ERC-5564 stealth announcement scan. */
+export type SyncProgressSource = SupportedProtocol | "stealth";
+
 export type SyncProgressPhase = "saga" | "rpc" | "subsquid" | "asp" | "sync";
 
 export type SyncProgressUpdate = {
@@ -12,7 +15,7 @@ export type SyncProgressUpdate = {
 };
 
 type SyncProgressStore = {
-  protocol: SupportedProtocol;
+  protocol: SyncProgressSource;
   started: number;
   onUpdate?: (message: string) => void;
   phase: SyncProgressPhase;
@@ -27,10 +30,11 @@ type SyncProgressStore = {
 
 const als = new AsyncLocalStorage<SyncProgressStore>();
 
-const PROTOCOL_LABEL: Record<SupportedProtocol, string> = {
+const PROTOCOL_LABEL: Record<SyncProgressSource, string> = {
   railgun: "Railgun",
   "privacy-pools": "Privacy Pools",
   tornado: "Tornado Cash",
+  stealth: "Stealth",
 };
 
 const PHASE_NOUN: Record<SyncProgressPhase, string> = {
@@ -76,7 +80,12 @@ function formatMessage(store: SyncProgressStore): string {
 
   if (hasBar) {
     const bar = asciiBar(store.done!, store.total!);
-    return `${name} first sync  ${bar} ${store.done}/${store.total} ${PHASE_NOUN[store.phase]}  ${elapsed}${slow}`;
+    const verb = store.protocol === "stealth" ? "scan" : "first sync";
+    const noun =
+      store.protocol === "stealth"
+        ? "announcement chunks"
+        : PHASE_NOUN[store.phase];
+    return `${name} ${verb}  ${bar} ${store.done}/${store.total} ${noun}  ${elapsed}${slow}`;
   }
 
   const count = store.httpCounts[store.phase as "saga" | "subsquid" | "asp"];
@@ -92,9 +101,9 @@ function formatMessage(store: SyncProgressStore): string {
     return `${name} sync · saga CDN${req} · ${elapsed}${slow}`;
   }
   if (store.detail) {
-    return `${name} sync · ${store.detail} · ${elapsed}${slow}`;
+    return `${name} ${store.protocol === "stealth" ? "scan" : "sync"} · ${store.detail} · ${elapsed}${slow}`;
   }
-  return `${name} sync · ${elapsed}${slow}`;
+  return `${name} ${store.protocol === "stealth" ? "scan" : "sync"} · ${elapsed}${slow}`;
 }
 
 function flush(store: SyncProgressStore, force = false): void {
@@ -155,7 +164,7 @@ export function reportSyncHttp(category: "saga" | "subsquid" | "asp"): void {
 
 export async function runWithSyncProgress<T>(
   opts: {
-    protocol: SupportedProtocol;
+    protocol: SyncProgressSource;
     onUpdate?: (message: string) => void;
   },
   fn: () => Promise<T>

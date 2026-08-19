@@ -22,5 +22,5 @@ export const cliOptions = {
   withoutTorArtifactsFetch:
     "Download proving artifacts over clearnet (default: Tor). Reveals that this IP fetched kohaku circuits; later shield/unshield stay Tor-only from the local cache. Or set KOHAKU_WITHOUT_TOR=1",
   stealthStartBlock:
-    "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan. balances also reads `.stealth-start-block` from the wallet when this flag is omitted",
+    "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan. Does not skip the scan itself (use --skip-stealth-scan). balances also reads `.stealth-start-block` from the wallet when this flag is omitted",
 } as const;
