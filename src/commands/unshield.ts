@@ -90,6 +90,7 @@ import {
   runWithSyncProgress,
   syncPluginWithProgress,
 } from "../utils/sync-progress.js";
+import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
 import {
@@ -554,6 +555,7 @@ export function registerUnshieldCommand(program: Command): void {
             onUpdate: quiet ? undefined : (message) => spin.start(message),
           },
           async () => {
+            await primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
             await syncPluginWithProgress(plugin, protocol);
             return maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
           }

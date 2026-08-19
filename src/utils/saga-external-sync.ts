@@ -59,6 +59,19 @@ function collectSegments(entry: SagaProtocolEntry): SagaChunk[] {
   );
 }
 
+/** Unique gzip files for Tornado Cash entries only (index also lists PP / Railgun). */
+function uniqueTornadoSagaFiles(index: SagaIndex, chainId?: bigint): Set<string> {
+  const files = new Set<string>();
+  for (const [key, entry] of Object.entries(index.availableProtocols)) {
+    if (!key.startsWith("tornado-cash-")) continue;
+    if (chainId != null && hexToBigInt(entry.chainId) !== chainId) continue;
+    for (const seg of collectSegments(entry)) {
+      if (seg.file) files.add(seg.file);
+    }
+  }
+  return files;
+}
+
 async function loadIndex(
   network: Network,
   baseUrl: string
@@ -117,18 +130,49 @@ async function readGunzipLines(
 /**
  * Host {@link ExternalSyncProvider} backed by the saga CDN.
  * Tornado Cash reads bulk historical logs from here during cold sync.
+ *
+ * Progress `total` is 1 (`index.json`) plus unique `tornado-cash-*` gzip
+ * files on this chain. Incremental sync may finish before 100% (hot-head
+ * only). The same index also lists Privacy Pools / Railgun; those files
+ * are not counted.
  */
 export function createSagaExternalSyncProvider(opts: {
   baseUrl: string;
   network: Network;
+  chainId?: bigint;
 }): ExternalSyncProvider & {
   firstCoveredBlock(params: ExternalSyncPoolId): Promise<Hex>;
 } {
   let indexPromise: Promise<SagaIndex> | null = null;
+  const plannedFiles = new Set<string>();
+
+  const reportPlannedTotal = () => {
+    reportSyncProgress({
+      phase: "saga",
+      total: Math.max(1 + plannedFiles.size, 1),
+    });
+  };
 
   const getIndex = () => {
-    indexPromise ??= loadIndex(opts.network, opts.baseUrl);
+    indexPromise ??= loadIndex(opts.network, opts.baseUrl).then((index) => {
+      for (const file of uniqueTornadoSagaFiles(index, opts.chainId)) {
+        plannedFiles.add(file);
+      }
+      // index.json is already counted as 1 saga HTTP request.
+      reportSyncProgress({
+        phase: "saga",
+        done: 1,
+        total: Math.max(1 + plannedFiles.size, 1),
+      });
+      return index;
+    });
     return indexPromise;
+  };
+
+  const notePlannedFiles = (files: Iterable<string>) => {
+    const before = plannedFiles.size;
+    for (const file of files) plannedFiles.add(file);
+    if (plannedFiles.size !== before) reportPlannedTotal();
   };
 
   const getEntry = async (params: ExternalSyncPoolId) => {
@@ -180,14 +224,11 @@ export function createSagaExternalSyncProvider(opts: {
         return segFrom <= toBlock && segLast >= fromBlock;
       });
 
+      notePlannedFiles(segments.map((seg) => seg.file));
+      reportPlannedTotal();
+
       const out: ExternalRawEvent[] = [];
-      const total = segments.length;
-      let i = 0;
       for (const seg of segments) {
-        i += 1;
-        if (total > 0) {
-          reportSyncProgress({ phase: "saga", done: i, total });
-        }
         const url = `${opts.baseUrl}/${seg.file}`;
         const lines = await readGunzipLines(opts.network, url);
         for (const line of lines) {
@@ -225,5 +266,6 @@ export function tornadoExternalSyncForChain(
   return createSagaExternalSyncProvider({
     baseUrl: sagaBaseUrlForChain(chainId),
     network,
+    chainId,
   });
 }

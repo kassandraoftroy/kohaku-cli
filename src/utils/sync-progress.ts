@@ -38,7 +38,7 @@ const PROTOCOL_LABEL: Record<SyncProgressSource, string> = {
 };
 
 const PHASE_NOUN: Record<SyncProgressPhase, string> = {
-  saga: "saga chunks",
+  saga: "saga req",
   rpc: "RPC logs",
   subsquid: "Subsquid",
   asp: "ASP",
@@ -84,7 +84,9 @@ function formatMessage(store: SyncProgressStore): string {
     const noun =
       store.protocol === "stealth"
         ? "announcement chunks"
-        : PHASE_NOUN[store.phase];
+        : store.phase === "subsquid"
+          ? "Subsquid req"
+          : PHASE_NOUN[store.phase];
     return `${name} ${verb}  ${bar} ${store.done}/${store.total} ${noun}  ${elapsed}${slow}`;
   }
 
@@ -129,7 +131,7 @@ function flush(store: SyncProgressStore, force = false): void {
   store.onUpdate(msg);
 }
 
-/** Report determinate sync progress (saga chunks, RPC log windows). */
+/** Report determinate sync progress (saga requests, RPC log windows). */
 export function reportSyncProgress(update: SyncProgressUpdate): void {
   const store = als.getStore();
   if (!store) return;
@@ -142,20 +144,35 @@ export function reportSyncProgress(update: SyncProgressUpdate): void {
 
 /**
  * Count categorized HTTP (Subsquid / ASP / saga) so protocols without a
- * chunk iterator still show activity. Does not replace a determinate bar.
+ * chunk iterator still show activity. Subsquid and saga keep a determinate
+ * `done/total` bar (total is primed from index / GraphQL counts, then grows
+ * if we issue more requests). Does not replace an RPC catch-up bar.
  */
 export function reportSyncHttp(category: "saga" | "subsquid" | "asp"): void {
   const store = als.getStore();
   if (!store) return;
   store.httpCounts[category] = (store.httpCounts[category] ?? 0) + 1;
+
   if (
+    store.phase === "rpc" &&
     store.total != null &&
-    store.total > 0 &&
-    (store.phase === "saga" || store.phase === "rpc")
+    store.total > 0
   ) {
     flush(store);
     return;
   }
+
+  if (category === "subsquid" || category === "saga") {
+    store.phase = category;
+    const done = store.httpCounts[category] ?? 0;
+    store.done = done;
+    if (store.total == null || store.total <= done) {
+      store.total = done + 1;
+    }
+    flush(store);
+    return;
+  }
+
   store.phase = category;
   store.done = undefined;
   store.total = undefined;

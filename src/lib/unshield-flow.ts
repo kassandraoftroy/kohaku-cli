@@ -7,6 +7,7 @@ import { formatUnits, getAddress, parseAbi, parseUnits } from "viem";
 
 import { makePublicClient, disposePublicClient, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
+import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
 import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
@@ -340,6 +341,7 @@ async function runUnshieldWithPlugin(
     await runWithSyncProgress(
       { protocol: opts.protocol, onUpdate: opts.onStatus },
       async () => {
+        await primeRailgunSubsquidProgressIfNeeded(opts.protocol, opts.chainId);
         // Railgun syncs on balance(); warm it so prepareUnshield is not silent.
         await (
           plugin as { balance: (assets: unknown) => Promise<unknown> }

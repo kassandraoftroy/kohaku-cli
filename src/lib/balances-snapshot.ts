@@ -4,6 +4,7 @@ import { formatUnits, getAddress, isAddress } from "viem";
 import { formatCaughtError } from "../utils/cli-errors";
 import { makePublicClient, disposePublicClient } from "../utils/rpc";
 import { runWithSyncProgress } from "../utils/sync-progress.js";
+import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
@@ -136,8 +137,9 @@ async function loadProtocolNotes(
   tokenMeta: Map<string, { symbol: string; decimals: number }>,
   onSyncProgress?: (message: string) => void
 ): Promise<PrivateNoteRow[]> {
-  const notes = await runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, () =>
-    withProtocolRuntime(
+  const notes = await runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, async () => {
+    await primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
+    return withProtocolRuntime(
       { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
       async (_host, plugin) => {
         const notesFn = (plugin as AnyPlugin).notes;
@@ -147,8 +149,8 @@ async function loadProtocolNotes(
         // Preserve method `this` binding for class-based plugin implementations.
         return (plugin as AnyPlugin).notes!(undefined, false);
       }
-    )
-  );
+    );
+  });
   return mapProtocolNotes(protocol, notes, tokenMeta);
 }
 
@@ -161,12 +163,13 @@ async function loadPrivateBalancesForProtocol(
   chainId: bigint,
   onSyncProgress?: (message: string) => void
 ): Promise<AssetAmount[]> {
-  return runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, () =>
-    withProtocolRuntime(
+  return runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, async () => {
+    await primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
+    return withProtocolRuntime(
       { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
       async (_host, plugin) => plugin.balance(undefined)
-    )
-  );
+    );
+  });
 }
 
 async function loadErc20Meta(
