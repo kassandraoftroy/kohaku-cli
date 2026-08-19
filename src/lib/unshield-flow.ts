@@ -6,6 +6,7 @@ import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import { formatUnits, getAddress, parseAbi, parseUnits } from "viem";
 
 import { makePublicClient, disposePublicClient, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
+import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
 import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
@@ -334,8 +335,17 @@ async function runUnshieldWithPlugin(
     (opts.protocol === "privacy-pools" || opts.protocol === "tornado") &&
     typeof maybeSync.sync === "function"
   ) {
-    opts.onStatus?.("Syncing private state");
-    await maybeSync.sync.call(plugin);
+    await syncPluginWithProgress(maybeSync, opts.protocol, opts.onStatus);
+  } else if (opts.protocol === "railgun") {
+    await runWithSyncProgress(
+      { protocol: opts.protocol, onUpdate: opts.onStatus },
+      async () => {
+        // Railgun syncs on balance(); warm it so prepareUnshield is not silent.
+        await (
+          plugin as { balance: (assets: unknown) => Promise<unknown> }
+        ).balance(undefined);
+      }
+    );
   }
 
   const isRailgunEth = opts.protocol === "railgun" && opts.tokenMeta.isEth;

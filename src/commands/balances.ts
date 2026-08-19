@@ -24,7 +24,7 @@ import {
 } from "../lib/stealth/storage.js";
 import { resolveRegisterSigner } from "../lib/names/ownership.js";
 import { cliOptions } from "../utils/cli-command-options";
-import { quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
+import { quietNonInteractive, runQuietSpinner, manageSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   DEFAULT_DATA_DIR,
@@ -599,7 +599,7 @@ export function registerBalancesCommand(program: Command): void {
       }
 
       const quiet = quietNonInteractive(opts.nonInteractive);
-      const loading = spinner();
+      const loading = manageSpinner(spinner(), quiet);
       try {
         await runQuietSpinner(
           quiet,
@@ -618,7 +618,10 @@ export function registerBalancesCommand(program: Command): void {
               withoutTor: opts.withoutTor,
               stealthStartBlock,
               onTorStatus: (message) => {
-                if (!quiet) loading.start(message);
+                loading.start(message);
+              },
+              onSyncProgress: (message) => {
+                loading.start(message);
               },
               onWarning: (msg) => {
                 if (!quiet) {

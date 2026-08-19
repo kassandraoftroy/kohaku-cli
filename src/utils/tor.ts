@@ -13,7 +13,8 @@
  * Proving artifacts: served from the on-disk cache when present; otherwise
  * fetched via Tor from `KOHAKU_ARTIFACTS_BASE_URL` (default:
  * https://artifacts.0000000000.org). No clearnet fallback.
- * Saga CDN: Tor-or-fail (no clearnet fallback). Pre-warm with
+ * Saga CDN (Tornado event sync): Tor-or-fail (no clearnet fallback).
+ * Artifacts are for prove/unshield, not pool-event sync; pre-warm with
  * `kohaku fetch-artifacts` (optionally `--without-tor`).
  *
  * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr.
@@ -36,6 +37,7 @@ import {
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
 import { formatCaughtError, withTorBootstrapHint } from "./cli-errors.js";
+import { reportSyncHttp } from "./sync-progress.js";
 import {
   artifactRelativeKeyFromUrl,
   buildLocalArtifactResponse,
@@ -266,6 +268,10 @@ async function loggedFetch(
       ? input.method
       : "GET");
   const started = Date.now();
+  const category = meta.category ?? categorizeUrl(meta.url);
+  if (category === "subsquid" || category === "asp" || category === "saga") {
+    reportSyncHttp(category);
+  }
   try {
     const res = await doFetch();
     let responseBytes: number | undefined;

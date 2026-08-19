@@ -9,6 +9,8 @@ import type {
   Network,
 } from "@kohaku-eth/plugins";
 
+import { reportSyncProgress } from "./sync-progress.js";
+
 type Hex = `0x${string}`;
 
 type SagaChunk = {
@@ -179,7 +181,13 @@ export function createSagaExternalSyncProvider(opts: {
       });
 
       const out: ExternalRawEvent[] = [];
+      const total = segments.length;
+      let i = 0;
       for (const seg of segments) {
+        i += 1;
+        if (total > 0) {
+          reportSyncProgress({ phase: "saga", done: i, total });
+        }
         const url = `${opts.baseUrl}/${seg.file}`;
         const lines = await readGunzipLines(opts.network, url);
         for (const line of lines) {

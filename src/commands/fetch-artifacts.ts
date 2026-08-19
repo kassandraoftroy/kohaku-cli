@@ -29,7 +29,7 @@ export function registerFetchArtifactsCommand(program: Command): void {
   program
     .command("fetch-artifacts")
     .description(
-      "Download proving artifacts into the local cache (default: full set over Tor)"
+      "Download proving artifacts into the local cache for later prove/unshield (default: full set over Tor)"
     )
     .argument(
       "[keys...]",

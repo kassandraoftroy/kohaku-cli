@@ -54,6 +54,10 @@ import {
 } from "../utils/rpc";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { withTor } from "../utils/tor";
+import {
+  runWithSyncProgress,
+  syncPluginWithProgress,
+} from "../utils/sync-progress.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -576,7 +580,26 @@ export function registerShieldCommand(program: Command): void {
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         let approvals: Array<{ to: string; data: string; value: bigint }> = [];
         try {
-          const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
+          const op =
+            protocol === "railgun"
+              ? await prepareProtocolShield(plugin, protocol, asset as AssetAmount)
+              : await runWithSyncProgress(
+                  {
+                    protocol,
+                    onUpdate: quiet ? undefined : (message) => txSpinner.start(message),
+                  },
+                  async () => {
+                    await syncPluginWithProgress(plugin, protocol);
+                    return prepareProtocolShield(
+                      plugin,
+                      protocol,
+                      asset as AssetAmount
+                    );
+                  }
+                );
+          if (protocol !== "railgun" && txSpinner.active) {
+            txSpinner.stop("Private state synced.");
+          }
           const rawTxs = toShieldTxs(op);
           if (tokenMeta.isEth) {
             shieldTxs = partitionShieldTxs(rawTxs).deposits;

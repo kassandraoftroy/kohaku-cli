@@ -27,6 +27,7 @@ import {
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { withTor } from "../utils/tor.js";
+import { runWithSyncProgress } from "../utils/sync-progress.js";
 import { assertTornadoExactPoolDenomination } from "../utils/tornado-pools.js";
 import {
   resolveWalletDir,
@@ -287,16 +288,22 @@ export function registerExportTornadoNoteCommand(program: Command): void {
                 failure: "Export failed.",
               },
               () =>
-                withProtocolRuntime(
+                runWithSyncProgress(
                   {
                     protocol: "tornado",
-                    rpcUrl,
-                    walletDir,
-                    password,
-                    mnemonic,
-                    chainId,
+                    onUpdate: quiet ? undefined : (message) => spin.start(message),
                   },
-                  async (host, plugin) => {
+                  () =>
+                    withProtocolRuntime(
+                      {
+                        protocol: "tornado",
+                        rpcUrl,
+                        walletDir,
+                        password,
+                        mnemonic,
+                        chainId,
+                      },
+                      async (host, plugin) => {
                     if (typeof plugin.sync === "function") {
                       await plugin.sync();
                     }
@@ -382,6 +389,7 @@ export function registerExportTornadoNoteCommand(program: Command): void {
 
                     return noteStrings;
                   }
+                    )
                 ),
               (notes) => `Exported ${notes.length} note string(s).`
             );

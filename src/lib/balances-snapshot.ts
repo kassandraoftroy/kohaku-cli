@@ -3,6 +3,7 @@ import { formatUnits, getAddress, isAddress } from "viem";
 
 import { formatCaughtError } from "../utils/cli-errors";
 import { makePublicClient, disposePublicClient } from "../utils/rpc";
+import { runWithSyncProgress } from "../utils/sync-progress.js";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
@@ -132,18 +133,21 @@ async function loadProtocolNotes(
   password: string,
   mnemonic: string,
   chainId: bigint,
-  tokenMeta: Map<string, { symbol: string; decimals: number }>
+  tokenMeta: Map<string, { symbol: string; decimals: number }>,
+  onSyncProgress?: (message: string) => void
 ): Promise<PrivateNoteRow[]> {
-  const notes = await withProtocolRuntime(
-    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-    async (_host, plugin) => {
-      const notesFn = (plugin as AnyPlugin).notes;
-      if (!notesFn) {
-        throw new Error(`${protocol} plugin does not expose notes()`);
+  const notes = await runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, () =>
+    withProtocolRuntime(
+      { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+      async (_host, plugin) => {
+        const notesFn = (plugin as AnyPlugin).notes;
+        if (!notesFn) {
+          throw new Error(`${protocol} plugin does not expose notes()`);
+        }
+        // Preserve method `this` binding for class-based plugin implementations.
+        return (plugin as AnyPlugin).notes!(undefined, false);
       }
-      // Preserve method `this` binding for class-based plugin implementations.
-      return (plugin as AnyPlugin).notes!(undefined, false);
-    }
+    )
   );
   return mapProtocolNotes(protocol, notes, tokenMeta);
 }
@@ -154,54 +158,15 @@ async function loadPrivateBalancesForProtocol(
   walletDir: string,
   password: string,
   mnemonic: string,
-  chainId: bigint
-): Promise<AssetAmount[]> {
-  return withProtocolRuntime(
-    { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-    async (_host, plugin) => plugin.balance(undefined)
-  );
-}
-
-const TORNADO_BALANCE_TIMEOUT_MS = 360_000;
-
-export async function loadTornadoPrivateBalances(
-  rpcUrl: string,
-  walletDir: string,
-  password: string,
-  mnemonic: string,
   chainId: bigint,
-  onProgress?: (message: string) => void
+  onSyncProgress?: (message: string) => void
 ): Promise<AssetAmount[]> {
-  const started = Date.now();
-  const tick = setInterval(() => {
-    const secs = Math.round((Date.now() - started) / 1000);
-    onProgress?.(
-      `Tornado Cash still syncing (${secs}s)… first run pulls saga CDN + proving artifacts over Tor (or use local cache from \`kohaku fetch-artifacts\`)`
-    );
-  }, 15_000);
-  try {
-    return await Promise.race([
-      loadPrivateBalancesForProtocol(
-        "tornado",
-        rpcUrl,
-        walletDir,
-        password,
-        mnemonic,
-        chainId
-      ),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(
-            new Error(
-              "Tornado Cash sync timed out after 6 minutes (first run downloads proving artifacts and syncs pool events from saga CDN + chain). Pre-warm with `kohaku fetch-artifacts` (optionally `--without-tor`), or check `view-network-traffic --category saga` / KOHAKU_TOR_DEBUG=1. Tor has no clearnet fallback for saga/artifacts."
-            )
-          );
-        }, TORNADO_BALANCE_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    clearInterval(tick);
-  }
+  return runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, () =>
+    withProtocolRuntime(
+      { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+      async (_host, plugin) => plugin.balance(undefined)
+    )
+  );
 }
 
 async function loadErc20Meta(
@@ -242,6 +207,8 @@ export type LoadBalancesSnapshotOptions = {
   /** Skip Tor for privacy HTTP (default: Tor on when private protocols sync). */
   withoutTor?: boolean;
   onTorStatus?: (message: string) => void;
+  /** Live first-sync progress (saga chunks, RPC windows, Subsquid/ASP). */
+  onSyncProgress?: (message: string) => void;
   /**
    * Lower bound for the ERC-5564 announcement scan (inclusive).
    * When set on a first/full history pass, skips announcer history before this block.
@@ -277,7 +244,7 @@ async function resolvePrivateBalanceItems(
     | "chainId"
     | "includeProtocols"
     | "onWarning"
-    | "onTorStatus"
+    | "onSyncProgress"
   >
 ): Promise<ResolvedPrivateBalances> {
   const {
@@ -288,7 +255,7 @@ async function resolvePrivateBalanceItems(
     chainId,
     includeProtocols = null,
     onWarning,
-    onTorStatus,
+    onSyncProgress,
   } = opts;
   const chainIdString = chainId.toString();
 
@@ -305,7 +272,8 @@ async function resolvePrivateBalanceItems(
         walletDir,
         password,
         mnemonic,
-        chainId
+        chainId,
+        onSyncProgress
       );
       protocolAvailable.railgun = true;
     } catch (e) {
@@ -324,7 +292,8 @@ async function resolvePrivateBalanceItems(
         walletDir,
         password,
         mnemonic,
-        chainId
+        chainId,
+        onSyncProgress
       );
       protocolAvailable["privacy-pools"] = true;
     } catch (e) {
@@ -337,21 +306,19 @@ async function resolvePrivateBalanceItems(
 
   if (shouldIncludeProtocol("tornado", includeProtocols)) {
     try {
-      tcRows = await loadTornadoPrivateBalances(
+      tcRows = await loadPrivateBalancesForProtocol(
+        "tornado",
         rpcUrl,
         walletDir,
         password,
         mnemonic,
         chainId,
-        onTorStatus
+        onSyncProgress
       );
       protocolAvailable.tornado = true;
     } catch (e) {
       onWarning?.(
-        `Tornado Cash private balances unavailable: ${formatCaughtError(e)}\n` +
-          `  → Tornado cold sync pulls saga CDN + proving artifacts over Tor (no clearnet fallback). ` +
-          `Debug: KOHAKU_TOR_DEBUG=1, \`view-network-traffic --category saga\`, ` +
-          `\`kohaku fetch-artifacts\`, or raise KOHAKU_TOR_CDN_TIMEOUT_MS.`
+        `Tornado Cash private balances unavailable: ${formatCaughtError(e)}`
       );
       protocolAvailable.tornado = false;
     }
@@ -408,6 +375,7 @@ export async function loadPrivateBalancesOnly(
     | "onWarning"
     | "withoutTor"
     | "onTorStatus"
+    | "onSyncProgress"
   >
 ): Promise<PrivateBalancesSnapshot> {
   const includeProtocols = opts.includeProtocols ?? null;
@@ -453,6 +421,7 @@ async function loadBalancesSnapshotInner(
     onWarning,
     withoutTor,
     onTorStatus,
+    onSyncProgress,
   } = opts;
   const chainIdString = chainId.toString();
 
@@ -476,6 +445,7 @@ async function loadBalancesSnapshotInner(
         chainId,
         includeProtocols,
         onWarning,
+        onSyncProgress,
       })
   );
 
@@ -564,7 +534,8 @@ async function loadBalancesSnapshotInner(
             password,
             mnemonic,
             chainId,
-            tokenMeta
+            tokenMeta,
+            onSyncProgress
           );
           privateNotes[protocol] = filterNonZeroNotes(rows);
         } catch (e) {
