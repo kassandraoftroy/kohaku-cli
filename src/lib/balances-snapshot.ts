@@ -138,10 +138,11 @@ async function loadProtocolNotes(
   onSyncProgress?: (message: string) => void
 ): Promise<PrivateNoteRow[]> {
   const notes = await runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, async () => {
-    await primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
+    const priming = primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
     return withProtocolRuntime(
       { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
       async (_host, plugin) => {
+        await priming;
         const notesFn = (plugin as AnyPlugin).notes;
         if (!notesFn) {
           throw new Error(`${protocol} plugin does not expose notes()`);
@@ -164,10 +165,13 @@ async function loadPrivateBalancesForProtocol(
   onSyncProgress?: (message: string) => void
 ): Promise<AssetAmount[]> {
   return runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, async () => {
-    await primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
+    const priming = primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
     return withProtocolRuntime(
       { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-      async (_host, plugin) => plugin.balance(undefined)
+      async (_host, plugin) => {
+        await priming;
+        return plugin.balance(undefined);
+      }
     );
   });
 }

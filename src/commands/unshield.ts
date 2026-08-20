@@ -555,8 +555,12 @@ export function registerUnshieldCommand(program: Command): void {
             onUpdate: quiet ? undefined : (message) => spin.start(message),
           },
           async () => {
-            await primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
+            const priming = primeRailgunSubsquidProgressIfNeeded(
+              protocol,
+              chainId
+            );
             await syncPluginWithProgress(plugin, protocol);
+            await priming;
             return maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
           }
         );

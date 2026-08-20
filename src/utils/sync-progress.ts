@@ -143,10 +143,9 @@ export function reportSyncProgress(update: SyncProgressUpdate): void {
 }
 
 /**
- * Count categorized HTTP (Subsquid / ASP / saga) so protocols without a
- * chunk iterator still show activity. Subsquid and saga keep a determinate
- * `done/total` bar (total is primed from index / GraphQL counts, then grows
- * if we issue more requests). Does not replace an RPC catch-up bar.
+ * Count categorized HTTP (Subsquid / ASP / saga). After a primed `total`,
+ * `done` advances and `n` stays fixed (no n/n+1). Without a prime, show a
+ * request count only. Does not replace an RPC catch-up bar.
  */
 export function reportSyncHttp(category: "saga" | "subsquid" | "asp"): void {
   const store = als.getStore();
@@ -164,11 +163,7 @@ export function reportSyncHttp(category: "saga" | "subsquid" | "asp"): void {
 
   if (category === "subsquid" || category === "saga") {
     store.phase = category;
-    const done = store.httpCounts[category] ?? 0;
-    store.done = done;
-    if (store.total == null || store.total <= done) {
-      store.total = done + 1;
-    }
+    store.done = store.httpCounts[category] ?? 0;
     flush(store);
     return;
   }
