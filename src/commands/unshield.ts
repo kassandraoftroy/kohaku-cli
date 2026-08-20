@@ -55,6 +55,7 @@ import {
   SUPPORTED_PROTOCOLS_HELP,
   tornadoUnshieldOptions,
   type UnshieldTailCall,
+  type TornadoErc20TailForward,
   type SupportedProtocol,
 } from "../utils/plugins";
 import {
@@ -74,9 +75,11 @@ import {
 import { fetchPimlicoMaxFeePerGas } from "../utils/pimlico-gas.js";
 import {
   estimateTornadoPaymasterFee,
+  padTornadoTailForwardFee,
   resolveTornadoPrepareMaxFeePerGas,
   tornadoWithdrawalCallGasLimit,
 } from "../utils/tornado-paymaster-gas.js";
+import { quoteTornadoPaymasterFeeInToken } from "../utils/tornado-paymaster-quote.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -219,7 +222,7 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option(
       "--tail-calls <target:calldata[:value],...>",
-      "Ordered calls appended to Tornado / Railgun UserOperation execution (optional value in hex or decimal wei)"
+      "Ordered calls appended to Tornado / Railgun UserOperation execution (optional value in hex or decimal wei; Tornado ERC-20 tails cannot include value)"
     )
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
@@ -348,10 +351,13 @@ export function registerUnshieldCommand(program: Command): void {
           return;
         }
         if (tailCalls.length > 0 && !tokenMeta.isEth) {
-          cliError(
-            "Tornado --tail-calls is ETH-only for now: leftover forwarding must be an ERC-20 transfer after the paymaster fee quote, which the CLI does not bake yet."
-          );
-          return;
+          const withValue = tailCalls.some((c) => c.value > 0n);
+          if (withValue) {
+            cliError(
+              "Tornado --tail-calls cannot include msg.value when unshielding an ERC-20: the 7702 account does not receive native ETH."
+            );
+            return;
+          }
         }
       }
 
@@ -734,9 +740,13 @@ export function registerUnshieldCommand(program: Command): void {
         }
         let tornadoMaxFeePerGas: bigint | undefined;
         let tornadoTailCallsGasEstimate: bigint | undefined;
+        let tornadoErc20Tail: TornadoErc20TailForward | undefined;
         let railgunTailCallsGasEstimate: bigint | undefined;
         if (protocol === "tornado") {
           tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(chainId);
+          const tornadoIsErc20 = !tokenMeta.isEth;
+          const bakeErc20Forward =
+            tornadoIsErc20 && !recipientDerivationPath;
           if (tailCalls.length > 0) {
             tornadoTailCallsGasEstimate = await runQuietSpinner(
               quiet,
@@ -759,12 +769,56 @@ export function registerUnshieldCommand(program: Command): void {
                         kind: "erc20",
                         token: tokenMeta.tokenAddress as `0x${string}`,
                       },
+                  feeWeiToAsset: tornadoIsErc20
+                    ? (feeWei) =>
+                        quoteTornadoPaymasterFeeInToken({
+                          rpcUrl,
+                          chainId,
+                          feeToken: tokenMeta.tokenAddress as `0x${string}`,
+                          feeWei,
+                        })
+                    : undefined,
+                  bakeErc20Forward,
+                  leftoverRecipient: recipient,
                 }),
               (gas) =>
                 gas !== undefined
                   ? `Tail-call gas estimate: ${gas.toString()}`
                   : "No tail-call gas estimate needed."
             );
+          }
+          if (tornadoIsErc20 && tailCalls.length > 0) {
+            try {
+              const callGasLimit = tornadoWithdrawalCallGasLimit(
+                Math.max(0, (tornadoWithdrawalCount ?? 1) - 1),
+                tornadoTailCallsGasEstimate,
+                true
+              );
+              const feeWei = estimateTornadoPaymasterFee(tornadoMaxFeePerGas!, {
+                callGasLimit,
+                isERC20: true,
+              });
+              const feeReserveToken = await quoteTornadoPaymasterFeeInToken({
+                rpcUrl,
+                chainId,
+                feeToken: tokenMeta.tokenAddress as `0x${string}`,
+                feeWei: padTornadoTailForwardFee(feeWei),
+              });
+              if (amountWei <= feeReserveToken) {
+                cliError(
+                  `Withdrawal amount is too small to cover the Tornado paymaster fee (need ~${formatUnits(feeReserveToken, tokenMeta.decimals)} ${tokenMeta.symbol} for gas).`
+                );
+                return;
+              }
+              tornadoErc20Tail = {
+                token: tokenMeta.tokenAddress as `0x${string}`,
+                feeReserveToken,
+                bakeForward: bakeErc20Forward,
+              };
+            } catch (e) {
+              cliErrorFromCaught(e);
+              return;
+            }
           }
         } else if (protocol === "railgun" && tailCalls.length > 0) {
           railgunTailCallsGasEstimate = await runQuietSpinner(
@@ -852,7 +906,8 @@ export function registerUnshieldCommand(program: Command): void {
                     recipientDerivationPath,
                     tornadoWithdrawalCount!,
                     tailCalls,
-                    tornadoTailCallsGasEstimate
+                    tornadoTailCallsGasEstimate,
+                    tornadoErc20Tail
                   )
                 )
               : protocol === "railgun" && railgunOptions
@@ -899,26 +954,64 @@ export function registerUnshieldCommand(program: Command): void {
             });
           }
         } else if (protocol === "tornado") {
+          const tornadoIsErc20 = !tokenMeta.isEth;
           const callGasLimit = tornadoWithdrawalCallGasLimit(
             Math.max(0, (tornadoWithdrawalCount ?? 1) - 1),
             tornadoTailCallsGasEstimate,
-            !tokenMeta.isEth
+            tornadoIsErc20
           );
           const feeWei = estimateTornadoPaymasterFee(tornadoMaxFeePerGas!, {
             callGasLimit,
-            isERC20: !tokenMeta.isEth,
+            isERC20: tornadoIsErc20,
           });
-          fees = buildFeePreview({
-            kind: "tornado-paymaster",
-            amount: feeWei,
-            decimals: 18,
-            asset: "ETH",
-            maxFeePerGasWei: tornadoMaxFeePerGas,
-            gasLimit: callGasLimit,
-            note: tokenMeta.isEth
-              ? "paymaster fee taken from unshielded ETH (gas×price estimate; SDK quotes exact)"
-              : `paymaster fee paid in ${tokenMeta.symbol} (CLI shows ETH gas×price; SDK quoteWeiInToken converts on-chain)`,
-          });
+          if (!tornadoIsErc20) {
+            fees = buildFeePreview({
+              kind: "tornado-paymaster",
+              amount: feeWei,
+              decimals: 18,
+              asset: "ETH",
+              maxFeePerGasWei: tornadoMaxFeePerGas,
+              gasLimit: callGasLimit,
+              note: "paymaster fee taken from unshielded ETH (gas×price estimate; SDK quotes exact)",
+            });
+          } else {
+            const feeForQuote =
+              tailCalls.length > 0 ? padTornadoTailForwardFee(feeWei) : feeWei;
+            let feeToken = tornadoErc20Tail?.feeReserveToken;
+            if (feeToken === undefined) {
+              try {
+                feeToken = await quoteTornadoPaymasterFeeInToken({
+                  rpcUrl,
+                  chainId,
+                  feeToken: tokenMeta.tokenAddress as `0x${string}`,
+                  feeWei: feeForQuote,
+                });
+              } catch (e) {
+                cliErrorFromCaught(e);
+                return;
+              }
+            }
+            fees = buildFeePreview({
+              kind: "tornado-paymaster",
+              amount: feeToken,
+              decimals: tokenMeta.decimals,
+              asset: tokenMeta.symbol,
+              maxFeePerGasWei: tornadoMaxFeePerGas,
+              gasLimit: callGasLimit,
+              components: [
+                {
+                  label: "gas × maxFeePerGas",
+                  amount: feeWei.toString(),
+                  amountFormatted: formatFeeAmount(feeWei, 18, "ETH"),
+                  asset: "ETH",
+                },
+              ],
+              note:
+                tailCalls.length > 0
+                  ? `paymaster fee paid in ${tokenMeta.symbol} via on-chain quoteWeiInToken (15% tail leftover pad included)`
+                  : `paymaster fee paid in ${tokenMeta.symbol} via on-chain quoteWeiInToken (same TWAP as UserOp)`,
+            });
+          }
         } else {
           // railgun
           const bps = railgunUnshieldFeeBps(chainId);

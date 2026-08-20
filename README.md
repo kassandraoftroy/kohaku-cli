@@ -463,7 +463,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount. |
 | `--amount-max` | Maximum spendable amount (Privacy Pools: largest single note; Tornado: sum of unspent notes). |
-| `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the Tornado payout call. Optional third field is `msg.value` (hex or decimal wei). Currently Tornado-only. |
+| `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the Tornado / Railgun payout. Optional third field is `msg.value` (hex or decimal wei) — **ETH unshields only**. Tornado ERC-20 tails are supported for any paymaster FeeAdapter token (Sepolia: DAI; mainnet: DAI, USDC, USDT, WBTC). |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol broadcaster, relayer, or paymaster. **Omit** to print prepared private operation JSON only. |
 | `--without-tor` | Disable Tor for non-RPC HTTP (default: **Tor on** for all private-protocol network calls). Covers Pimlico (via local reverse proxy), Railgun Subsquid/PPOI, Tornado saga CDN + proving artifacts, Privacy Pools ASP/fastrelay, and other `fetch` traffic. Ethereum RPC stays on clearnet. First Tor bootstrap may take several seconds. Or set `KOHAKU_WITHOUT_TOR=1`. |
@@ -472,7 +472,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 
 **Interactive:** recipient menu (next fresh / custom address / existing public or stealth account) → amount (shows max; Privacy Pools capped by largest single note; Tornado by total unspent notes) → prepared op or broadcast confirmation.
 
-**Tornado amounts:** shields must be an exact multiple of the smallest denomination for that asset (ETH: 0.1; DAI Sepolia: 100; etc.). Unshield can combine multiple notes in one paymaster UserOp (including ERC-20: fee taken from the first note via `quoteWeiInToken`, remaining notes withdrawn in the execution phase). `--tail-calls` remains ETH-only for Tornado.
+**Tornado amounts:** shields must be an exact multiple of the smallest denomination for that asset (ETH: 0.1; DAI Sepolia: 100; etc.). Unshield can combine multiple notes in one paymaster UserOp (including ERC-20: fee taken from the first note via `quoteWeiInToken`, remaining notes withdrawn in the execution phase). `--tail-calls` works for ETH and for paymaster-accepted ERC-20s. With `--next` (or `--to` a wallet HD key) leftover tokens stay on the 7702 account for your tails to spend. With an external/stealth `--to`, the CLI bakes a leftover `token.transfer(to, amount − quoted fee)` ahead of your tails (the SDK will not run its own leftover forward when you supply `tailCalls`). ERC-20 tails cannot include `msg.value`.
 
 **Stealth recipients:** `--to s0` (or another stored stealth selector) works for Tornado and Railgun when the stealth private key is in this wallet. Railgun requires a recipient whose key is known to the wallet (`--next`, stored public/stealth address, or `sN`).
 
@@ -484,6 +484,7 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted
 kohaku unshield --protocol tornado --wallet testWallet --to s0 --amount-formatted 0.1 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 1 --tail-calls 0x1111111111111111111111111111111111111111:0x1234,0x2222222222222222222222222222222222222222:0xabcd:0x2386f26fc10000 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --token DAI --amount-formatted 100 --broadcast
+kohaku unshield --protocol tornado --wallet testWallet --next --token DAI --amount-formatted 100 --tail-calls 0x1111111111111111111111111111111111111111:0x1234 --broadcast
 kohaku unshield --protocol railgun --wallet testWallet --to 0xStoredWalletAddress --token USDC --amount-formatted 25 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --without-tor
 ```

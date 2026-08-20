@@ -19,6 +19,18 @@ const TORNADO_PAYMASTER_GAS_UNITS = {
 const ERC20_TRANSFER_GAS = 100_000n;
 
 /**
+ * Extra pad on `estimateTornadoPaymasterFee` when the CLI bakes leftover
+ * forwarding into user `tailCalls` (SDK will not run its own `forwardCalls`).
+ * Absorbs bundler gas refine making the proof fee higher than our pre-estimate.
+ */
+export const TAIL_FORWARD_FEE_PAD_NUM = 23n;
+export const TAIL_FORWARD_FEE_PAD_DEN = 20n;
+
+export function padTornadoTailForwardFee(feeWei: bigint): bigint {
+  return (feeWei * TAIL_FORWARD_FEE_PAD_NUM) / TAIL_FORWARD_FEE_PAD_DEN;
+}
+
+/**
  * Mirrors SDK `reasonableGasUnitsForBatch` callGasLimit.
  * `executionTail` is user `tailCalls` gas (SDK `tailCallsGasEstimate`); defaults to
  * the static 300k baseline when omitted.
