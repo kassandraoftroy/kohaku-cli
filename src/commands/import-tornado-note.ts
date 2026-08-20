@@ -19,6 +19,7 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { withTor } from "../utils/tor.js";
+import { runWithSyncProgress } from "../utils/sync-progress.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -161,23 +162,30 @@ export function registerImportTornadoNoteCommand(program: Command): void {
                 failure: "Import failed.",
               },
               () =>
-                withProtocolRuntime(
+                runWithSyncProgress(
                   {
                     protocol: "tornado",
-                    rpcUrl,
-                    walletDir,
-                    password,
-                    mnemonic,
-                    chainId,
+                    onUpdate: quiet ? undefined : (message) => spin.start(message),
                   },
-                  async (_host, plugin) => {
-                    if (!plugin.importNotes) {
-                      throw new Error(
-                        "Tornado plugin does not expose importNotes (upgrade @kohaku-eth/tornado-cash)."
-                      );
-                    }
-                    return (await plugin.importNotes(notes)) as ImportNoteResult[];
-                  }
+                  () =>
+                    withProtocolRuntime(
+                      {
+                        protocol: "tornado",
+                        rpcUrl,
+                        walletDir,
+                        password,
+                        mnemonic,
+                        chainId,
+                      },
+                      async (_host, plugin) => {
+                        if (!plugin.importNotes) {
+                          throw new Error(
+                            "Tornado plugin does not expose importNotes (upgrade @kohaku-eth/tornado-cash)."
+                          );
+                        }
+                        return (await plugin.importNotes(notes)) as ImportNoteResult[];
+                      }
+                    )
                 ),
               (imported) => {
                 const ok = imported.filter((r) => r.status === "imported").length;

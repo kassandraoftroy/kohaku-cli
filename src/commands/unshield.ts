@@ -86,6 +86,11 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { withTor } from "../utils/tor.js";
+import {
+  runWithSyncProgress,
+  syncPluginWithProgress,
+} from "../utils/sync-progress.js";
+import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
 import {
@@ -538,33 +543,29 @@ export function registerUnshieldCommand(program: Command): void {
           );
         }
 
-        if (
-          (protocol === "privacy-pools" || protocol === "tornado") &&
-          "sync" in plugin &&
-          typeof plugin.sync === "function"
-        ) {
-          const sync = (plugin as { sync: () => Promise<void> }).sync;
-          const syncLabel =
-            protocol === "tornado"
-              ? "Syncing Tornado Cash state"
-              : "Syncing private state";
-          await runQuietSpinner(
-            quiet,
-            spin,
-            { start: syncLabel, failure: "Sync failed." },
-            () => sync.call(plugin),
-            () => "Private state synced."
-          );
-        }
-
-        const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
         const {
           cap: maxAmountHint,
           privacyPoolsLargestNote,
           estimatedGasFeeWei,
           railgunGasEstimateFailed,
           railgunBalance,
-        } = await maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
+        } = await runWithSyncProgress(
+          {
+            protocol,
+            onUpdate: quiet ? undefined : (message) => spin.start(message),
+          },
+          async () => {
+            const priming = primeRailgunSubsquidProgressIfNeeded(
+              protocol,
+              chainId
+            );
+            await syncPluginWithProgress(plugin, protocol);
+            await priming;
+            return maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
+          }
+        );
+        if (spin.active) spin.stop("Private state synced.");
+        const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
         const maxPromptLabel = privacyPoolsLargestNote
             ? "max (largest single note)"

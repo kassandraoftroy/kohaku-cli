@@ -4,6 +4,7 @@ import { Mnemonic } from "derive-railgun-keys";
 
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc";
 import { withTor } from "../utils/tor";
+import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
@@ -469,6 +470,7 @@ export async function prepareShieldPlan(opts: {
   fromValue: string;
   allowDeriveFromMnemonic?: boolean;
   withoutTor?: boolean;
+  onSyncProgress?: (message: string) => void;
 }): Promise<ShieldPlan> {
   const {
     protocol,
@@ -482,6 +484,7 @@ export async function prepareShieldPlan(opts: {
     fromValue,
     allowDeriveFromMnemonic = false,
     withoutTor,
+    onSyncProgress,
   } = opts;
 
   const { senderAddress, senderPrivateKey: _pk } = resolveShieldSender({
@@ -528,7 +531,16 @@ export async function prepareShieldPlan(opts: {
                 amount,
               };
 
-        const op = await prepareProtocolShield(plugin, protocol, asset as AssetAmount);
+        const op =
+          protocol === "railgun"
+            ? await prepareProtocolShield(plugin, protocol, asset as AssetAmount)
+            : await runWithSyncProgress(
+                { protocol, onUpdate: onSyncProgress },
+                async () => {
+                  await syncPluginWithProgress(plugin, protocol);
+                  return prepareProtocolShield(plugin, protocol, asset as AssetAmount);
+                }
+              );
         const rawTxs = toShieldTxs(op);
 
         let approvals: ShieldCall[] = [];

@@ -310,6 +310,8 @@ Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus a
 
 By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (if set). Otherwise only public balances are shown, with a short warning. Pass `--include` to sync one or more protocols explicitly (required for multiple protocols at once, or for any private balance when the env is unset).
 
+`balances` always loads **already-imported** stealth accounts into public totals. It also scans ERC-5564 announcements for new payments (same spinner progress as protocol first-sync). `--stealth-start-block` only sets the history floor; use `--skip-stealth-scan` to skip discovery for a faster run.
+
 | Option | Description |
 |--------|-------------|
 | `--wallet <name>` | Wallet (optional in interactive mode). |
@@ -319,7 +321,8 @@ By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (i
 | `--verbose` | Human: per-address public breakdown + private note list for included protocols. JSON: adds `public_account_indexes_by_address` and `private_notes`. |
 | `--tokensList <addrs>` | Extra ERC-20 addresses (comma- or space-separated), merged with chain defaults. |
 | `--without-tor` | Disable Tor for privacy HTTP when syncing private protocols (default: Tor on). Covers Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, etc. RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
-| `--stealth-start-block <block>` | Start ERC-5564 announcement scan at this block (decimal or `0x`-hex); skips older history on first/full scan. When omitted, uses the wallet’s `.stealth-start-block` file if present (written by `create-wallet`). |
+| `--stealth-start-block <block>` | Floor for the ERC-5564 announcement **scan** (decimal or `0x`-hex); skips older history on first/full scan. When omitted, uses the wallet’s `.stealth-start-block` file if present (written by `create-wallet`). Not a way to skip scanning. |
+| `--skip-stealth-scan` | Skip announcement discovery for this run. **Already-imported** stealth accounts still appear in public balances. |
 | `--non-interactive` | JSON only; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
 
@@ -334,6 +337,7 @@ kohaku balances --wallet testWallet --include tornado
 kohaku balances --wallet testWallet --include railgun,tornado --verbose
 kohaku balances --wallet testWallet --verbose --include privacy-pools --tokensList 0xYourToken
 kohaku balances --wallet testWallet --include tornado --without-tor
+kohaku balances --wallet testWallet --skip-stealth-scan
 ```
 
 ---
@@ -677,7 +681,7 @@ kohaku set-name-reverse-record --wallet testWallet --name alice.eth --broadcast
 
 ### `fetch-artifacts`
 
-Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later shield/unshield/sync can prove from disk without re-fetching (and without Tor→clearnet fallback).
+Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado cold sync is saga CDN + chain, Railgun is Subsquid.
 
 With no selectors, downloads the **full set** (~260 MB). Or narrow the download:
 
@@ -787,7 +791,7 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 ## Tips
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, `unshield`, `init-profile`, and the name commands default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
-- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and proving artifacts are Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). Artifacts are served from `<dataDir>/proving-artifacts` when cached; otherwise fetched from `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`). Pre-warm with `kohaku fetch-artifacts` (optionally `--without-tor` for a one-shot clearnet download). After Tor bootstrap corruption, run `kohaku clear-tor-cache`. Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
+- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and proving artifacts are Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). First protocol sync (saga / Subsquid / RPC catch-up) shows live progress on the spinner and does not download proving keys. Artifacts are served from `<dataDir>/proving-artifacts` when cached; otherwise fetched from `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`) on **prove / unshield**. Pre-warm keys with `kohaku fetch-artifacts` (optionally `--without-tor` for a one-shot clearnet download). After Tor bootstrap corruption, run `kohaku clear-tor-cache`. Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls`).
 - **Profile / stealth:** Prefer `init-profile` to publish ERC-6538 keys (and optionally a name). Unshield to stored stealth accounts with `--to s0`. Print the meta URI with `see-stealth-meta-address`. New wallets store `.stealth-start-block` at creation so first `balances` stealth scans skip pre-wallet announcer history; imports can set the same via `create-wallet --import --stealth-start-block`.
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
