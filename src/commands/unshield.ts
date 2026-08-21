@@ -46,6 +46,7 @@ import {
   assertPpErc20TokenWhitelisted,
   assertTornadoPaymasterConfigured,
   countTornadoWithdrawals,
+  assertRailgunExternalRecipientAllowed,
   configureRailgunForUnshield,
   createProtocolPlugin,
   pluginIdForProtocol,
@@ -187,6 +188,15 @@ function takeNextFreshPublicAccount(
   storage: ReturnType<typeof makePublicAccountsStorage>
 ): { address: string; priv: string; index: number } {
   return storage.peekNextAccounts(1)[0]!;
+}
+
+/** 7702 UserOp signer: recipient key when we have it, else an unused HD key. */
+function railgunSmartAccountPrivateKey(
+  recipientPriv: `0x${string}` | undefined,
+  storage: ReturnType<typeof makePublicAccountsStorage>
+): `0x${string}` {
+  if (recipientPriv) return recipientPriv;
+  return as0xPrivateKey(takeNextFreshPublicAccount(storage).priv);
 }
 
 export function registerUnshieldCommand(program: Command): void {
@@ -433,12 +443,10 @@ export function registerUnshieldCommand(program: Command): void {
           value: NEXT_FRESH,
           name: "Generate next fresh public account (--next)",
         });
-        if (protocol === "privacy-pools") {
-          choices.push({
-            value: CUSTOM_ADDR,
-            name: "Enter a custom address",
-          });
-        }
+        choices.push({
+          value: CUSTOM_ADDR,
+          name: "Enter a custom receiving address",
+        });
         for (const acct of existingAccounts) {
           choices.push({
             value: acct.address,
@@ -474,12 +482,11 @@ export function registerUnshieldCommand(program: Command): void {
             },
           });
           try {
-            recipient = (await resolveAddressOrName(
+            const resolved = (await resolveAddressOrName(
               addr.trim(),
               rpcUrl
             )) as `0x${string}`;
-            recipientPriv = undefined;
-            recipientDerivationPath = undefined;
+            applyPublicRecipient(resolved);
           } catch (e) {
             cliErrorFromCaught(e);
             return;
@@ -497,10 +504,15 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       if (protocol === "railgun" && !recipientPriv) {
-        cliError(
-          "Railgun unshield requires --to to be a public or stealth account from this wallet (use --next, --to s0, or a stored address)."
-        );
-        return;
+        try {
+          assertRailgunExternalRecipientAllowed({
+            isEth: tokenMeta.isEth,
+            hasTailCalls: tailCalls.length > 0,
+          });
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
       }
 
       if (!opts.nonInteractive) {
@@ -544,7 +556,7 @@ export function registerUnshieldCommand(program: Command): void {
             plugin,
             host,
             chainId,
-            recipientPriv!,
+            railgunSmartAccountPrivateKey(recipientPriv, publicStorage),
             railgunPimlicoBundlerUrl(chainId)
           );
         }

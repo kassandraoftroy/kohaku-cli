@@ -5,7 +5,12 @@ import {
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import { formatUnits, getAddress, parseAbi, parseUnits } from "viem";
 
-import { makePublicClient, disposePublicClient, railgunPimlicoBundlerUrl } from "../utils/rpc.js";
+import {
+  makePublicClient,
+  disposePublicClient,
+  railgunPimlicoBundlerUrl,
+} from "../utils/rpc.js";
+import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
 import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
 import { withTor } from "../utils/tor.js";
@@ -19,6 +24,7 @@ import {
   broadcastTornadoPrivateOp,
   countTornadoWithdrawals,
   configureRailgunForUnshield,
+  assertRailgunExternalRecipientAllowed,
   ETH_AS_ERC20,
   totalTornadoUnspentBalance,
   PRIVACY_POOLS_BROADCASTER_URL,
@@ -318,15 +324,27 @@ async function runUnshieldWithPlugin(
 ): Promise<UnshieldPrepared | unknown> {
   if (opts.protocol === "railgun") {
     if (!opts.recipientPriv) {
-      throw new Error(
-        "Railgun unshield requires a recipient public or stealth account from this wallet."
-      );
+      assertRailgunExternalRecipientAllowed({
+        isEth: opts.tokenMeta.isEth,
+        hasTailCalls: false,
+      });
+    }
+    let smartAccountPriv = opts.recipientPriv;
+    if (!smartAccountPriv) {
+      const fallback = makePublicAccountsStorage(
+        opts.walletDir,
+        opts.mnemonic,
+        opts.password
+      ).peekNextAccounts(1)[0]!.priv;
+      smartAccountPriv = (
+        fallback.startsWith("0x") ? fallback : `0x${fallback}`
+      ) as `0x${string}`;
     }
     configureRailgunForUnshield(
       plugin,
       host,
       opts.chainId,
-      opts.recipientPriv,
+      smartAccountPriv,
       railgunPimlicoBundlerUrl(opts.chainId)
     );
   }

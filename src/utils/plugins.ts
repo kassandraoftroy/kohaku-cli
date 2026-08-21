@@ -296,16 +296,40 @@ export function railgunNativeEthAssetAmount(
   };
 }
 
-/** Railgun unshield: 4337 bundler + recipient EOA as EIP-7702 smart account signer. */
+/**
+ * Railgun can send ERC-20s to an address this wallet does not control: funds
+ * land at `to` via the privacy paymaster. Native ETH unwraps WETH on the 7702
+ * account, and user `--tail-calls` also execute there, so those need a wallet key.
+ */
+export function assertRailgunExternalRecipientAllowed(opts: {
+  isEth: boolean;
+  hasTailCalls: boolean;
+}): void {
+  if (!opts.isEth && !opts.hasTailCalls) return;
+  if (opts.hasTailCalls) {
+    throw new Error(
+      "Railgun --tail-calls run on the recipient EIP-7702 account, so the recipient must be a public or stealth account from this wallet."
+    );
+  }
+  throw new Error(
+    "Railgun native ETH unshield unwraps WETH on the recipient account, so the recipient must be a public or stealth account from this wallet (use --next, a stored address, or a custom address this wallet controls)."
+  );
+}
+
+/**
+ * Railgun unshield: 4337 bundler + EIP-7702 UserOp signer.
+ * Wallet-owned recipient: pass that account's key (funds land on the AA).
+ * External ERC-20 `to`: pass any wallet-owned key; tokens still land at `to`.
+ */
 export function configureRailgunForUnshield(
   plugin: unknown,
   host: Host,
   chainId: bigint,
-  recipientPrivateKey: `0x${string}`,
+  smartAccountPrivateKey: `0x${string}`,
   bundlerUrl: string
 ): void {
   const rg = plugin as RailgunUnshieldConfigurable;
-  const signer = Signer.privateKey(recipientPrivateKey);
+  const signer = Signer.privateKey(smartAccountPrivateKey);
   const eip1193 = new RailgunEthereumProviderAdapter(host.provider);
   const smartAccount = new SimpleSmartAccount(signer.address, chainId, eip1193);
   rg.setBundler(Bundler.pimlico(bundlerUrl));

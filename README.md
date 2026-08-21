@@ -474,7 +474,7 @@ Withdraw **private** balance to a **public** address via the protocol broadcaste
 
 **Tornado amounts:** shields must be an exact multiple of the smallest denomination for that asset (ETH: 0.1; DAI Sepolia: 100; etc.). Unshield can combine multiple notes in one paymaster UserOp (including ERC-20: fee taken from the first note via `quoteWeiInToken`, remaining notes withdrawn in the execution phase). `--tail-calls` works for ETH and for paymaster-accepted ERC-20s. With `--next` (or `--to` a wallet HD key) leftover tokens stay on the 7702 account for your tails to spend. With an external/stealth `--to`, the CLI bakes a leftover `token.transfer(to, amount − quoted fee)` ahead of your tails (the SDK will not run its own leftover forward when you supply `tailCalls`). ERC-20 tails cannot include `msg.value`.
 
-**Stealth recipients:** `--to s0` (or another stored stealth selector) works for Tornado and Railgun when the stealth private key is in this wallet. Railgun requires a recipient whose key is known to the wallet (`--next`, stored public/stealth address, or `sN`).
+**Stealth recipients:** `--to s0` (or another stored stealth selector) works for Tornado and Railgun when the stealth private key is in this wallet. Railgun ERC-20 can also go to a custom (non-wallet) address. Native ETH unshield and `--tail-calls` still need a recipient whose key is in this wallet (`--next`, stored public/stealth address, or `sN`), because unwrap / tails run on that EIP-7702 account.
 
 **Examples:**
 
