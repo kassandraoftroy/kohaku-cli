@@ -7,7 +7,7 @@ import {
   assertTornadoTailCallsHaveHdDelegator,
   tornadoDelegationConfig,
   tornadoUnshieldConfirmExtraLines,
-} from "./tornado-unshield-delegation.js";
+} from "../src/utils/tornado-unshield-delegation.js";
 
 const HD_PATH = "m/44'/60'/0'/0/3";
 const RECIPIENT = "0x9dAEf1EA5CC90C0F9DA9a5F0B49DA10510c34502" as const;
