@@ -72,6 +72,7 @@ import {
   ETH_AS_ERC20,
   pluginIdForProtocol,
   prepareProtocolShield,
+  railgunErc20AssetAmount,
   resolveProtocolOption,
   SUPPORTED_PROTOCOLS_HELP,
   type SupportedProtocol,
@@ -563,20 +564,23 @@ export function registerShieldCommand(program: Command): void {
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
-        const asset = tokenMeta.isEth && protocol === "railgun"
-          ? {
-              asset: { __type: "native" },
-              amount,
-            }
-          : {
-              asset: {
-                __type: "erc20",
-                contract: (tokenMeta.isEth
-                  ? ETH_AS_ERC20
-                  : tokenMeta.tokenAddress) as `0x${string}`,
-              },
-              amount,
-            };
+        const asset =
+          protocol === "railgun"
+            ? tokenMeta.isEth
+              ? {
+                  asset: { __type: "native" as const },
+                  amount,
+                }
+              : railgunErc20AssetAmount(tokenMeta.tokenAddress, amount)
+            : {
+                asset: {
+                  __type: "erc20",
+                  contract: (tokenMeta.isEth
+                    ? ETH_AS_ERC20
+                    : tokenMeta.tokenAddress) as `0x${string}`,
+                },
+                amount,
+              };
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         let approvals: Array<{ to: string; data: string; value: bigint }> = [];
         try {

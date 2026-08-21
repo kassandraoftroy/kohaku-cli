@@ -50,6 +50,7 @@ import {
   configureRailgunForUnshield,
   createProtocolPlugin,
   pluginIdForProtocol,
+  railgunErc20AssetAmount,
   railgunNativeEthAssetAmount,
   railgunUnshieldOptions,
   resolveProtocolOption,
@@ -711,8 +712,10 @@ export function registerUnshieldCommand(program: Command): void {
         let asset: AssetAmount;
         try {
           asset =
-            tokenMeta.isEth && protocol === "railgun"
-              ? railgunNativeEthAssetAmount(chainId, amountWei)
+            protocol === "railgun"
+              ? tokenMeta.isEth
+                ? railgunNativeEthAssetAmount(chainId, amountWei)
+                : railgunErc20AssetAmount(tokenMeta.tokenAddress, amountWei)
               : {
                   asset: {
                     __type: "erc20",
@@ -887,13 +890,7 @@ export function registerUnshieldCommand(program: Command): void {
                 asset =
                   tokenMeta.isEth
                     ? railgunNativeEthAssetAmount(chainId, amountWei)
-                    : {
-                        asset: {
-                          __type: "erc20",
-                          contract: tokenMeta.tokenAddress as `0x${string}`,
-                        },
-                        amount: amountWei,
-                      };
+                    : railgunErc20AssetAmount(tokenMeta.tokenAddress, amountWei);
               }
             } catch (e) {
               cliErrorFromCaught(e);

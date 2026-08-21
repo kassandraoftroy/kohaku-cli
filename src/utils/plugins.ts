@@ -297,6 +297,23 @@ export function railgunNativeEthAssetAmount(
 }
 
 /**
+ * Railgun ERC-20 spend: lowercase `contract` so SignerPool.drain matches WASM
+ * note keys (checksummed CLI addresses otherwise look like zero balance).
+ */
+export function railgunErc20AssetAmount(
+  tokenAddress: string,
+  amount: bigint
+): AssetAmount {
+  return {
+    asset: {
+      __type: "erc20",
+      contract: tokenAddress.toLowerCase() as `0x${string}`,
+    },
+    amount,
+  };
+}
+
+/**
  * Railgun can send ERC-20s to an address this wallet does not control: funds
  * land at `to` via the privacy paymaster. Native ETH unwraps WETH on the 7702
  * account, and user `--tail-calls` also execute there, so those need a wallet key.
