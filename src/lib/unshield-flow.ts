@@ -28,6 +28,7 @@ import {
   ETH_AS_ERC20,
   totalTornadoUnspentBalance,
   PRIVACY_POOLS_BROADCASTER_URL,
+  railgunErc20AssetAmount,
   railgunNativeEthAssetAmount,
   tornadoUnshieldOptions,
   type AnyPlugin,
@@ -368,10 +369,11 @@ async function runUnshieldWithPlugin(
     );
   }
 
-  const isRailgunEth = opts.protocol === "railgun" && opts.tokenMeta.isEth;
   const asset =
-    isRailgunEth
-      ? railgunNativeEthAssetAmount(opts.chainId, opts.amount)
+    opts.protocol === "railgun"
+      ? opts.tokenMeta.isEth
+        ? railgunNativeEthAssetAmount(opts.chainId, opts.amount)
+        : railgunErc20AssetAmount(opts.tokenMeta.tokenAddress, opts.amount)
       : {
           asset: {
             __type: "erc20" as const,

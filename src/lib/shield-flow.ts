@@ -11,6 +11,7 @@ import type { ResolvedTokenMeta } from "../utils/tokens-util";
 import {
   ETH_AS_ERC20,
   prepareProtocolShield,
+  railgunErc20AssetAmount,
   type SupportedProtocol,
 } from "../utils/plugins";
 import { assertTornadoDepositAmount } from "../utils/tornado-pools.js";
@@ -519,8 +520,10 @@ export async function prepareShieldPlan(opts: {
       });
       try {
         const asset =
-          tokenMeta.isEth && protocol === "railgun"
-            ? { asset: { __type: "native" as const }, amount }
+          protocol === "railgun"
+            ? tokenMeta.isEth
+              ? { asset: { __type: "native" as const }, amount }
+              : railgunErc20AssetAmount(tokenMeta.tokenAddress, amount)
             : {
                 asset: {
                   __type: "erc20" as const,
