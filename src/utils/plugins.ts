@@ -26,6 +26,7 @@ import {
   padTornadoTailForwardFee,
   tornadoWithdrawalCallGasLimit,
 } from "./tornado-paymaster-gas.js";
+import { tornadoDelegationConfig } from "./tornado-unshield-delegation.js";
 import { createTorAwarePaymasterBroadcaster } from "./tornado-paymaster-broadcaster.js";
 import {
   encodeTornadoErc20TransferTailCall,
@@ -409,9 +410,10 @@ export function tornadoUnshieldOptions(
   amountWei: bigint,
   maxFeePerGas: bigint,
   /**
-   * Optional BIP-32 path for a recoverable batch delegator (public HD account).
-   * Omit for external / stealth recipients — the SDK uses an ephemeral delegator
-   * and forwards leftovers to `recipient`.
+   * BIP-32 path for a wallet-controlled batch 7702 (`--next` / stored HD `--to`).
+   * Omit only for a single-note unshield with no `--tail-calls` (prove directly
+   * to `recipient`). Pathless deterministic is never emitted: that 7702 is a
+   * note-derived key this wallet does not store.
    */
   delegationPath: string | undefined,
   withdrawalCount: number,
@@ -421,15 +423,15 @@ export function tornadoUnshieldOptions(
   /** When set, unshield asset is an ERC-20 (fee already quoted in token units). */
   erc20?: TornadoErc20TailForward
 ): TCPaymasterUnshieldOptions {
-  if (!Number.isSafeInteger(withdrawalCount) || withdrawalCount <= 0) {
-    throw new Error("Tornado unshield requires at least one withdrawal.");
-  }
+  const delegation = tornadoDelegationConfig({
+    delegationPath,
+    tailCallsCount: tailCalls.length,
+    withdrawalCount,
+  });
 
   const base: TCPaymasterUnshieldOptions = {
     mode: "paymaster",
-    delegation: delegationPath
-      ? { mode: "deterministic", path: delegationPath }
-      : { mode: "deterministic" },
+    ...(delegation ? { delegation } : {}),
   };
 
   // No user tails: omit `tailCalls` so the SDK forwards leftovers with the

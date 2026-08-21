@@ -99,6 +99,11 @@ import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
 import {
+  assertTornadoTailCallsHaveHdDelegator,
+  tornadoDelegationConfig,
+  tornadoUnshieldConfirmExtraLines,
+} from "../utils/tornado-unshield-delegation.js";
+import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -516,6 +521,18 @@ export function registerUnshieldCommand(program: Command): void {
         }
       }
 
+      if (protocol === "tornado") {
+        try {
+          assertTornadoTailCallsHaveHdDelegator(
+            recipientDerivationPath,
+            tailCalls.length
+          );
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
       if (!opts.nonInteractive) {
         console.log(
           chalk.yellow(
@@ -733,6 +750,18 @@ export function registerUnshieldCommand(program: Command): void {
           protocol === "tornado"
             ? await countTornadoWithdrawals(plugin, asset, amountWei)
             : undefined;
+        if (protocol === "tornado") {
+          try {
+            tornadoDelegationConfig({
+              delegationPath: recipientDerivationPath,
+              tailCallsCount: tailCalls.length,
+              withdrawalCount: tornadoWithdrawalCount!,
+            });
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
+        }
 
         const prepareLabel =
           protocol === "railgun"
@@ -1128,11 +1157,23 @@ export function registerUnshieldCommand(program: Command): void {
         if (!opts.nonInteractive) {
           // Blank line so @inquirer confirm is not drawn over the clack stop line.
           console.log();
+          const tornadoConfirmExtra =
+            protocol === "tornado"
+              ? tornadoUnshieldConfirmExtraLines({
+                  recipient,
+                  hasHdPath: Boolean(recipientDerivationPath),
+                  hasTailCalls: tailCalls.length > 0,
+                  withdrawalCount: tornadoWithdrawalCount ?? 1,
+                })
+              : [];
           const ok = await confirm({
             message:
               `Broadcast this unshield via ${via}?\n` +
               `  Amount: ${amountLabel}\n` +
               `  To: ${recipient}\n` +
+              (tornadoConfirmExtra.length > 0
+                ? `${tornadoConfirmExtra.join("\n")}\n`
+                : "") +
               `  ${feeConfirmLine(fees)}\n` +
               `This submits the operation to the network and may be irreversible.`,
             default: false,
