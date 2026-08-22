@@ -410,10 +410,11 @@ export function tornadoUnshieldOptions(
   amountWei: bigint,
   maxFeePerGas: bigint,
   /**
-   * BIP-32 path for a wallet-controlled batch 7702 (`--next` / stored HD `--to`).
-   * Omit only for a single-note unshield with no `--tail-calls` (prove directly
-   * to `recipient`). Pathless deterministic is never emitted: that 7702 is a
-   * note-derived key this wallet does not store.
+   * BIP-32 path for a wallet-controlled batch 7702 (`--next` / stored HD `--to`
+   * / stored stealth via `STEALTH_ADDRESS_MAGIC_VALUE_PATH`). Omit only for a
+   * single-note unshield with no `--tail-calls` (prove directly to `recipient`).
+   * Pathless deterministic is never emitted: that 7702 is a note-derived key
+   * this wallet does not store.
    */
   delegationPath: string | undefined,
   withdrawalCount: number,

@@ -3,6 +3,7 @@ import { viem as kohakuViemProvider } from "@kohaku-eth/provider/viem";
 
 import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
+import { makeStealthAccountsStorage } from "../lib/stealth/storage";
 import { makeStorage, type PluginId } from "./storage";
 import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 import { kohakuFetch } from "../utils/tor";
@@ -47,7 +48,14 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
     withTransactionCount(kohakuViemProvider(rpc))
   );
 
-  const keystore = pluginId === "rg" ? makeRailgunKeystore(mnemonic) : makeKeystore(mnemonic);
+  const stealthStorage = makeStealthAccountsStorage(walletDir, password);
+  const keystore =
+    pluginId === "rg"
+      ? makeRailgunKeystore(mnemonic)
+      : makeKeystore(mnemonic, {
+          stealthDelegatorPriv: (stealthIndex) =>
+            stealthStorage.getAccount(stealthIndex)?.priv ?? null,
+        });
   const network = makeNetwork();
   const externalSyncProvider =
     externalSyncProviderIn ??
