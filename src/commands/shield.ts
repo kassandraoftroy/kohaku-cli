@@ -539,6 +539,11 @@ export function registerShieldCommand(program: Command): void {
         quietNonInteractive(opts.nonInteractive)
       );
       const quiet = quietNonInteractive(opts.nonInteractive);
+      const eip7702Tor = {
+        rpcUrl,
+        walletDir,
+        withoutTor: !!opts.withoutTor,
+      };
       const broadcastTransactions: BroadcastTxResultJson[] = [];
       try {
         await withTor(
@@ -653,6 +658,7 @@ export function registerShieldCommand(program: Command): void {
             senderAddress,
             calls,
             privateKey: senderPrivateKey,
+            ...eip7702Tor,
           });
         } else {
           const call = calls[0]!;
@@ -759,6 +765,7 @@ export function registerShieldCommand(program: Command): void {
                 privateKey: senderPrivateKey,
                 chainId,
                 calls,
+                ...eip7702Tor,
               }),
             (t) =>
               `UserOp mined: ${t.txHash}${
