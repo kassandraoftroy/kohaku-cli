@@ -680,9 +680,8 @@ export function registerTransferCommand(program: Command): void {
           return;
         }
 
-        let fees: FeePreview;
         if (!batchAsUserOp) {
-          fees = await estimateEoaTxFeePreview(
+          const fees = await estimateEoaTxFeePreview(
             client,
             {
               to: txs[0]!.to,
@@ -696,10 +695,9 @@ export function registerTransferCommand(program: Command): void {
           if (dryRun) {
             if (opts.nonInteractive) {
               logCliJson({
-                stealth: !!stealthPlan,
+                stealth: false,
                 stealthMetaAddressURI: stealthMetaURI ?? undefined,
                 recipient: recipientAddress,
-                ephemeralPublicKey: stealthPlan?.ephemeralPublicKey,
                 amount: amount.toString(),
                 token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
                 fees,
@@ -719,6 +717,49 @@ export function registerTransferCommand(program: Command): void {
             }
             return;
           }
+
+          if (!senderPrivateKey) {
+            cliError(
+              "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
+            );
+            return;
+          }
+
+          await maybeConfirm(
+            !!opts.nonInteractive,
+            `Send transfer: ${amountPreview} from ${senderAddress} to ${recipientAddress}?\n  ${feeConfirmLine(fees)}`
+          );
+
+          const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
+          const hash = await runQuietSpinner(
+            quiet,
+            txSpinner,
+            { start: "Sending transfer...", failure: "Transfer failed." },
+            async () =>
+              sendTransactionAndWait(walletClient, client, {
+                to: txs[0]!.to,
+                data: txs[0]!.data,
+                value: txs[0]!.value,
+              }),
+            (h) => `Mined: ${h}`
+          );
+
+          if (opts.nonInteractive) {
+            logCliJson({
+              stealth: false,
+              hashes: [hash],
+              explorers: [etherscanTxUrl(chainId, hash)],
+              from: senderAddress,
+              to: recipientAddress,
+              amount: amount.toString(),
+              token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
+            });
+          } else {
+            console.log();
+            console.log(chalk.green("✔ Transfer complete."));
+            console.log(chalk.dim(etherscanTxUrl(chainId, hash)));
+          }
+          return;
         }
 
         if (!senderPrivateKey) {
@@ -728,110 +769,72 @@ export function registerTransferCommand(program: Command): void {
           return;
         }
 
-        if (batchAsUserOp) {
-          let fees: FeePreview;
-          const sent = await withTor(
-            !opts.withoutTor,
-            { rpcUrl, walletDir },
-            async () => {
-              fees = await estimateEip7702BatchUserOpFee({
-                client,
-                chainId,
-                senderAddress,
-                calls: txs,
-                privateKey: senderPrivateKey,
-                ...eip7702Tor,
-              });
-              await maybeConfirm(
-                !!opts.nonInteractive,
-                `Submit stealth transfer of ${amountPreview} as one EIP-7702 UserOp (transfer + announce) from ${senderAddress}?\n  ${feeConfirmLine(fees)}`
-              );
-
-              return runQuietSpinner(
-                quiet,
-                txSpinner,
-                {
-                  start:
-                    "Submitting EIP-7702 stealth UserOp (transfer + announce)...",
-                  failure: "EIP-7702 stealth UserOp failed.",
-                },
-                async () =>
-                  sendEip7702BatchUserOperation({
-                    client,
-                    privateKey: senderPrivateKey,
-                    chainId,
-                    calls: txs,
-                    ...eip7702Tor,
-                  }),
-                (t) =>
-                  `UserOp mined: ${t.txHash}${
-                    t.delegatedInUserOp ? " (delegation included)" : ""
-                  }`
-              );
-            }
-          );
-
-          if (opts.nonInteractive) {
-            logCliJson({
-              stealth: true,
-              mode: "eip7702-userop",
-              implementation: sent.implementation,
-              delegation: sent.delegatedInUserOp
-                ? "included-in-userop"
-                : "already-set",
-              userOpHash: sent.userOpHash,
-              txHash: sent.txHash,
-              explorer: etherscanTxUrl(chainId, sent.txHash),
-              from: senderAddress,
-              to: recipientAddress,
-              stealthMetaAddressURI: stealthMetaURI ?? undefined,
-              ephemeralPublicKey: stealthPlan?.ephemeralPublicKey,
-              amount: amount.toString(),
-              token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
-              calls: payloads,
-              fees: fees!,
+        let fees: FeePreview;
+        const sent = await withTor(
+          !opts.withoutTor,
+          { rpcUrl, walletDir },
+          async () => {
+            fees = await estimateEip7702BatchUserOpFee({
+              client,
+              chainId,
+              senderAddress,
+              calls: txs,
+              privateKey: senderPrivateKey,
+              ...eip7702Tor,
             });
-          } else {
-            console.log();
-            console.log(chalk.green("✔ Stealth transfer complete (batched UserOp)."));
-            console.log(chalk.dim(etherscanTxUrl(chainId, sent.txHash)));
+            await maybeConfirm(
+              !!opts.nonInteractive,
+              `Submit stealth transfer of ${amountPreview} as one EIP-7702 UserOp (transfer + announce) from ${senderAddress}?\n  ${feeConfirmLine(fees)}`
+            );
+
+            return runQuietSpinner(
+              quiet,
+              txSpinner,
+              {
+                start:
+                  "Submitting EIP-7702 stealth UserOp (transfer + announce)...",
+                failure: "EIP-7702 stealth UserOp failed.",
+              },
+              async () =>
+                sendEip7702BatchUserOperation({
+                  client,
+                  privateKey: senderPrivateKey,
+                  chainId,
+                  calls: txs,
+                  ...eip7702Tor,
+                }),
+              (t) =>
+                `UserOp mined: ${t.txHash}${
+                  t.delegatedInUserOp ? " (delegation included)" : ""
+                }`
+            );
           }
-          return;
-        }
-
-        await maybeConfirm(
-          !!opts.nonInteractive,
-          `Send transfer: ${amountPreview} from ${senderAddress} to ${recipientAddress}?\n  ${feeConfirmLine(fees)}`
-        );
-
-        const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
-        const hash = await runQuietSpinner(
-          quiet,
-          txSpinner,
-          { start: "Sending transfer...", failure: "Transfer failed." },
-          async () =>
-            sendTransactionAndWait(walletClient, client, {
-              to: txs[0]!.to,
-              data: txs[0]!.data,
-              value: txs[0]!.value,
-            }),
-          (h) => `Mined: ${h}`
         );
 
         if (opts.nonInteractive) {
           logCliJson({
-            stealth: false,
-            hashes: [hash],
-            explorers: [etherscanTxUrl(chainId, hash)],
+            stealth: true,
+            mode: "eip7702-userop",
+            implementation: sent.implementation,
+            delegation: sent.delegatedInUserOp
+              ? "included-in-userop"
+              : "already-set",
+            userOpHash: sent.userOpHash,
+            txHash: sent.txHash,
+            explorer: etherscanTxUrl(chainId, sent.txHash),
             from: senderAddress,
             to: recipientAddress,
+            stealthMetaAddressURI: stealthMetaURI ?? undefined,
+            ephemeralPublicKey: stealthPlan.ephemeralPublicKey,
             amount: amount.toString(),
             token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
+            calls: payloads,
+            fees: fees!,
           });
         } else {
           console.log();
-          console.log(chalk.green("✔ Transfer complete."));
-          console.log(chalk.dim(etherscanTxUrl(chainId, hash)));
+          console.log(chalk.green("✔ Stealth transfer complete (batched UserOp)."));
+          console.log(chalk.dim(etherscanTxUrl(chainId, sent.txHash)));
         }
       } catch (e) {
         cliErrorFromCaught(e);

@@ -664,6 +664,9 @@ export async function broadcastShield(opts: {
         privateKey: sender.senderPrivateKey,
         chainId: opts.chainId,
         calls,
+        rpcUrl: opts.rpcUrl,
+        walletDir: opts.walletDir,
+        withoutTor: opts.withoutTor,
       });
       return [
         {

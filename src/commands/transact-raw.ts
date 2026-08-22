@@ -389,6 +389,11 @@ export function registerTransactRawCommand(program: Command): void {
           value: tx.value.toString(),
         }));
         const batchAsUserOp = rawTxs.length > 1;
+        const eip7702Tor = {
+          rpcUrl,
+          walletDir,
+          withoutTor: !!opts.withoutTor,
+        };
 
         // Single EOA: eth_call each tx. Multi-call UserOp: skip isolated eth_calls —
         // later payloads often depend on earlier ones (e.g. approve then spend).
@@ -423,6 +428,7 @@ export function registerTransactRawCommand(program: Command): void {
               senderAddress,
               calls: rawTxs,
               privateKey: senderPrivateKey,
+              ...eip7702Tor,
             });
           } else {
             const parts: FeePreview[] = [];
@@ -490,6 +496,7 @@ export function registerTransactRawCommand(program: Command): void {
             senderAddress,
             calls: rawTxs,
             privateKey: senderPrivateKey,
+            ...eip7702Tor,
           });
           await maybeConfirm(
             !!opts.nonInteractive,
@@ -509,6 +516,7 @@ export function registerTransactRawCommand(program: Command): void {
                 privateKey: senderPrivateKey,
                 chainId,
                 calls: rawTxs,
+                ...eip7702Tor,
               }),
             (t) =>
               `UserOp mined: ${t.txHash}${
