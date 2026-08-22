@@ -36,6 +36,7 @@ import {
   makePublicAccountsStorage,
   publicAccountDerivationPath,
 } from "../utils/public-accounts";
+import { stealthDelegatorPath } from "../lib/stealth/constants.js";
 import {
   formatStealthSelector,
   makeStealthAccountsStorage,
@@ -396,7 +397,7 @@ export function registerUnshieldCommand(program: Command): void {
         const stealthAcct = stealthStorage.findByAddress(recipient);
         if (stealthAcct) {
           recipientPriv = as0xPrivateKey(stealthAcct.priv);
-          recipientDerivationPath = undefined;
+          recipientDerivationPath = stealthDelegatorPath(stealthAcct.stealthIndex);
           return;
         }
         recipientPriv = undefined;
@@ -412,7 +413,7 @@ export function registerUnshieldCommand(program: Command): void {
         }
         recipient = getAddress(stealthAcct.address) as `0x${string}`;
         recipientPriv = as0xPrivateKey(stealthAcct.priv);
-        recipientDerivationPath = undefined;
+        recipientDerivationPath = stealthDelegatorPath(stealthIndex);
       };
 
       if (hasNext) {
@@ -1161,7 +1162,7 @@ export function registerUnshieldCommand(program: Command): void {
             protocol === "tornado"
               ? tornadoUnshieldConfirmExtraLines({
                   recipient,
-                  hasHdPath: Boolean(recipientDerivationPath),
+                  delegationPath: recipientDerivationPath,
                   hasTailCalls: tailCalls.length > 0,
                   withdrawalCount: tornadoWithdrawalCount ?? 1,
                 })
