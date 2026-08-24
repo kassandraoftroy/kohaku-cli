@@ -20,10 +20,10 @@
         "@1001-digital/ethereum-names": "0.3.0",
         "@clack/prompts": "0.7.0",
         "@inquirer/prompts": "8.3.2",
-        "@kohaku-eth/plugins": "0.0.1-alpha.12",
-        "@kohaku-eth/privacy-pools": "0.0.2-alpha.15",
-        "@kohaku-eth/railgun": "0.0.1-alpha.29",
-        "@kohaku-eth/tornado-cash": "0.0.2-alpha.20",
+        "@kohaku-eth/plugins": "0.0.1-alpha.13",
+        "@kohaku-eth/privacy-pools": "0.0.2-alpha.16",
+        "@kohaku-eth/railgun": "0.0.1-alpha.30",
+        "@kohaku-eth/tornado-cash": "0.0.2-alpha.21",
         "@noble/secp256k1": "2.3.0",
         "@scopelift/stealth-address-sdk": "1.0.0-beta.5",
         "chalk": "5.6.2",
@@ -33,12 +33,17 @@
         "eth-stealth-address-resolver": "0.2.0",
         "ox": "0.12.0",
         "tor-js": "0.4.0",
-        "viem": "2.52.2"
+        "viem": "2.55.19"
     },
     "devDependencies": {
         "@types/node": "22.19.15",
         "tsup": "8.5.1",
-        "tsx": "4.0.0",
+        "tsx": "4.23.12",
         "typescript": "5.9.2"
+    },
+    "overrides": {
+        "tar": "7.5.22",
+        "ws": "8.21.3",
+        "underscore": "1.13.8"
     }
 }
