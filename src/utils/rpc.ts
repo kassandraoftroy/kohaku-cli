@@ -129,14 +129,24 @@ export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClie
 export function disposePublicClient(_client?: KohakuPublicClient): void {}
 
 /**
- * RPC endpoint from `--rpc-url`, else `RPC_URL`, else {@link DEFAULT_RPC_URL}.
- * Warns on stderr when the localhost default is used as a fallback.
+ * `--rpc-url` or `RPC_URL` when the user actually set one.
+ * Does not fall back to localhost — use {@link resolveRpcUrl} for that.
  */
-export function resolveRpcUrl(optsRpcUrl?: string): string {
+export function resolveOptionalRpcUrl(optsRpcUrl?: string): string | undefined {
   const fromOpt = optsRpcUrl?.trim();
   if (fromOpt) return fromOpt;
   const fromEnv = process.env.RPC_URL?.trim();
   if (fromEnv) return fromEnv;
+  return undefined;
+}
+
+/**
+ * RPC endpoint from `--rpc-url`, else `RPC_URL`, else {@link DEFAULT_RPC_URL}.
+ * Warns on stderr when the localhost default is used as a fallback.
+ */
+export function resolveRpcUrl(optsRpcUrl?: string): string {
+  const configured = resolveOptionalRpcUrl(optsRpcUrl);
+  if (configured) return configured;
   console.warn(
     `No --rpc-url / RPC_URL set; using default ${DEFAULT_RPC_URL}`
   );
@@ -170,19 +180,34 @@ export async function getRpcChainIdMatchingWallet(
 /** Public HTTP RPCs used when `--rpc-url` / `RPC_URL` is unset (create-wallet seed timestamp). */
 const PUBLIC_RPC_URLS: Record<"mainnet" | "sepolia", readonly string[]> = {
   mainnet: [
-    "https://cloudflare-eth.com",
-    "https://ethereum.publicnode.com",
-    "https://rpc.ankr.com/eth",
+    "https://eth.drpc.org",
+    "https://1rpc.io/eth",
+    "https://ethereum.public.blockpi.network/v1/rpc/public",
+    "https://gateway.tenderly.co/public/mainnet",
   ],
   sepolia: [
-    "https://ethereum-sepolia-rpc.publicnode.com",
-    "https://rpc.sepolia.org",
-    "https://rpc2.sepolia.org",
+    "https://1rpc.io/sepolia",
+    "https://gateway.tenderly.co/public/sepolia",
+    "https://sepolia.gateway.tenderly.co",
   ],
 };
 
 function publicRpcCandidates(testnet: boolean): readonly string[] {
   return testnet ? PUBLIC_RPC_URLS.sepolia : PUBLIC_RPC_URLS.mainnet;
+}
+
+/**
+ * RPCs to try for a one-shot `eth_blockNumber` (create-wallet stealth start block).
+ * Localhost is included only when the caller passed it as `rpcUrl`.
+ */
+export function currentBlockRpcCandidates(opts: {
+  testnet: boolean;
+  rpcUrl?: string;
+}): string[] {
+  const preferred = opts.rpcUrl?.trim();
+  const publicUrls = publicRpcCandidates(opts.testnet);
+  if (!preferred) return [...publicUrls];
+  return [preferred, ...publicUrls.filter((u) => u !== preferred)];
 }
 
 /**
@@ -195,10 +220,7 @@ export async function fetchCurrentBlockNumber(opts: {
   rpcUrl?: string;
 }): Promise<{ blockNumber: bigint; rpcUrlUsed: string }> {
   const expectedChainId = opts.testnet ? 11155111n : 1n;
-  const preferred = opts.rpcUrl?.trim();
-  const candidates = preferred
-    ? [preferred, ...publicRpcCandidates(opts.testnet).filter((u) => u !== preferred)]
-    : [...publicRpcCandidates(opts.testnet)];
+  const candidates = currentBlockRpcCandidates(opts);
 
   const errors: string[] = [];
   for (const url of candidates) {
