@@ -13,6 +13,7 @@ import {
 import { parseStealthStartBlock } from "../lib/stealth/scan.js";
 import {
   DEFAULT_DATA_DIR,
+  resolveOptionalRpcUrl,
   resolveRpcUrl,
 } from "../utils/rpc";
 import {
@@ -95,7 +96,7 @@ export function registerCreateWalletCommand(program: Command): void {
       "Password to encrypt this wallet (required with --non-interactive; else prompted)"
     )
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
-    .option("--rpc-url <url>", "RPC URL (or set RPC_URL; default http://localhost:8545). New wallets fall back to public RPCs if the preferred endpoint fails")
+    .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
       "--stealth-start-block <block>",
@@ -187,10 +188,10 @@ export function registerCreateWalletCommand(program: Command): void {
         }
       }
 
-      // Prefer --rpc-url / RPC_URL / localhost default; create-wallet falls back to public RPCs on failure.
+      // New wallets: only use an RPC the user set; otherwise public endpoints (not localhost).
       const preferredRpcUrl = opts.import
         ? importRpcUrl
-        : resolveRpcUrl(opts.rpcUrl);
+        : resolveOptionalRpcUrl(opts.rpcUrl);
 
       try {
         const created = await createWalletOnDisk({
