@@ -14,6 +14,8 @@
  * fetched via Tor from `KOHAKU_ARTIFACTS_BASE_URL` (default:
  * https://artifacts.0000000000.org). No clearnet fallback.
  * Saga CDN (Tornado event sync): Tor-or-fail (no clearnet fallback).
+ * Subsquid GraphQL and saga CDN responses are also stored under
+ * `<dataDir>/public-sync-cache` so later wallets reuse public Railgun/Tornado pages.
  * Artifacts are for prove/unshield, not pool-event sync; pre-warm with
  * `kohaku fetch-artifacts` (optionally `--without-tor`).
  *
@@ -47,6 +49,13 @@ import {
   setArtifactsDataDir,
   writeCachedArtifact,
 } from "./proving-artifacts.js";
+import {
+  buildCachedPublicSyncResponse,
+  cachePublicSyncNetworkResponse,
+  isPublicSyncCacheableRequest,
+  readPublicSyncCache,
+  setPublicSyncCacheDataDir,
+} from "./public-sync-cache.js";
 
 /** tor-js Arti directory cache (`createAutoStorage('tor-js')`). */
 export function torJsCacheDir(): string {
@@ -412,6 +421,57 @@ function artifactFailHint(): string {
  * no Tor session) from KOHAKU_ARTIFACTS_BASE_URL — never a Tor→clearnet retry.
  * Saga CDN: Tor-or-fail with hard timeout.
  */
+
+async function requestBodyBytesForCache(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Buffer> {
+  const body = init?.body;
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) {
+    return Buffer.from(body);
+  }
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+  if (
+    typeof Request !== "undefined" &&
+    input instanceof Request &&
+    init?.body === undefined
+  ) {
+    const m = input.method.toUpperCase();
+    if (m !== "GET" && m !== "HEAD") {
+      return Buffer.from(await input.clone().arrayBuffer());
+    }
+  }
+  return Buffer.alloc(0);
+}
+
+async function storePublicSyncResponseIfOk(
+  url: string,
+  method: string,
+  reqBody: Buffer,
+  cacheable: boolean,
+  res: Response
+): Promise<Response> {
+  if (!cacheable || res.status !== 200) return res;
+  const buf = Buffer.from(await res.arrayBuffer());
+  cachePublicSyncNetworkResponse({
+    method,
+    url,
+    body: reqBody,
+    status: 200,
+    responseBody: buf,
+    contentType: res.headers.get("content-type"),
+  });
+  return buildCachedPublicSyncResponse(
+    url,
+    buf,
+    res.headers.get("content-type")
+  );
+}
+
 export async function kohakuFetch(
   input: RequestInfo | URL,
   init?: RequestInit
@@ -513,6 +573,30 @@ export async function kohakuFetch(
     }
   }
 
+  const cacheable = isPublicSyncCacheableRequest(url, method);
+  const reqBody = cacheable
+    ? await requestBodyBytesForCache(input, init)
+    : Buffer.alloc(0);
+  if (cacheable) {
+    const cached = readPublicSyncCache({ method, url, body: reqBody });
+    if (cached) {
+      return loggedFetch(
+        input,
+        init,
+        {
+          via: "clearnet",
+          clearnetReason: "public-sync-cache",
+          url,
+        },
+        async () =>
+          buildCachedPublicSyncResponse(url, cached.body, cached.contentType)
+      );
+    }
+  }
+
+  const wrapStore = (inner: () => Promise<Response>) => async () =>
+    storePublicSyncResponseIfOk(url, method, reqBody, cacheable, await inner());
+
   const decision = shouldUseClearnet(url);
   if (decision.clearnet) {
     return loggedFetch(
@@ -523,7 +607,7 @@ export async function kohakuFetch(
         clearnetReason: decision.reason,
         url,
       },
-      () => clearnetFetch(input, init)
+      wrapStore(() => clearnetFetch(input, init))
     );
   }
 
@@ -541,8 +625,9 @@ export async function kohakuFetch(
         url,
         requestBytes,
       },
-      async () =>
+      wrapStore(async () =>
         withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
+      )
     );
   }
 
@@ -560,8 +645,9 @@ export async function kohakuFetch(
             url,
             requestBytes,
           },
-          async () =>
+          wrapStore(async () =>
             withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
+          )
         ),
       timeoutMs
     );
@@ -728,8 +814,9 @@ export function runWithWalletTrafficLog<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   ensureKohakuFetchPatch();
-  // `<dataDir>/<wallet>` — keep proving-artifact cache under the same dataDir.
+  // `<dataDir>/<wallet>` — keep proving-artifact and public-sync caches under the same dataDir.
   setArtifactsDataDir(dirname(walletDir));
+  setPublicSyncCacheDataDir(dirname(walletDir));
   return runWithTrafficLogWallet(walletDir, fn);
 }
 

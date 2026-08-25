@@ -14,15 +14,41 @@ export function parseRequiredWalletName(wallet: string | undefined): string | nu
   return trimmed ? trimmed : null;
 }
 
+/** Sibling dirs under `<dataDir>` that must never be used as a wallet name. */
+export const RESERVED_WALLET_DIR_NAMES = [
+  "proving-artifacts",
+  "public-sync-cache",
+] as const;
+
+function isReservedWalletDirName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (RESERVED_WALLET_DIR_NAMES as readonly string[]).includes(lower);
+}
+
 export function walletNameToDirSegment(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Wallet name cannot be empty");
   }
+  if (/\s/.test(trimmed)) {
+    throw new Error(
+      "Wallet name cannot contain spaces. The first argument is the wallet name, not the seed phrase — pass the mnemonic with --mnemonic or the import prompt."
+    );
+  }
+  if (isReservedWalletDirName(trimmed)) {
+    throw new Error(
+      `Wallet name ${JSON.stringify(trimmed)} is reserved (${RESERVED_WALLET_DIR_NAMES.join(", ")})`
+    );
+  }
   const safe = trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   if (!safe) {
     throw new Error(
       "Wallet name must contain at least one letter, digit, dot, hyphen, or underscore"
+    );
+  }
+  if (isReservedWalletDirName(safe)) {
+    throw new Error(
+      `Wallet name ${JSON.stringify(trimmed)} is reserved (${RESERVED_WALLET_DIR_NAMES.join(", ")})`
     );
   }
   return safe;
@@ -69,6 +95,8 @@ export function expectedChainIdStringFromWalletDir(walletDir: string): string {
 export async function resolveWalletPassword(opts: {
   flagPassword?: string | undefined;
   nonInteractive?: boolean | undefined;
+  /** Prompt text when asking interactively (default: "Wallet password:"). */
+  promptMessage?: string | undefined;
   validate?: ((password: string) => void | Promise<void>) | undefined;
 }): Promise<string | null> {
   const fromFlag = opts.flagPassword?.trim();
@@ -104,7 +132,7 @@ export async function resolveWalletPassword(opts: {
   }
   for (;;) {
     const pw = await password({
-      message: "Wallet password:",
+      message: opts.promptMessage?.trim() || "Wallet password:",
       mask: "*",
     });
     if (pw?.trim()) {

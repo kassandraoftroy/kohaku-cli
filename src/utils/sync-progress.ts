@@ -26,6 +26,9 @@ type SyncProgressStore = {
   lastEmit: number;
   lastMessage: string;
   emitTimer?: ReturnType<typeof setTimeout>;
+  /** Cumulative `eth_getLogs` windows across concurrent/sequential scans. */
+  rpcExpected?: number;
+  rpcCompleted?: number;
 };
 
 const als = new AsyncLocalStorage<SyncProgressStore>();
@@ -139,6 +142,32 @@ export function reportSyncProgress(update: SyncProgressUpdate): void {
   if (update.done != null) store.done = update.done;
   if (update.total != null) store.total = update.total;
   if (update.detail != null) store.detail = update.detail;
+  flush(store);
+}
+
+/**
+ * Add `windowCount` RPC log windows to the current sync bar (does not reset
+ * `done`). Privacy Pools issues many 5k-block `getLogs` that we re-chunk;
+ * without this, each range redraws as `1/11`.
+ */
+export function beginSyncRpcWindows(windowCount: number): void {
+  const store = als.getStore();
+  if (!store || windowCount <= 0) return;
+  store.rpcExpected = (store.rpcExpected ?? 0) + windowCount;
+  store.phase = "rpc";
+  store.done = store.rpcCompleted ?? 0;
+  store.total = store.rpcExpected;
+  flush(store);
+}
+
+/** Count one completed (or started) RPC log window on the cumulative bar. */
+export function reportSyncRpcWindow(): void {
+  const store = als.getStore();
+  if (!store) return;
+  store.rpcCompleted = (store.rpcCompleted ?? 0) + 1;
+  store.phase = "rpc";
+  store.done = store.rpcCompleted;
+  store.total = store.rpcExpected ?? store.rpcCompleted;
   flush(store);
 }
 

@@ -2,7 +2,7 @@ import type { EthereumProvider } from "@kohaku-eth/provider";
 import type { Filter } from "ox/Filter";
 import type { RpcRequest } from "ox/RpcRequest";
 
-import { reportSyncProgress } from "../utils/sync-progress.js";
+import { beginSyncRpcWindows, reportSyncRpcWindow } from "../utils/sync-progress.js";
 
 /** Max inclusive block span per `eth_getLogs` call (env / option override). */
 const DEFAULT_MAX_BLOCK_SPAN = 499n;
@@ -125,13 +125,12 @@ async function fetchLogsChunked(
   let windowFrom = fromBn;
   let w = 0;
   const total = estimatedGetLogsWindowCount(fromBn, toBn, chunkSpan);
+  if (total > 0) beginSyncRpcWindows(total);
   while (windowFrom <= toBn) {
     const windowTo =
       windowFrom + chunkSpan - 1n > toBn ? toBn : windowFrom + chunkSpan - 1n;
     w += 1;
-    if (total > 0) {
-      reportSyncProgress({ phase: "rpc", done: w, total });
-    }
+    if (total > 0) reportSyncRpcWindow();
     let raw: unknown;
     try {
       raw = await invoke(windowFrom, windowTo);

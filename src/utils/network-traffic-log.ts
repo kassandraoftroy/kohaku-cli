@@ -33,6 +33,8 @@ export type TrafficClearnetReason =
   | "rpc"
   /** Served from ~/.kohaku-cli/proving-artifacts (no network). */
   | "local-artifact"
+  /** Served from <dataDir>/public-sync-cache (Subsquid / saga). */
+  | "public-sync-cache"
   /** @deprecated Legacy log rows only — clearnet artifact fallback removed. */
   | "artifact-fallback"
   /** @deprecated Legacy log rows only — clearnet saga fallback removed. */
@@ -262,7 +264,8 @@ export function clearNetworkTrafficLog(walletDir: string): boolean {
 export function isLocalEntry(entry: NetworkTrafficEntry): boolean {
   if (
     entry.clearnetReason === "loopback" ||
-    entry.clearnetReason === "local-artifact"
+    entry.clearnetReason === "local-artifact" ||
+    entry.clearnetReason === "public-sync-cache"
   ) {
     return true;
   }
