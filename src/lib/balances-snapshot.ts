@@ -4,7 +4,7 @@ import { formatUnits, getAddress, isAddress } from "viem";
 import { formatCaughtError } from "../utils/cli-errors";
 import { makePublicClient, disposePublicClient } from "../utils/rpc";
 import { runWithSyncProgress } from "../utils/sync-progress.js";
-import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
+import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import {
@@ -137,21 +137,25 @@ async function loadProtocolNotes(
   tokenMeta: Map<string, { symbol: string; decimals: number }>,
   onSyncProgress?: (message: string) => void
 ): Promise<PrivateNoteRow[]> {
-  const notes = await runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, async () => {
-    const priming = primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
-    return withProtocolRuntime(
-      { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-      async (_host, plugin) => {
-        await priming;
-        const notesFn = (plugin as AnyPlugin).notes;
-        if (!notesFn) {
-          throw new Error(`${protocol} plugin does not expose notes()`);
+  const notes = await runWithSyncProgress(
+    {
+      source: protocol,
+      firstRun: isFirstProtocolSync(walletDir, protocol),
+      onUpdate: onSyncProgress,
+    },
+    async () =>
+      withProtocolRuntime(
+        { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+        async (_host, plugin) => {
+          const notesFn = (plugin as AnyPlugin).notes;
+          if (!notesFn) {
+            throw new Error(`${protocol} plugin does not expose notes()`);
+          }
+          // Preserve method `this` binding for class-based plugin implementations.
+          return (plugin as AnyPlugin).notes!(undefined, false);
         }
-        // Preserve method `this` binding for class-based plugin implementations.
-        return (plugin as AnyPlugin).notes!(undefined, false);
-      }
-    );
-  });
+      )
+  );
   return mapProtocolNotes(protocol, notes, tokenMeta);
 }
 
@@ -164,16 +168,18 @@ async function loadPrivateBalancesForProtocol(
   chainId: bigint,
   onSyncProgress?: (message: string) => void
 ): Promise<AssetAmount[]> {
-  return runWithSyncProgress({ protocol, onUpdate: onSyncProgress }, async () => {
-    const priming = primeRailgunSubsquidProgressIfNeeded(protocol, chainId);
-    return withProtocolRuntime(
-      { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-      async (_host, plugin) => {
-        await priming;
-        return plugin.balance(undefined);
-      }
-    );
-  });
+  return runWithSyncProgress(
+    {
+      source: protocol,
+      firstRun: isFirstProtocolSync(walletDir, protocol),
+      onUpdate: onSyncProgress,
+    },
+    async () =>
+      withProtocolRuntime(
+        { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
+        async (_host, plugin) => plugin.balance(undefined)
+      )
+  );
 }
 
 async function loadErc20Meta(
@@ -486,7 +492,8 @@ async function loadBalancesSnapshotInner(
       try {
         const keypair = deriveStealthKeypair(mnemonic, chainId);
         await runWithSyncProgress(
-          { protocol: "stealth", onUpdate: onSyncProgress },
+          // The scan itself reports whether this is a first pass.
+          { source: "stealth", onUpdate: onSyncProgress },
           () =>
             scanAndImportStealthAnnouncements({
               client: rpcForPublic,

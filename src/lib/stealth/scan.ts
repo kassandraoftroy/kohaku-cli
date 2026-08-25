@@ -5,9 +5,9 @@ import { STEALTH_SCHEME_ID } from "eth-stealth-address-resolver";
 import { getAddress, parseAbiItem, type Hex, type Log } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { resolveGetLogsMaxBlockSpan, estimatedGetLogsWindowCount } from "../../host/chunked-get-logs.js";
+import { resolveGetLogsMaxBlockSpan } from "../../host/chunked-get-logs.js";
 import type { KohakuPublicClient } from "../../utils/rpc.js";
-import { reportSyncProgress } from "../../utils/sync-progress.js";
+import { countSyncRequest, noteSyncFirstRun } from "../../utils/sync-progress.js";
 import {
   STEALTH_ANNOUNCER_ADDRESS,
   stealthAnnouncerStartBlock,
@@ -99,6 +99,9 @@ export async function scanAndImportStealthAnnouncements(opts: {
   const store = storage.getStore();
   const needsFullHistory =
     opts.fullRescan || !store.fullHistoryScanned;
+  // `stealth-accounts.json` can exist without a scan (profile / account writes),
+  // so the full-history flag is the only reliable "first scan" signal.
+  noteSyncFirstRun(!store.fullHistoryScanned);
 
   let fromBlock: bigint;
   if (needsFullHistory) {
@@ -131,16 +134,11 @@ export async function scanAndImportStealthAnnouncements(opts: {
   let announcementsChecked = 0;
   let alreadyKnown = 0;
   const name = store.name;
-  let chunk = 0;
-  const total = estimatedGetLogsWindowCount(fromBlock, latest, maxSpan);
 
   let cursor = fromBlock;
   while (cursor <= latest) {
     const to = cursor + maxSpan - 1n > latest ? latest : cursor + maxSpan - 1n;
-    chunk += 1;
-    if (total > 0) {
-      reportSyncProgress({ phase: "rpc", done: chunk, total });
-    }
+    countSyncRequest("rpc");
 
     const logs = (await opts.client.getLogs({
       address: STEALTH_ANNOUNCER_ADDRESS,

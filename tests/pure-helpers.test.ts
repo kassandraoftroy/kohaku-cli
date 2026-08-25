@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 
 import { formatUsdCents } from "../src/lib/usd-values.js";
 import { jsonStringifyWithBigInt } from "../src/utils/json-bigint.js";
-import { estimatedGetLogsWindowCount } from "../src/host/chunked-get-logs.js";
 import { formatLegacyTornadoNote } from "../src/commands/export-tornado-note.js";
 import { normalizeTornadoNoteInput } from "../src/commands/import-tornado-note.js";
 
@@ -20,15 +19,6 @@ describe("jsonStringifyWithBigInt", () => {
   it("renders bigint values as decimal strings", () => {
     assert.equal(jsonStringifyWithBigInt({ a: 1n }), '{"a":"1"}');
     assert.equal(jsonStringifyWithBigInt([10n]), '["10"]');
-  });
-});
-
-describe("estimatedGetLogsWindowCount", () => {
-  it("counts inclusive windows of at most chunkSpan blocks", () => {
-    assert.equal(estimatedGetLogsWindowCount(0n, 498n, 499n), 1);
-    assert.equal(estimatedGetLogsWindowCount(0n, 499n, 499n), 2);
-    assert.equal(estimatedGetLogsWindowCount(100n, 99n, 499n), 0);
-    assert.equal(estimatedGetLogsWindowCount(0n, 10n, 0n), 0);
   });
 });
 

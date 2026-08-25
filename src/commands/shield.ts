@@ -58,6 +58,7 @@ import {
   runWithSyncProgress,
   syncPluginWithProgress,
 } from "../utils/sync-progress.js";
+import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -594,7 +595,8 @@ export function registerShieldCommand(program: Command): void {
               ? await prepareProtocolShield(plugin, protocol, asset as AssetAmount)
               : await runWithSyncProgress(
                   {
-                    protocol,
+                    source: protocol,
+                    firstRun: isFirstProtocolSync(walletDir, protocol),
                     onUpdate: quiet ? undefined : (message) => txSpinner.start(message),
                   },
                   async () => {

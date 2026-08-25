@@ -20,7 +20,9 @@ export const cliOptions = {
   withoutTor:
     "Disable Tor for non-RPC HTTP (default: Tor on). RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
   withoutTorArtifactsFetch:
-    "Download proving artifacts / public-sync snapshots over clearnet (default: Tor). Reveals that this IP fetched kohaku circuits or GraphQL snapshots; later shield/unshield stay Tor-only from the local cache. Or set KOHAKU_WITHOUT_TOR=1",
+    "Download proving artifacts over clearnet (default: Tor). Reveals that this IP fetched kohaku circuits; later shield/unshield stay Tor-only from the local cache. Or set KOHAKU_WITHOUT_TOR=1",
+  withoutTorSyncCacheFetch:
+    "Download snapshot chunks over clearnet (default: Tor). Much faster, and reveals only that this IP fetched public Railgun/Tornado pool data. Or set KOHAKU_WITHOUT_TOR=1",
   stealthStartBlock:
     "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan. Does not skip the scan itself (use --skip-stealth-scan). balances also reads `.stealth-start-block` from the wallet when this flag is omitted",
 } as const;

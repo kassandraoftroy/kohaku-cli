@@ -5,6 +5,7 @@ import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
 import { makeStealthAccountsStorage } from "../lib/stealth/storage";
 import { makeStorage, type PluginId } from "./storage";
+import { noteProtocolStorageFreshness } from "../utils/first-sync";
 import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 import { kohakuFetch } from "../utils/tor";
 import type { KohakuPublicClient } from "../utils/rpc.js";
@@ -43,6 +44,9 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
     chainId,
     externalSyncProvider: externalSyncProviderIn,
   } = options;
+
+  // Before anything (notably the Privacy Pools bundled snapshot) can seed storage.
+  noteProtocolStorageFreshness(walletDir, pluginId);
 
   const provider = withChunkedGetLogs(
     withTransactionCount(kohakuViemProvider(rpc))

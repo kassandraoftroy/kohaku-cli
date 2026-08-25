@@ -39,7 +39,7 @@ import {
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
 import { formatCaughtError, withTorBootstrapHint } from "./cli-errors.js";
-import { reportSyncHttp } from "./sync-progress.js";
+import { countSyncRequest } from "./sync-progress.js";
 import {
   artifactRelativeKeyFromUrl,
   buildLocalArtifactResponse,
@@ -279,7 +279,7 @@ async function loggedFetch(
   const started = Date.now();
   const category = meta.category ?? categorizeUrl(meta.url);
   if (category === "subsquid" || category === "asp" || category === "saga") {
-    reportSyncHttp(category);
+    countSyncRequest(category);
   }
   try {
     const res = await doFetch();

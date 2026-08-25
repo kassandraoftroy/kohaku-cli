@@ -172,6 +172,19 @@ export function parseFetchArtifactSelection(opts: {
 }
 
 /**
+ * Public-sync snapshot chunks are published under the artifacts base but are
+ * not proving artifacts. Routing them through the artifact path would apply the
+ * Tor CDN hard timeout, duplicate every chunk into `proving-artifacts`, and pin
+ * later runs to the first snapshot ever fetched.
+ */
+function isSyncCacheRelativeKey(relativeKey: string): boolean {
+  return (
+    relativeKey.startsWith("sync-cache/") ||
+    relativeKey === "public-sync-cache.tar.gz"
+  );
+}
+
+/**
  * Map a plugin/WASM request URL to a cache-relative key, or null if not an
  * artifact we manage.
  */
@@ -182,14 +195,16 @@ export function artifactRelativeKeyFromUrl(urlStr: string): string | null {
 
     if (href.startsWith(MACWHA_ARTIFACTS_PREFIX)) {
       const rest = href.slice(MACWHA_ARTIFACTS_PREFIX.length).replace(/^\/+/, "");
-      return rest || null;
+      if (!rest || isSyncCacheRelativeKey(rest)) return null;
+      return rest;
     }
 
     const base = resolveArtifactsBaseUrl();
     const basePrefix = `${base}/`;
     if (href.startsWith(basePrefix)) {
       const rest = href.slice(basePrefix.length).replace(/^\/+/, "");
-      return rest || null;
+      if (!rest || isSyncCacheRelativeKey(rest)) return null;
+      return rest;
     }
 
     if (href === TORNADO_CIRCUIT_URL || href.endsWith("/tornado.json")) {

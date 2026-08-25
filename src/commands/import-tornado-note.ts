@@ -20,6 +20,7 @@ import {
 } from "../utils/rpc";
 import { withTor } from "../utils/tor.js";
 import { runWithSyncProgress } from "../utils/sync-progress.js";
+import { isFirstProtocolSync } from "../utils/first-sync.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -164,7 +165,8 @@ export function registerImportTornadoNoteCommand(program: Command): void {
               () =>
                 runWithSyncProgress(
                   {
-                    protocol: "tornado",
+                    source: "tornado",
+                    firstRun: isFirstProtocolSync(walletDir, "tornado"),
                     onUpdate: quiet ? undefined : (message) => spin.start(message),
                   },
                   () =>

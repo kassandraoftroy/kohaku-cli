@@ -2,7 +2,7 @@ import type { EthereumProvider } from "@kohaku-eth/provider";
 import type { Filter } from "ox/Filter";
 import type { RpcRequest } from "ox/RpcRequest";
 
-import { beginSyncRpcWindows, reportSyncRpcWindow } from "../utils/sync-progress.js";
+import { countSyncRequest } from "../utils/sync-progress.js";
 
 /** Max inclusive block span per `eth_getLogs` call (env / option override). */
 const DEFAULT_MAX_BLOCK_SPAN = 499n;
@@ -100,16 +100,6 @@ function asLogArray(result: unknown): unknown[] {
   throw new Error(`expected eth_getLogs result to be an array, got ${typeof result}`);
 }
 
-export function estimatedGetLogsWindowCount(
-  fromBn: bigint,
-  toBn: bigint,
-  chunkSpan: bigint
-): number {
-  if (fromBn > toBn || chunkSpan <= 0n) return 0;
-  const n = (toBn - fromBn + 1n + chunkSpan - 1n) / chunkSpan;
-  return n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
-}
-
 /**
  * Step [fromBn, toBn] in fixed inclusive windows of at most `chunkSpan` blocks.
  * `invoke` errors are logged then rethrown.
@@ -124,13 +114,11 @@ async function fetchLogsChunked(
   const out: unknown[] = [];
   let windowFrom = fromBn;
   let w = 0;
-  const total = estimatedGetLogsWindowCount(fromBn, toBn, chunkSpan);
-  if (total > 0) beginSyncRpcWindows(total);
   while (windowFrom <= toBn) {
     const windowTo =
       windowFrom + chunkSpan - 1n > toBn ? toBn : windowFrom + chunkSpan - 1n;
     w += 1;
-    if (total > 0) reportSyncRpcWindow();
+    countSyncRequest("rpc");
     let raw: unknown;
     try {
       raw = await invoke(windowFrom, windowTo);

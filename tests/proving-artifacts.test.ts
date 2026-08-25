@@ -102,4 +102,26 @@ describe("artifactRelativeKeyFromUrl", () => {
     assert.equal(artifactRelativeKeyFromUrl("https://example.com/foo"), null);
     assert.equal(artifactRelativeKeyFromUrl("not a url"), null);
   });
+
+  it("excludes sync-cache snapshot URLs sharing the artifacts base", () => {
+    delete process.env.KOHAKU_ARTIFACTS_BASE_URL;
+    // Otherwise these would inherit the artifact Tor timeout, get duplicated
+    // into proving-artifacts, and pin later runs to the first snapshot fetched.
+    for (const key of [
+      "sync-cache/v1/manifest.json",
+      "sync-cache/v1/chunk-000.tar.gz",
+      "public-sync-cache.tar.gz",
+    ]) {
+      assert.equal(
+        artifactRelativeKeyFromUrl(`${DEFAULT_ARTIFACTS_BASE_URL}/${key}`),
+        null,
+        `expected ${key} to be excluded`
+      );
+      assert.equal(
+        artifactRelativeKeyFromUrl(`${MACWHA}/${key}`),
+        null,
+        `expected MacWha ${key} to be excluded`
+      );
+    }
+  });
 });

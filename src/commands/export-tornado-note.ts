@@ -28,6 +28,7 @@ import {
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { withTor } from "../utils/tor.js";
 import { runWithSyncProgress } from "../utils/sync-progress.js";
+import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { assertTornadoExactPoolDenomination } from "../utils/tornado-pools.js";
 import {
   resolveWalletDir,
@@ -290,7 +291,8 @@ export function registerExportTornadoNoteCommand(program: Command): void {
               () =>
                 runWithSyncProgress(
                   {
-                    protocol: "tornado",
+                    source: "tornado",
+                    firstRun: isFirstProtocolSync(walletDir, "tornado"),
                     onUpdate: quiet ? undefined : (message) => spin.start(message),
                   },
                   () =>
