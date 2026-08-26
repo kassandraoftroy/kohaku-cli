@@ -118,6 +118,20 @@ describe("sync progress labels", () => {
 });
 
 describe("sync progress emission", () => {
+  it("does not emit a prelude through onUpdate", async () => {
+    const messages = await capture(
+      {
+        source: "stealth",
+        prelude: "Stealth scan from block 25700000 · 100000 blocks",
+      },
+      () => {}
+    );
+    assert.ok(
+      messages.every((m) => !m.includes("Stealth scan from block")),
+      messages.join("\n")
+    );
+  });
+
   it("emits nothing when no onUpdate is provided", async () => {
     let emitted = 0;
     await runWithSyncProgress({ source: "railgun" }, async () => {

@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { SupportedProtocol } from "./plugins.js";
@@ -144,6 +145,12 @@ export async function runWithSyncProgress<T>(
     source: SyncProgressSource;
     firstRun?: boolean;
     onUpdate?: (message: string) => void;
+    /**
+     * Durable line written after taking the terminal and before the progress
+     * bar. TTY-only (the worker renderer); callers should print it themselves
+     * when stdout is not a TTY.
+     */
+    prelude?: string;
   },
   fn: () => Promise<T>
 ): Promise<T> {
@@ -167,8 +174,21 @@ export async function runWithSyncProgress<T>(
   // means quiet mode, where nothing may touch the terminal.
   if (opts.onUpdate) {
     const prefix = formatPrefix(store);
-    store.renderer = startProgressRenderer(prefix, store.started) ?? undefined;
+    store.renderer =
+      startProgressRenderer(prefix, store.started, opts.prelude) ?? undefined;
     if (store.renderer) store.lastPrefix = prefix;
+    else if (opts.prelude && process.stdout.isTTY) {
+      // Worker renderer unavailable (e.g. KOHAKU_NO_WORKER_PROGRESS): still
+      // persist the range line after the spinner has the line.
+      try {
+        writeSync(
+          1,
+          opts.prelude.endsWith("\n") ? opts.prelude : `${opts.prelude}\n`
+        );
+      } catch {
+        // ignore
+      }
+    }
   }
 
   const tick =

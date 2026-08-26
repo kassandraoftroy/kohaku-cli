@@ -10,6 +10,7 @@ import type { KohakuPublicClient } from "../../utils/rpc.js";
 import { countSyncRequest, noteSyncFirstRun } from "../../utils/sync-progress.js";
 import {
   STEALTH_ANNOUNCER_ADDRESS,
+  defaultStealthImportStartBlock,
   stealthAnnouncerStartBlock,
 } from "./constants.js";
 import type { StealthKeypair } from "./keys.js";
@@ -56,6 +57,94 @@ export function parseStealthStartBlock(raw: string): bigint {
   return block;
 }
 
+export type StealthScanWindowInput = {
+  chainId: bigint;
+  latest: bigint;
+  /**
+   * Inclusive lower bound from `--stealth-start-block`, `.stealth-start-block`,
+   * or omitted (Kohaku import default). Clamped to at least the announcer
+   * deploy block.
+   */
+  startFromBlock?: bigint;
+  lastScannedBlock?: string | null;
+  fullHistoryScanned?: boolean;
+  fullRescan?: boolean;
+  /**
+   * True when the user passed `--stealth-start-block` on this run. Allows
+   * starting below `lastScannedBlock+1`. The wallet file must not set this —
+   * `balances` already passes the file as `startFromBlock` on every run.
+   */
+  backdate?: boolean;
+};
+
+export type StealthScanWindow = {
+  fromBlock: bigint;
+  latest: bigint;
+  startFloor: bigint;
+  needsFullHistory: boolean;
+};
+
+/**
+ * Inclusive first-pass floor: max(requested or Kohaku default, announcer deploy).
+ */
+export function resolveStealthScanFloor(opts: {
+  chainId: bigint;
+  startFromBlock?: bigint;
+}): bigint {
+  const announcerDeploy = stealthAnnouncerStartBlock(opts.chainId);
+  const requested =
+    opts.startFromBlock !== undefined
+      ? opts.startFromBlock
+      : defaultStealthImportStartBlock(opts.chainId);
+  return requested > announcerDeploy ? requested : announcerDeploy;
+}
+
+/** First/full vs incremental stealth `getLogs` window. */
+export function resolveStealthScanWindow(
+  opts: StealthScanWindowInput
+): StealthScanWindow {
+  const startFloor = resolveStealthScanFloor({
+    chainId: opts.chainId,
+    startFromBlock: opts.startFromBlock,
+  });
+  const needsFullHistory = Boolean(opts.fullRescan || !opts.fullHistoryScanned);
+  const lastScanned = opts.lastScannedBlock
+    ? BigInt(opts.lastScannedBlock)
+    : null;
+
+  let fromBlock: bigint;
+  if (needsFullHistory) {
+    // Resume mid-pass from lastScannedBlock when present; allow a higher
+    // --stealth-start-block to jump the floor forward past an earlier cursor.
+    fromBlock = startFloor;
+    if (lastScanned !== null) {
+      const resume = lastScanned + 1n;
+      if (resume > fromBlock) fromBlock = resume;
+    }
+  } else {
+    fromBlock = lastScanned !== null ? lastScanned + 1n : startFloor;
+  }
+
+  if (opts.backdate && startFloor < fromBlock) {
+    fromBlock = startFloor;
+  }
+
+  return {
+    fromBlock,
+    latest: opts.latest,
+    startFloor,
+    needsFullHistory,
+  };
+}
+
+/** Durable line printed before the Stealth progress bar. */
+export function formatStealthScanStartLog(
+  fromBlock: bigint,
+  latest: bigint
+): string {
+  return `Stealth scan from block ${fromBlock.toString()} · ${(latest - fromBlock).toString()} blocks`;
+}
+
 /**
  * Scan ERC-5564 announcements for payments to this wallet's stealth keys and
  * persist any new stealth accounts.
@@ -64,10 +153,11 @@ export function parseStealthStartBlock(raw: string): bigint {
  * automatically (same wallet password / AES envelope as other stores).
  *
  * History:
- * - First run (or stores that never completed a full pass): from announcer
- *   deploy block (or `startFromBlock` if higher) → latest, in
- *   KOHAKU_GETLOGS_MAX_BLOCK_SPAN chunks (default 499).
- * - Later runs: lastScannedBlock+1 → latest only.
+ * - First run (or stores that never completed a full pass): from the Kohaku
+ *   import default (or `startFromBlock` if set), clamped to at least the
+ *   announcer deploy block → latest, in KOHAKU_GETLOGS_MAX_BLOCK_SPAN chunks
+ *   (default 499).
+ * - Later runs: lastScannedBlock+1 → latest only, unless `backdate` is set.
  */
 export async function scanAndImportStealthAnnouncements(opts: {
   client: KohakuPublicClient;
@@ -79,10 +169,17 @@ export async function scanAndImportStealthAnnouncements(opts: {
   fullRescan?: boolean;
   /**
    * Inclusive lower bound for the first/full history pass. Clamped to at least
-   * the announcer deploy block. Incremental scans still resume from
-   * lastScannedBlock+1.
+   * the announcer deploy block. When omitted, uses the Kohaku import default.
+   * Incremental scans still resume from lastScannedBlock+1 unless `backdate`.
    */
   startFromBlock?: bigint;
+  /**
+   * When true, start from the (clamped) `startFromBlock` even if
+   * lastScannedBlock is already ahead. Only the CLI flag should set this.
+   */
+  backdate?: boolean;
+  /** Skip a second `getBlockNumber` when the caller already resolved the window. */
+  latest?: bigint;
 }): Promise<StealthScanResult> {
   // Creates stealth-accounts.json on first use for pre-existing wallets.
   const storage = makeStealthAccountsStorage(opts.walletDir, opts.password);
@@ -90,32 +187,21 @@ export async function scanAndImportStealthAnnouncements(opts: {
     storage.setMeta({ metaAddressURI: opts.keypair.stealthMetaAddressURI });
   }
 
-  const latest = await opts.client.getBlockNumber();
-  const announcerDeploy = stealthAnnouncerStartBlock(opts.chainId);
-  const startFloor =
-    opts.startFromBlock !== undefined && opts.startFromBlock > announcerDeploy
-      ? opts.startFromBlock
-      : announcerDeploy;
+  const latest = opts.latest ?? (await opts.client.getBlockNumber());
   const store = storage.getStore();
-  const needsFullHistory =
-    opts.fullRescan || !store.fullHistoryScanned;
+  const window = resolveStealthScanWindow({
+    chainId: opts.chainId,
+    latest,
+    startFromBlock: opts.startFromBlock,
+    lastScannedBlock: store.lastScannedBlock,
+    fullHistoryScanned: store.fullHistoryScanned,
+    fullRescan: opts.fullRescan,
+    backdate: opts.backdate,
+  });
+  const { fromBlock, needsFullHistory } = window;
   // `stealth-accounts.json` can exist without a scan (profile / account writes),
   // so the full-history flag is the only reliable "first scan" signal.
   noteSyncFirstRun(!store.fullHistoryScanned);
-
-  let fromBlock: bigint;
-  if (needsFullHistory) {
-    // Resume mid-pass from lastScannedBlock when present; allow --stealth-start-block
-    // to jump the floor forward past an earlier cursor.
-    fromBlock = startFloor;
-    if (store.lastScannedBlock) {
-      const resume = BigInt(store.lastScannedBlock) + 1n;
-      if (resume > fromBlock) fromBlock = resume;
-    }
-  } else {
-    const stored = store.lastScannedBlock;
-    fromBlock = stored ? BigInt(stored) + 1n : startFloor;
-  }
 
   if (fromBlock > latest) {
     if (needsFullHistory) storage.markFullHistoryScanned();

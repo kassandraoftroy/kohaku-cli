@@ -99,7 +99,7 @@ export function registerCreateWalletCommand(program: Command): void {
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
       "--stealth-start-block <block>",
-      "With --import: write `.stealth-start-block` for later balances stealth scans. New wallets record the current tip automatically."
+      "With --import: write `.stealth-start-block` for later balances stealth scans (default: mainnet 25700000, Sepolia 11455454). New wallets record the current tip automatically."
     )
     .option(
       "--long-seed",

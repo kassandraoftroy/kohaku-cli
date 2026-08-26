@@ -87,7 +87,8 @@ function disabled(): boolean {
  */
 export function startProgressRenderer(
   prefix: string,
-  startedAt: number
+  startedAt: number,
+  prelude?: string
 ): ProgressRenderer | null {
   if (disabled() || !process.stdout.isTTY) return null;
 
@@ -95,6 +96,14 @@ export function startProgressRenderer(
   // to stand down before the worker can draw.
   const restoreTerminal = takeTerminal();
   if (!restoreTerminal) return null;
+
+  if (prelude) {
+    try {
+      writeSync(1, prelude.endsWith("\n") ? prelude : `${prelude}\n`);
+    } catch {
+      // A closed fd must never take down a sync.
+    }
+  }
 
   let worker: Worker;
   try {

@@ -28,7 +28,11 @@ import {
 } from "./private-notes";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import { deriveStealthKeypair } from "./stealth/keys.js";
-import { scanAndImportStealthAnnouncements } from "./stealth/scan.js";
+import {
+  formatStealthScanStartLog,
+  resolveStealthScanWindow,
+  scanAndImportStealthAnnouncements,
+} from "./stealth/scan.js";
 import { makeStealthAccountsStorage } from "./stealth/storage.js";
 import {
   attachUsdValuesToRowsLists,
@@ -228,10 +232,21 @@ export type LoadBalancesSnapshotOptions = {
    */
   stealthStartBlock?: bigint;
   /**
+   * When true, `stealthStartBlock` came from `--stealth-start-block` and may
+   * start below lastScannedBlock (back-date). Do not set this for the wallet
+   * file — that is passed as stealthStartBlock on every incremental run.
+   */
+  stealthStartBlockBackdate?: boolean;
+  /**
    * Skip ERC-5564 announcement discovery. Already-imported stealth accounts
    * are still included in public balances.
    */
   skipStealthScan?: boolean;
+  /**
+   * Durable "Stealth scan from block …" line. Omit in quiet / --non-interactive
+   * mode so JSON stdout stays clean.
+   */
+  onStealthScanStart?: (message: string) => void;
 };
 
 export type PrivateBalancesSnapshot = {
@@ -441,6 +456,8 @@ async function loadBalancesSnapshotInner(
     onTorStatus,
     onSyncProgress,
     skipStealthScan,
+    stealthStartBlockBackdate,
+    onStealthScanStart,
   } = opts;
   const chainIdString = chainId.toString();
 
@@ -491,9 +508,29 @@ async function loadBalancesSnapshotInner(
     if (!skipStealthScan) {
       try {
         const keypair = deriveStealthKeypair(mnemonic, chainId);
+        const stealthStore = makeStealthAccountsStorage(
+          walletDir,
+          password
+        ).getStore();
+        const latest = await rpcForPublic.getBlockNumber();
+        const window = resolveStealthScanWindow({
+          chainId,
+          latest,
+          startFromBlock: opts.stealthStartBlock,
+          lastScannedBlock: stealthStore.lastScannedBlock,
+          fullHistoryScanned: stealthStore.fullHistoryScanned,
+          backdate: stealthStartBlockBackdate,
+        });
+        const prelude =
+          onStealthScanStart && window.fromBlock <= window.latest
+            ? formatStealthScanStartLog(window.fromBlock, window.latest)
+            : undefined;
+        if (prelude && !process.stdout.isTTY) {
+          onStealthScanStart?.(prelude);
+        }
         await runWithSyncProgress(
           // The scan itself reports whether this is a first pass.
-          { source: "stealth", onUpdate: onSyncProgress },
+          { source: "stealth", onUpdate: onSyncProgress, prelude },
           () =>
             scanAndImportStealthAnnouncements({
               client: rpcForPublic,
@@ -502,6 +539,8 @@ async function loadBalancesSnapshotInner(
               keypair,
               chainId,
               startFromBlock: opts.stealthStartBlock,
+              backdate: stealthStartBlockBackdate,
+              latest,
             })
         );
       } catch (e) {

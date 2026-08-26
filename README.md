@@ -168,7 +168,7 @@ Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single
 
 **New seed:** records the current chain tip in `.stealth-start-block` so later `balances` stealth scans do not walk announcement history from before the wallet existed. Uses `--rpc-url` / `RPC_URL` when set; otherwise a public RPC for mainnet or Sepolia (`--testnet`).
 
-**Import (`--import`):** scans used public HD indexes via RPC. Optionally pass `--stealth-start-block` to set `.stealth-start-block` (you know roughly when the seed was first used); the first `balances` run then discovers stealth payments from that floor, same as for new wallets.
+**Import (`--import`):** scans used public HD indexes via RPC. Writes `.stealth-start-block` so the first `balances` stealth scan starts at the Kohaku-schema floor (mainnet `25700000`, Sepolia `11455454`) unless you pass `--stealth-start-block`. That flag can still go back as far as the ERC-5564 announcer deploy block.
 
 | Option | Description |
 |--------|-------------|
@@ -176,7 +176,7 @@ Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single
 | `--import` | Restore from mnemonic instead of generating a new one. |
 | `--long-seed` | Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit). Ignored with `--import`. |
 | `--rpc-url <url>` | Required with `--import` (or `RPC_URL`) to scan used addresses. Optional for new wallets when writing `.stealth-start-block`. |
-| `--stealth-start-block <block>` | With `--import`: write `.stealth-start-block` for later `balances` stealth scans. New wallets set this automatically from the current tip. |
+| `--stealth-start-block <block>` | With `--import`: write `.stealth-start-block` for later `balances` stealth scans. Default when omitted: mainnet `25700000`, Sepolia `11455454`. New wallets set this automatically from the current tip. |
 | `--mnemonic <phrase>` | Mnemonic (required with `--non-interactive --import`). |
 | `--password <password>` | Encryption password (required with `--non-interactive`). |
 | `--non-interactive` | No prompts; no mnemonic box on create. |
@@ -190,7 +190,7 @@ Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single
 kohaku create-wallet myWallet --testnet
 kohaku create-wallet myWallet24 --testnet --long-seed
 kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL"
-kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL" --stealth-start-block 5000000
+kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL" --stealth-start-block 10000000
 ```
 
 ---
@@ -311,7 +311,7 @@ Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus a
 
 By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (if set). Otherwise only public balances are shown, with a short warning. Pass `--include` to sync one or more protocols explicitly (required for multiple protocols at once, or for any private balance when the env is unset).
 
-`balances` always loads **already-imported** stealth accounts into public totals. It also scans ERC-5564 announcements for new payments (same spinner progress as protocol first-sync). `--stealth-start-block` only sets the history floor; use `--skip-stealth-scan` to skip discovery for a faster run.
+`balances` always loads **already-imported** stealth accounts into public totals. It also scans ERC-5564 announcements for new payments (same spinner progress as protocol first-sync). A line of the form `Stealth scan from block {start} · {latest - start} blocks` prints before that progress bar. `--stealth-start-block` sets the history floor (and can back-date below the wallet file, down to the announcer deploy block); use `--skip-stealth-scan` to skip discovery for a faster run.
 
 | Option | Description |
 |--------|-------------|
@@ -322,7 +322,7 @@ By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (i
 | `--verbose` | Human: per-address public breakdown + private note list for included protocols. JSON: adds `public_account_indexes_by_address` and `private_notes`. |
 | `--tokensList <addrs>` | Extra ERC-20 addresses (comma- or space-separated), merged with chain defaults. |
 | `--without-tor` | Disable Tor for privacy HTTP when syncing private protocols (default: Tor on). Covers Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, etc. RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
-| `--stealth-start-block <block>` | Floor for the ERC-5564 announcement **scan** (decimal or `0x`-hex); skips older history on first/full scan. When omitted, uses the wallet’s `.stealth-start-block` file if present (written by `create-wallet`). Not a way to skip scanning. |
+| `--stealth-start-block <block>` | Floor for the ERC-5564 announcement **scan** (decimal or `0x`-hex); skips older history on first/full scan. Can back-date below the wallet `.stealth-start-block` (as far as the announcer deploy block). When omitted, uses that file if present, otherwise the Kohaku import default (mainnet `25700000`, Sepolia `11455454`). Not a way to skip scanning. |
 | `--skip-stealth-scan` | Skip announcement discovery for this run. **Already-imported** stealth accounts still appear in public balances. |
 | `--non-interactive` | JSON only; requires `--wallet` and `--password`. |
 | `--dataDir <path>` | Data root. |
@@ -842,7 +842,7 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, `unshield`, `init-profile`, and the name commands default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
 - **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP/fastrelay, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN and proving artifacts are Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). First protocol sync (saga / Subsquid / ASP / RPC catch-up) shows live progress on the spinner and does not download proving keys. Artifacts are served from `<dataDir>/proving-artifacts` when cached; otherwise fetched from `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`) on **prove / unshield**. Pre-warm keys with `kohaku fetch-artifacts` (optionally `--without-tor` for a one-shot clearnet download). Prefetch historical Subsquid/saga pages with `kohaku fetch-sync-cache`, which pulls a chunked, `sha256`-verified snapshot one piece at a time. After Tor bootstrap corruption, run `kohaku clear-tor-cache`. Railgun Subsquid and Tornado saga HTTP pages are reused from `<dataDir>/public-sync-cache` (wipe with `kohaku clear-tor-cache --public-sync`); Privacy Pools ASP and RPC are always live. Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls` for a later `unshield --next`). Do not pass a peeked address as Tornado `--to` together with `--tail-calls` — peeked addresses are not stored, so the CLI will refuse rather than 7702 a note-derived key.
-- **Profile / stealth:** Prefer `init-profile` to publish ERC-6538 keys (and optionally a name). Unshield to stored stealth accounts with `--to s0`. Print the meta URI with `see-stealth-meta-address`. New wallets store `.stealth-start-block` at creation so first `balances` stealth scans skip pre-wallet announcer history; imports can set the same via `create-wallet --import --stealth-start-block`.
+- **Profile / stealth:** Prefer `init-profile` to publish ERC-6538 keys (and optionally a name). Unshield to stored stealth accounts with `--to s0`. Print the meta URI with `see-stealth-meta-address`. New wallets store `.stealth-start-block` at creation so first `balances` stealth scans skip pre-wallet announcer history; imports default to mainnet `25700000` / Sepolia `11455454` (Kohaku-schema floor) and can still pass `--stealth-start-block` to start earlier.
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
 - **Tornado notes:** Use `export-tornado-note` / `import-tornado-note` to move legacy note secrets between wallets for testing or recovery.
 - **Private key / seed exports:** `export-private-key`, `reveal-seed-phrase`, and `export-tornado-note` print raw secrets to stdout. Avoid terminal logs, shell history, and shared environments.

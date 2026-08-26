@@ -17,6 +17,7 @@ import {
   resolveWalletDir,
   writeWalletType,
 } from "../utils/wallets-util.js";
+import { defaultStealthImportStartBlock } from "./stealth/constants.js";
 import { writeStealthStartBlock } from "./stealth/start-block-file.js";
 
 export async function findLastTouchedPublicIndex(
@@ -67,7 +68,8 @@ export type CreateWalletOnDiskInput = {
   rpcUrl?: string;
   /**
    * Import only: persist as `.stealth-start-block` for later `balances` scans.
-   * New (generated) wallets record the current chain tip automatically instead.
+   * When omitted, writes the Kohaku-schema floor for the chain. New (generated)
+   * wallets record the current chain tip automatically instead.
    */
   stealthStartBlock?: bigint;
 };
@@ -121,10 +123,11 @@ export async function createWalletOnDisk(
 
   let stealthStartBlockWritten: bigint | undefined;
   if (input.importMode) {
-    if (input.stealthStartBlock !== undefined) {
-      writeStealthStartBlock(walletDir, input.stealthStartBlock);
-      stealthStartBlockWritten = input.stealthStartBlock;
-    }
+    const block =
+      input.stealthStartBlock ??
+      defaultStealthImportStartBlock(expectedChainId);
+    writeStealthStartBlock(walletDir, block);
+    stealthStartBlockWritten = block;
   } else {
     const { blockNumber } = await fetchCurrentBlockNumber({
       testnet: input.testnet,
