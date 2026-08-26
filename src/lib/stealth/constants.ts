@@ -57,9 +57,10 @@ export function stealthAnnouncerStartBlock(chainId: bigint): bigint {
 /**
  * Optimistic first-scan floor for Kohaku-schema stealth keys.
  *
- * The ERC-5564 announcer is older than this CLI's derivation scheme; imports
- * that omit `--stealth-start-block` start here instead of at contract deploy.
- * `balances --stealth-start-block` can still back-date down to
+ * The ERC-5564 announcer is older than this CLI's derivation scheme.
+ * `create-wallet --import --stealth-start-block` (no block number) writes this
+ * floor into `.stealth-start-block`. `balances` uses it when that file is
+ * missing. `balances --stealth-start-block` can still back-date down to
  * {@link stealthAnnouncerStartBlock}.
  */
 export function defaultStealthImportStartBlock(chainId: bigint): bigint {

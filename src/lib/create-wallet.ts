@@ -18,6 +18,10 @@ import {
   writeWalletType,
 } from "../utils/wallets-util.js";
 import { defaultStealthImportStartBlock } from "./stealth/constants.js";
+import {
+  parseStealthStartBlock,
+  resolveStealthScanFloor,
+} from "./stealth/scan.js";
 import { writeStealthStartBlock } from "./stealth/start-block-file.js";
 
 export async function findLastTouchedPublicIndex(
@@ -68,11 +72,31 @@ export type CreateWalletOnDiskInput = {
   rpcUrl?: string;
   /**
    * Import only: persist as `.stealth-start-block` for later `balances` scans.
-   * When omitted, writes the Kohaku-schema floor for the chain. New (generated)
-   * wallets record the current chain tip automatically instead.
+   * When omitted, records the current chain tip (same as a new wallet). The
+   * command layer passes the Kohaku-schema floor when the user gives a bare
+   * `--stealth-start-block`, or an explicit block when they pass a number.
    */
   stealthStartBlock?: bigint;
 };
+
+/**
+ * Interpret `create-wallet --import --stealth-start-block [block]`.
+ * Omitted → undefined (caller writes the chain tip). Bare flag → Kohaku floor.
+ * Explicit `n` is rounded up to the ERC-5564 announcer deploy block when below it.
+ */
+export function interpretImportStealthStartBlockFlag(
+  flag: string | true | undefined,
+  chainId: bigint
+): bigint | undefined {
+  if (flag === undefined) return undefined;
+  if (flag === true || flag === "") {
+    return defaultStealthImportStartBlock(chainId);
+  }
+  return resolveStealthScanFloor({
+    chainId,
+    startFromBlock: parseStealthStartBlock(flag),
+  });
+}
 
 export async function createWalletOnDisk(
   input: CreateWalletOnDiskInput
@@ -122,10 +146,11 @@ export async function createWalletOnDisk(
   writeWalletType(input.testnet ? "testnet" : "mainnet", walletDir);
 
   let stealthStartBlockWritten: bigint | undefined;
-  if (input.importMode) {
-    const block =
-      input.stealthStartBlock ??
-      defaultStealthImportStartBlock(expectedChainId);
+  if (input.stealthStartBlock !== undefined) {
+    const block = resolveStealthScanFloor({
+      chainId: expectedChainId,
+      startFromBlock: input.stealthStartBlock,
+    });
     writeStealthStartBlock(walletDir, block);
     stealthStartBlockWritten = block;
   } else {

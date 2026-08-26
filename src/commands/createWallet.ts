@@ -9,8 +9,8 @@ import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   createWalletOnDisk,
   generateMnemonic,
+  interpretImportStealthStartBlockFlag,
 } from "../lib/create-wallet";
-import { parseStealthStartBlock } from "../lib/stealth/scan.js";
 import {
   DEFAULT_DATA_DIR,
   resolveOptionalRpcUrl,
@@ -30,7 +30,7 @@ type CreateWalletOpts = {
   rpcUrl?: string;
   testnet?: boolean;
   longSeed?: boolean;
-  stealthStartBlock?: string;
+  stealthStartBlock?: string | true;
   dataDir?: string;
 };
 
@@ -99,8 +99,8 @@ export function registerCreateWalletCommand(program: Command): void {
     .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
-      "--stealth-start-block <block>",
-      "With --import: write `.stealth-start-block` for later balances stealth scans (default: mainnet 25700000, Sepolia 11455454). New wallets record the current tip automatically."
+      "--stealth-start-block [block]",
+      "With --import: write `.stealth-start-block`. Bare flag = Kohaku floor (mainnet 25700000, Sepolia 11455454). With a number, use that block (rounded up to the ERC-5564 announcer deploy if lower). Omit the flag to record the current tip (same as a new wallet)."
     )
     .option(
       "--long-seed",
@@ -181,7 +181,10 @@ export function registerCreateWalletCommand(program: Command): void {
       let stealthStartBlock: bigint | undefined;
       if (opts.stealthStartBlock !== undefined) {
         try {
-          stealthStartBlock = parseStealthStartBlock(opts.stealthStartBlock);
+          stealthStartBlock = interpretImportStealthStartBlockFlag(
+            opts.stealthStartBlock,
+            opts.testnet ? 11155111n : 1n
+          );
         } catch (e) {
           cliErrorFromCaught(e);
           return;
