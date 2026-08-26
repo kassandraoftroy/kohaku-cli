@@ -4,12 +4,6 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
-
-### Changed
-
-- `create-wallet --import` now writes the current chain tip to `.stealth-start-block` (same as a new wallet) so the first stealth scan does not walk historical announcements. Pass `--stealth-start-block` with no value for the previous Kohaku-schema floor, or `--stealth-start-block <block>` for an explicit floor. `balances --stealth-start-block` can still back-date below the file.
-
 ## [0.0.4] — 2026-08-25
 
 ### Added
