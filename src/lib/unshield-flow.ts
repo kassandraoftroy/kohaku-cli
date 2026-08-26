@@ -12,7 +12,7 @@ import {
 } from "../utils/rpc.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
-import { primeRailgunSubsquidProgressIfNeeded } from "../utils/railgun-subsquid-progress.js";
+import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
@@ -355,12 +355,18 @@ async function runUnshieldWithPlugin(
     (opts.protocol === "privacy-pools" || opts.protocol === "tornado") &&
     typeof maybeSync.sync === "function"
   ) {
-    await syncPluginWithProgress(maybeSync, opts.protocol, opts.onStatus);
+    await syncPluginWithProgress(maybeSync, opts.protocol, {
+      firstRun: isFirstProtocolSync(opts.walletDir, opts.protocol),
+      onUpdate: opts.onStatus,
+    });
   } else if (opts.protocol === "railgun") {
     await runWithSyncProgress(
-      { protocol: opts.protocol, onUpdate: opts.onStatus },
+      {
+        source: opts.protocol,
+        firstRun: isFirstProtocolSync(opts.walletDir, opts.protocol),
+        onUpdate: opts.onStatus,
+      },
       async () => {
-        await primeRailgunSubsquidProgressIfNeeded(opts.protocol, opts.chainId);
         // Railgun syncs on balance(); warm it so prepareUnshield is not silent.
         await (
           plugin as { balance: (assets: unknown) => Promise<unknown> }

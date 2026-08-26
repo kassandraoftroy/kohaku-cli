@@ -1,52 +1,55 @@
+import { writeSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { SupportedProtocol } from "./plugins.js";
+import {
+  startProgressRenderer,
+  type ProgressRenderer,
+} from "./sync-progress-renderer.js";
 
 /** Privacy-protocol sync, or ERC-5564 stealth announcement scan. */
 export type SyncProgressSource = SupportedProtocol | "stealth";
 
-export type SyncProgressPhase = "saga" | "rpc" | "subsquid" | "asp" | "sync";
-
-export type SyncProgressUpdate = {
-  phase?: SyncProgressPhase;
-  done?: number;
-  total?: number;
-  detail?: string;
-};
+/** Where the current sync work is happening. */
+export type SyncProgressPhase = "rpc" | "subsquid" | "saga" | "asp";
 
 type SyncProgressStore = {
-  protocol: SyncProgressSource;
+  source: SyncProgressSource;
+  firstRun: boolean;
   started: number;
   onUpdate?: (message: string) => void;
-  phase: SyncProgressPhase;
-  done?: number;
-  total?: number;
-  detail?: string;
-  httpCounts: Partial<Record<"saga" | "subsquid" | "asp", number>>;
+  phase?: SyncProgressPhase;
+  counts: Partial<Record<SyncProgressPhase, number>>;
   lastEmit: number;
   lastMessage: string;
   emitTimer?: ReturnType<typeof setTimeout>;
+  /** Owns the status line when set; it renders the elapsed clock itself. */
+  renderer?: ProgressRenderer;
+  lastPrefix?: string;
 };
 
 const als = new AsyncLocalStorage<SyncProgressStore>();
 
-const PROTOCOL_LABEL: Record<SyncProgressSource, string> = {
+const SOURCE_LABEL: Record<SyncProgressSource, string> = {
   railgun: "Railgun",
   "privacy-pools": "Privacy Pools",
   tornado: "Tornado Cash",
   stealth: "Stealth",
 };
 
-const PHASE_NOUN: Record<SyncProgressPhase, string> = {
-  saga: "saga req",
+const PHASE_LABEL: Record<SyncProgressPhase, string> = {
   rpc: "RPC logs",
-  subsquid: "Subsquid",
+  subsquid: "Subsquid over Tor",
+  saga: "saga CDN",
   asp: "ASP",
-  sync: "sync",
 };
 
 const COALESCE_MS = 250;
-const TICK_MS = 5_000;
+/**
+ * Redraw at least once a second so the elapsed counter visibly advances during
+ * long stretches with no progress events (cached pages feeding CPU-bound WASM).
+ */
+const TICK_MS = 1_000;
 const SLOW_HINT_MS = 8_000;
 
 function formatElapsed(ms: number): string {
@@ -57,58 +60,32 @@ function formatElapsed(ms: number): string {
   return `${m}m ${s.toString().padStart(2, "0")}s`;
 }
 
-function asciiBar(done: number, total: number, width = 14): string {
-  const pct = Math.min(1, Math.max(0, done / total));
-  const filled = Math.round(pct * width);
-  if (filled >= width) return `[${"=".repeat(width)}]`;
-  if (filled <= 0) return `[${" ".repeat(width)}]`;
-  return `[${"=".repeat(filled - 1)}>${" ".repeat(width - filled)}]`;
-}
-
-function slowHint(store: SyncProgressStore, hasBar: boolean): string {
-  if (hasBar) return "";
-  if (Date.now() - store.started < SLOW_HINT_MS) return "";
-  return " · first run can take several minutes";
+/** Everything before the elapsed time, which the renderer appends itself. */
+function formatPrefix(store: SyncProgressStore): string {
+  const name = SOURCE_LABEL[store.source];
+  const verb = store.source === "stealth" ? "scan" : "sync";
+  const label = store.firstRun ? `${name} first ${verb}` : `${name} ${verb}`;
+  const phase = store.phase ? PHASE_LABEL[store.phase] : "starting";
+  const count = store.phase ? store.counts[store.phase] : undefined;
+  return `${label} · ${phase}${count ? ` · ${count} req` : ""}`;
 }
 
 function formatMessage(store: SyncProgressStore): string {
-  const elapsed = formatElapsed(Date.now() - store.started);
-  const name = PROTOCOL_LABEL[store.protocol];
-  const hasBar =
-    store.total != null && store.total > 0 && store.done != null;
-  const slow = slowHint(store, hasBar);
-
-  if (hasBar) {
-    const bar = asciiBar(store.done!, store.total!);
-    const verb = store.protocol === "stealth" ? "scan" : "first sync";
-    const noun =
-      store.protocol === "stealth"
-        ? "announcement chunks"
-        : store.phase === "subsquid"
-          ? "Subsquid req"
-          : PHASE_NOUN[store.phase];
-    return `${name} ${verb}  ${bar} ${store.done}/${store.total} ${noun}  ${elapsed}${slow}`;
-  }
-
-  const count = store.httpCounts[store.phase as "saga" | "subsquid" | "asp"];
-  const req = count ? ` · ${count} req` : "";
-
-  if (store.phase === "subsquid") {
-    return `${name} sync · Subsquid over Tor${req} · ${elapsed}${slow}`;
-  }
-  if (store.phase === "asp") {
-    return `${name} sync · ASP${req} · ${elapsed}${slow}`;
-  }
-  if (store.phase === "saga") {
-    return `${name} sync · saga CDN${req} · ${elapsed}${slow}`;
-  }
-  if (store.detail) {
-    return `${name} ${store.protocol === "stealth" ? "scan" : "sync"} · ${store.detail} · ${elapsed}${slow}`;
-  }
-  return `${name} ${store.protocol === "stealth" ? "scan" : "sync"} · ${elapsed}${slow}`;
+  const slow =
+    store.firstRun && Date.now() - store.started >= SLOW_HINT_MS
+      ? " · first run can take several minutes"
+      : "";
+  return `${formatPrefix(store)} · ${formatElapsed(Date.now() - store.started)}${slow}`;
 }
 
 function flush(store: SyncProgressStore, force = false): void {
+  if (store.renderer) {
+    const prefix = formatPrefix(store);
+    if (prefix === store.lastPrefix) return;
+    store.lastPrefix = prefix;
+    store.renderer.update(prefix);
+    return;
+  }
   if (!store.onUpdate) return;
   const now = Date.now();
   if (!force && now - store.lastEmit < COALESCE_MS) {
@@ -131,53 +108,49 @@ function flush(store: SyncProgressStore, force = false): void {
   store.onUpdate(msg);
 }
 
-/** Report determinate sync progress (saga requests, RPC log windows). */
-export function reportSyncProgress(update: SyncProgressUpdate): void {
+/** Switch the reported phase without counting a request. */
+export function reportSyncPhase(phase: SyncProgressPhase): void {
   const store = als.getStore();
   if (!store) return;
-  if (update.phase) store.phase = update.phase;
-  if (update.done != null) store.done = update.done;
-  if (update.total != null) store.total = update.total;
-  if (update.detail != null) store.detail = update.detail;
+  store.phase = phase;
   flush(store);
 }
 
 /**
- * Count categorized HTTP (Subsquid / ASP / saga). After a primed `total`,
- * `done` advances and `n` stays fixed (no n/n+1). Without a prime, show a
- * request count only. Does not replace an RPC catch-up bar.
+ * Count one request against `phase` and make it the reported phase. The count
+ * is a liveness signal only: there is no denominator, so it never stalls at a
+ * wrong total or counts backwards.
  */
-export function reportSyncHttp(category: "saga" | "subsquid" | "asp"): void {
+export function countSyncRequest(phase: SyncProgressPhase): void {
   const store = als.getStore();
   if (!store) return;
-  store.httpCounts[category] = (store.httpCounts[category] ?? 0) + 1;
+  store.counts[phase] = (store.counts[phase] ?? 0) + 1;
+  store.phase = phase;
+  flush(store);
+}
 
-  if (
-    store.phase === "rpc" &&
-    store.total != null &&
-    store.total > 0
-  ) {
-    flush(store);
-    return;
-  }
-
-  if (category === "subsquid" || category === "saga") {
-    store.phase = category;
-    store.done = store.httpCounts[category] ?? 0;
-    flush(store);
-    return;
-  }
-
-  store.phase = category;
-  store.done = undefined;
-  store.total = undefined;
+/**
+ * Refine the first-run label from inside the scope, for sources that only learn
+ * it after opening their own storage (the stealth scan).
+ */
+export function noteSyncFirstRun(firstRun: boolean): void {
+  const store = als.getStore();
+  if (!store) return;
+  store.firstRun = firstRun;
   flush(store);
 }
 
 export async function runWithSyncProgress<T>(
   opts: {
-    protocol: SyncProgressSource;
+    source: SyncProgressSource;
+    firstRun?: boolean;
     onUpdate?: (message: string) => void;
+    /**
+     * Durable line written after taking the terminal and before the progress
+     * bar. TTY-only (the worker renderer); callers should print it themselves
+     * when stdout is not a TTY.
+     */
+    prelude?: string;
   },
   fn: () => Promise<T>
 ): Promise<T> {
@@ -187,18 +160,41 @@ export async function runWithSyncProgress<T>(
   }
 
   const store: SyncProgressStore = {
-    protocol: opts.protocol,
+    source: opts.source,
+    firstRun: opts.firstRun ?? false,
     started: Date.now(),
     onUpdate: opts.onUpdate,
-    phase: "sync",
-    httpCounts: {},
+    counts: {},
     lastEmit: 0,
     lastMessage: "",
   };
 
-  const tick = opts.onUpdate
-    ? setInterval(() => flush(store, true), TICK_MS)
-    : undefined;
+  // A worker keeps drawing through the long synchronous WASM stretches that
+  // make up most of a sync; the main-thread tick cannot. `onUpdate` being unset
+  // means quiet mode, where nothing may touch the terminal.
+  if (opts.onUpdate) {
+    const prefix = formatPrefix(store);
+    store.renderer =
+      startProgressRenderer(prefix, store.started, opts.prelude) ?? undefined;
+    if (store.renderer) store.lastPrefix = prefix;
+    else if (opts.prelude && process.stdout.isTTY) {
+      // Worker renderer unavailable (e.g. KOHAKU_NO_WORKER_PROGRESS): still
+      // persist the range line after the spinner has the line.
+      try {
+        writeSync(
+          1,
+          opts.prelude.endsWith("\n") ? opts.prelude : `${opts.prelude}\n`
+        );
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const tick =
+    opts.onUpdate && !store.renderer
+      ? setInterval(() => flush(store, true), TICK_MS)
+      : undefined;
 
   try {
     return await als.run(store, async () => {
@@ -208,6 +204,12 @@ export async function runWithSyncProgress<T>(
   } finally {
     if (tick) clearInterval(tick);
     if (store.emitTimer) clearTimeout(store.emitTimer);
+    if (store.renderer) {
+      store.renderer.stop();
+      store.renderer = undefined;
+      // Hand the final line back to the caller's spinner.
+      opts.onUpdate?.(formatMessage(store));
+    }
   }
 }
 
@@ -218,11 +220,15 @@ export async function runWithSyncProgress<T>(
 export async function syncPluginWithProgress(
   plugin: { sync?: () => Promise<void> },
   protocol: SupportedProtocol,
-  onUpdate?: (message: string) => void
+  opts: {
+    firstRun?: boolean;
+    onUpdate?: (message: string) => void;
+  } = {}
 ): Promise<void> {
   if (protocol !== "privacy-pools" && protocol !== "tornado") return;
   if (typeof plugin.sync !== "function") return;
-  await runWithSyncProgress({ protocol, onUpdate }, () =>
-    plugin.sync!.call(plugin)
+  await runWithSyncProgress(
+    { source: protocol, firstRun: opts.firstRun, onUpdate: opts.onUpdate },
+    () => plugin.sync!.call(plugin)
   );
 }

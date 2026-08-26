@@ -108,12 +108,9 @@ export function resolveProtocolOption(
   return { ok: false, error: "missing" };
 }
 
-/**
- * Parses `--include railgun,tornado`. Returns `null` when omitted
- * (caller may apply env / empty defaults).
- */
-export function parseIncludeProtocols(
-  raw: string | undefined
+function parseProtocolList(
+  raw: string | undefined,
+  flag: "--include" | "--protocol"
 ): SupportedProtocol[] | null {
   if (!raw?.trim()) return null;
 
@@ -124,7 +121,7 @@ export function parseIncludeProtocols(
   for (const part of parts) {
     if (!isSupportedProtocol(part)) {
       throw new Error(
-        `Invalid protocol in --include: ${part}. Use: ${SUPPORTED_PROTOCOLS_HELP}`
+        `Invalid protocol in ${flag}: ${part}. Use: ${SUPPORTED_PROTOCOLS_HELP}`
       );
     }
     if (seen.has(part)) continue;
@@ -134,11 +131,21 @@ export function parseIncludeProtocols(
 
   if (out.length === 0) {
     throw new Error(
-      `--include requires at least one protocol. Use: ${SUPPORTED_PROTOCOLS_HELP}`
+      `${flag} requires at least one protocol. Use: ${SUPPORTED_PROTOCOLS_HELP}`
     );
   }
 
   return out;
+}
+
+/**
+ * Parses `--include railgun,tornado`. Returns `null` when omitted
+ * (caller may apply env / empty defaults).
+ */
+export function parseIncludeProtocols(
+  raw: string | undefined
+): SupportedProtocol[] | null {
+  return parseProtocolList(raw, "--include");
 }
 
 /**

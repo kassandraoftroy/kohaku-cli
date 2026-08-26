@@ -622,6 +622,7 @@ export function registerBalancesCommand(program: Command): void {
               verbose: !!opts.verbose,
               withoutTor: opts.withoutTor,
               stealthStartBlock,
+              stealthStartBlockBackdate: stealthStartBlockFlag !== undefined,
               skipStealthScan: !!opts.skipStealthScan,
               onTorStatus: (message) => {
                 loading.start(message);
@@ -629,6 +630,11 @@ export function registerBalancesCommand(program: Command): void {
               onSyncProgress: (message) => {
                 loading.start(message);
               },
+              onStealthScanStart: quiet
+                ? undefined
+                : (message) => {
+                    log.info(message);
+                  },
               onWarning: (msg) => {
                 if (!quiet) {
                   log.warn(chalk.yellow(msg));

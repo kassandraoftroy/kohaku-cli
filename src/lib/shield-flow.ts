@@ -5,6 +5,7 @@ import { Mnemonic } from "derive-railgun-keys";
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc";
 import { withTor } from "../utils/tor";
 import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
+import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { rpcForWalletOps, withProtocolRuntime } from "./protocol-runtime.js";
 import { ERC20_ABI } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
@@ -538,7 +539,11 @@ export async function prepareShieldPlan(opts: {
           protocol === "railgun"
             ? await prepareProtocolShield(plugin, protocol, asset as AssetAmount)
             : await runWithSyncProgress(
-                { protocol, onUpdate: onSyncProgress },
+                {
+                  source: protocol,
+                  firstRun: isFirstProtocolSync(walletDir, protocol),
+                  onUpdate: onSyncProgress,
+                },
                 async () => {
                   await syncPluginWithProgress(plugin, protocol);
                   return prepareProtocolShield(plugin, protocol, asset as AssetAmount);

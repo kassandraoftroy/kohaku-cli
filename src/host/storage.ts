@@ -4,7 +4,10 @@ import { loadStore, saveStore } from "../utils/aes-storage";
 
 export type PluginId = "rg" | "ppv1" | "tc";
 
-function pluginStorePathForWallet(walletDir: string, pluginId: PluginId): string {
+export function pluginStorePathForWallet(
+  walletDir: string,
+  pluginId: PluginId
+): string {
   return join(walletDir, `${pluginId}-storage.json`);
 }
 

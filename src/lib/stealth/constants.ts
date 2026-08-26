@@ -53,3 +53,17 @@ export function stealthAnnouncerStartBlock(chainId: bigint): bigint {
   if (chainId === 11155111n) return BigInt(ERC5564_StartBlocks.SEPOLIA);
   return 0n;
 }
+
+/**
+ * Optimistic first-scan floor for Kohaku-schema stealth keys.
+ *
+ * The ERC-5564 announcer is older than this CLI's derivation scheme; imports
+ * that omit `--stealth-start-block` start here instead of at contract deploy.
+ * `balances --stealth-start-block` can still back-date down to
+ * {@link stealthAnnouncerStartBlock}.
+ */
+export function defaultStealthImportStartBlock(chainId: bigint): bigint {
+  if (chainId === 1n) return 25_700_000n;
+  if (chainId === 11155111n) return 11_455_454n;
+  return 0n;
+}
