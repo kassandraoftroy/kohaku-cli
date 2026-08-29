@@ -1,5 +1,5 @@
 import { confirm, input, select } from "@inquirer/prompts";
-import { spinner } from "@clack/prompts";
+import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
@@ -9,6 +9,7 @@ import { Mnemonic } from "derive-railgun-keys";
 import { makeHost } from "../host/makeHost";
 import {
   buildShieldCallList,
+  formatAccountSelector,
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   partitionShieldTxs,
@@ -16,7 +17,9 @@ import {
   shieldTransactionConfirmMessage,
   summarizeMultiShieldPlan,
   toShieldTxs,
+  type PublicAccountWithBalance,
 } from "../lib/shield-flow.js";
+import { parseStealthIndex } from "../lib/stealth/storage.js";
 import { cliOptions } from "../utils/cli-command-options";
 import {
   logCliJson,
@@ -31,6 +34,7 @@ import {
   sendEip7702BatchUserOperation,
 } from "../utils/eip7702-batch-userop.js";
 import {
+  buildFeePreview,
   estimateEoaTxFeePreview,
   feeConfirmLine,
   printFeePreview,
@@ -60,6 +64,7 @@ import {
 } from "../utils/sync-progress.js";
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
+import type { ResolvedTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -79,8 +84,14 @@ import {
   type SupportedProtocol,
 } from "../utils/plugins";
 import {
+  computeShieldMaxAmount,
+  estimateShieldGasReserveWei,
+  refineShieldMaxAmount,
+} from "../utils/shield-max.js";
+import {
   assertTornadoDepositAmount,
   assertTornadoTokenSupported,
+  tornadoMinDenomination,
 } from "../utils/tornado-pools.js";
 
 type ShieldOpts = {
@@ -92,11 +103,13 @@ type ShieldOpts = {
   token?: string;
   amountWei?: string;
   amountFormatted?: string;
+  amountMax?: boolean;
   rpcUrl?: string;
   baseFeeGwei?: string;
   priorityFeeGwei?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
+  skipSim?: boolean;
   withoutTor?: boolean;
   dataDir?: string;
 };
@@ -124,6 +137,47 @@ function parseFromIndex(fromValue: string): number | null {
   const parsed = Number(fromValue);
   if (!Number.isInteger(parsed) || parsed < 0) return null;
   return parsed;
+}
+
+function findAccountWithBalance(
+  fromValue: string,
+  accounts: PublicAccountWithBalance[]
+): PublicAccountWithBalance | undefined {
+  const stealthIdx = parseStealthIndex(fromValue);
+  if (stealthIdx !== null) {
+    return accounts.find(
+      (a) => a.kind === "stealth" && a.stealthIndex === stealthIdx
+    );
+  }
+  const idx = parseFromIndex(fromValue);
+  if (idx !== null) {
+    return accounts.find((a) => a.kind !== "stealth" && a.index === idx);
+  }
+  if (isAddress(fromValue)) {
+    const addr = getAddress(fromValue).toLowerCase();
+    return accounts.find((a) => a.address.toLowerCase() === addr);
+  }
+  return undefined;
+}
+
+async function promptSourceAccount(
+  withBalances: PublicAccountWithBalance[],
+  tokenMeta: ResolvedTokenMeta,
+  message: string
+): Promise<string> {
+  const candidates = withBalances.filter((x) => x.balance > 0n);
+  if (candidates.length === 0) {
+    throw new Error(
+      `No public account has a positive ${tokenMeta.symbol} balance.`
+    );
+  }
+  return select<string>({
+    message,
+    choices: candidates.map((acct) => ({
+      value: acct.address,
+      name: `[${formatAccountSelector(acct)}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)})`,
+    })),
+  });
 }
 
 async function maybeConfirm(
@@ -242,9 +296,17 @@ export function registerShieldCommand(program: Command): void {
       "--broadcast",
       "Sign and submit on-chain (one EOA tx, or one EIP-7702 UserOp when 2+ calls)"
     )
+    .option(
+      "--skip-sim",
+      "Skip on-chain simulation and fee estimates (dry-run only; not allowed with --broadcast)"
+    )
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
+    .option(
+      "--amount-max",
+      "Shield the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance; Tornado: floored to the smallest pool denomination)"
+    )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
@@ -263,8 +325,19 @@ export function registerShieldCommand(program: Command): void {
       }
       const protocol = resolvedProtocol.protocol;
 
-      if (opts.amountWei && opts.amountFormatted) {
-        cliError("Provide only one of --amount-wei or --amount-formatted.");
+      const amountFlags = [
+        opts.amountWei,
+        opts.amountFormatted,
+        opts.amountMax,
+      ].filter(Boolean).length;
+      if (amountFlags > 1) {
+        cliError(
+          "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
+        );
+        return;
+      }
+      if (opts.skipSim && opts.broadcast) {
+        cliError("--skip-sim cannot be used with --broadcast.");
         return;
       }
 
@@ -372,9 +445,9 @@ export function registerShieldCommand(program: Command): void {
         cliError("Missing --from in non-interactive mode.");
         return;
       }
-      if (amount === null && opts.nonInteractive) {
+      if (amount === null && !opts.amountMax && opts.nonInteractive) {
         cliError(
-          "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+          "Missing amount in non-interactive mode. Provide --amount-wei, --amount-formatted, or --amount-max."
         );
         return;
       }
@@ -389,11 +462,93 @@ export function registerShieldCommand(program: Command): void {
         tokenMeta
       );
 
+      let usedAmountMax = !!opts.amountMax;
+      let amountMaxEthBalance: bigint | undefined;
+      let amountMaxMinDenom: bigint | undefined;
+
       try {
-        if (amount === null) {
+        if (
+          fromValue &&
+          parseFromIndex(fromValue) === null &&
+          parseStealthIndex(fromValue) === null &&
+          !isAddress(fromValue)
+        ) {
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+        }
+
+        const resolveMaxForFrom = async (from: string): Promise<bigint> => {
+          const acct = findAccountWithBalance(from, withBalances);
+          if (!acct) {
+            throw new Error(
+              `Could not find public account balance for --from ${from}.`
+            );
+          }
+          const gasReserveWei = await estimateShieldGasReserveWei(rpcUrl);
+          const minDenom =
+            protocol === "tornado"
+              ? tornadoMinDenomination(chainId, {
+                  isEth: tokenMeta.isEth,
+                  tokenAddress: tokenMeta.tokenAddress,
+                  symbol: tokenMeta.symbol,
+                })
+              : undefined;
+          const { amount: maxAmount } = computeShieldMaxAmount({
+            isEth: tokenMeta.isEth,
+            protocol,
+            tokenBalance: acct.balance,
+            ethBalance: acct.ethBalance,
+            gasReserveWei,
+            minDenom,
+          });
+          if (maxAmount <= 0n) {
+            throw new Error(
+              tokenMeta.isEth
+                ? `Insufficient ETH for --amount-max after reserving ~${formatUnits(gasReserveWei, 18)} ETH for gas.`
+                : acct.ethBalance < gasReserveWei
+                  ? `Insufficient ETH to cover estimated shield gas (~${formatUnits(gasReserveWei, 18)} ETH) for --amount-max.`
+                  : `No spendable ${tokenMeta.symbol} balance for --amount-max.`
+            );
+          }
+          usedAmountMax = true;
+          amountMaxEthBalance = acct.ethBalance;
+          amountMaxMinDenom = minDenom;
+          fromValue = acct.address;
+          if (!quietNonInteractive(opts.nonInteractive) && gasReserveWei > 0n) {
+            log.info(
+              `Reserving ~${formatUnits(gasReserveWei, 18)} ETH for estimated shield gas.`
+            );
+          }
+          return maxAmount;
+        };
+
+        if (usedAmountMax) {
+          if (withBalances.length === 0) {
+            cliError(
+              "No public accounts found in this wallet. Create one with nextFreshAddress first."
+            );
+            return;
+          }
+          if (!fromValue) {
+            console.log();
+            console.log(
+              chalk.bold(`Available accounts (${tokenMeta.symbol} balances):`)
+            );
+            for (const acct of withBalances) {
+              console.log(
+                `  [${formatAccountSelector(acct)}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
+              );
+            }
+            fromValue = await promptSourceAccount(
+              withBalances,
+              tokenMeta,
+              `Pick source account for max ${tokenMeta.symbol} shield`
+            );
+          }
+          amount = await resolveMaxForFrom(fromValue);
+        } else if (amount === null) {
           if (opts.nonInteractive) {
             cliError(
-              "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+              "Missing amount in non-interactive mode. Provide --amount-wei, --amount-formatted, or --amount-max."
             );
             return;
           }
@@ -411,16 +566,18 @@ export function registerShieldCommand(program: Command): void {
           );
           for (const acct of withBalances) {
             console.log(
-              `  [${acct.index}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
+              `  [${formatAccountSelector(acct)}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
             );
           }
 
           const amountFormattedInput = await input({
-            message: `Amount to shield (${tokenMeta.symbol}, formatted):`,
+            message: `Amount to shield (${tokenMeta.symbol}, formatted, or "max"):`,
             validate: (value) => {
-              if (!value.trim()) return "Amount is required.";
+              const trimmed = value.trim();
+              if (!trimmed) return "Amount is required.";
+              if (trimmed.toLowerCase() === "max") return true;
               try {
-                const parsed = parseUnits(value.trim(), tokenMeta.decimals);
+                const parsed = parseUnits(trimmed, tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
                 if (protocol === "tornado") {
                   assertTornadoDepositAmount(chainId, parsed, {
@@ -438,18 +595,27 @@ export function registerShieldCommand(program: Command): void {
               return true;
             },
           });
-          amount = parseUnits(amountFormattedInput.trim(), tokenMeta.decimals);
-          if (protocol === "tornado") {
-            try {
+          if (amountFormattedInput.trim().toLowerCase() === "max") {
+            if (!fromValue) {
+              fromValue = await promptSourceAccount(
+                withBalances,
+                tokenMeta,
+                `Pick source account for max ${tokenMeta.symbol} shield`
+              );
+            }
+            amount = await resolveMaxForFrom(fromValue);
+          } else {
+            amount = parseUnits(
+              amountFormattedInput.trim(),
+              tokenMeta.decimals
+            );
+            if (protocol === "tornado") {
               assertTornadoDepositAmount(chainId, amount, {
                 isEth: tokenMeta.isEth,
                 tokenAddress: tokenMeta.tokenAddress,
                 symbol: tokenMeta.symbol,
                 decimals: tokenMeta.decimals,
               });
-            } catch (e) {
-              cliErrorFromCaught(e);
-              return;
             }
           }
         }
@@ -477,7 +643,7 @@ export function registerShieldCommand(program: Command): void {
             message: `Pick source account (${tokenMeta.symbol})`,
             choices: candidates.map((acct) => ({
               value: acct.address,
-              name: `[${acct.index}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)}, need ${formatUnits(amount!, tokenMeta.decimals)} ${tokenMeta.symbol})`,
+              name: `[${formatAccountSelector(acct)}] ${acct.address}  (${formatPublicAccountBalanceLabel(acct, tokenMeta)}, need ${formatUnits(amount!, tokenMeta.decimals)} ${tokenMeta.symbol})`,
             })),
           });
           fromValue = chosen;
@@ -487,8 +653,18 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
+      if (amount === null) {
+        cliError("Amount is required.");
+        return;
+      }
+
       // Resolve ENS / GNS / WNS names to addresses before the index/address branch.
-      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+      if (
+        fromValue &&
+        parseFromIndex(fromValue) === null &&
+        parseStealthIndex(fromValue) === null &&
+        !isAddress(fromValue)
+      ) {
         try {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         } catch (e) {
@@ -570,14 +746,14 @@ export function registerShieldCommand(program: Command): void {
         });
         const plugin = await createProtocolPlugin(protocol, host, chainId);
 
-        const asset =
-          protocol === "railgun"
+        const assetFor = (amt: bigint): AssetAmount =>
+          (protocol === "railgun"
             ? tokenMeta.isEth
               ? {
                   asset: { __type: "native" as const },
-                  amount,
+                  amount: amt,
                 }
-              : railgunErc20AssetAmount(tokenMeta.tokenAddress, amount)
+              : railgunErc20AssetAmount(tokenMeta.tokenAddress, amt)
             : {
                 asset: {
                   __type: "erc20",
@@ -585,45 +761,111 @@ export function registerShieldCommand(program: Command): void {
                     ? ETH_AS_ERC20
                     : tokenMeta.tokenAddress) as `0x${string}`,
                 },
-                amount,
-              };
-        let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
-        let approvals: Array<{ to: string; data: string; value: bigint }> = [];
-        try {
-          const op =
-            protocol === "railgun"
-              ? await prepareProtocolShield(plugin, protocol, asset as AssetAmount)
-              : await runWithSyncProgress(
-                  {
-                    source: protocol,
-                    firstRun: isFirstProtocolSync(walletDir, protocol),
-                    onUpdate: quiet ? undefined : (message) => txSpinner.start(message),
-                  },
-                  async () => {
-                    await syncPluginWithProgress(plugin, protocol);
-                    return prepareProtocolShield(
-                      plugin,
-                      protocol,
-                      asset as AssetAmount
-                    );
-                  }
-                );
-          if (protocol !== "railgun" && txSpinner.active) {
-            txSpinner.stop("Private state synced.");
-          }
+                amount: amt,
+              }) as AssetAmount;
+
+        const prepareShieldCalls = async (amt: bigint) => {
+          const op = await prepareProtocolShield(
+            plugin,
+            protocol,
+            assetFor(amt)
+          );
           const rawTxs = toShieldTxs(op);
+          let nextApprovals: Array<{ to: string; data: string; value: bigint }> =
+            [];
+          let nextDeposits: Array<{ to: string; data: string; value: bigint }>;
           if (tokenMeta.isEth) {
-            shieldTxs = partitionShieldTxs(rawTxs).deposits;
+            nextDeposits = partitionShieldTxs(rawTxs).deposits;
           } else {
             const resolved = await resolveShieldApprovalCalls({
               client: rpcForHost,
               tokenAddress: tokenMeta.tokenAddress,
               senderAddress,
-              amount,
+              amount: amt,
               shieldTxs: rawTxs,
             });
-            approvals = resolved.approvals;
-            shieldTxs = resolved.deposits;
+            nextApprovals = resolved.approvals;
+            nextDeposits = resolved.deposits;
+          }
+          return {
+            approvals: nextApprovals,
+            shieldTxs: nextDeposits,
+            calls: buildShieldCallList(nextApprovals, nextDeposits),
+          };
+        };
+
+        let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
+        let approvals: Array<{ to: string; data: string; value: bigint }> = [];
+        let calls: ReturnType<typeof buildShieldCallList>;
+        try {
+          if (protocol !== "railgun") {
+            await runWithSyncProgress(
+              {
+                source: protocol,
+                firstRun: isFirstProtocolSync(walletDir, protocol),
+                onUpdate: quiet ? undefined : (message) => txSpinner.start(message),
+              },
+              async () => {
+                await syncPluginWithProgress(plugin, protocol);
+              }
+            );
+            if (txSpinner.active) txSpinner.stop("Private state synced.");
+          }
+
+          const prepared = await prepareShieldCalls(amount!);
+          approvals = prepared.approvals;
+          shieldTxs = prepared.shieldTxs;
+          calls = prepared.calls;
+
+          if (usedAmountMax && amountMaxEthBalance !== undefined) {
+            for (let i = 0; i < 3; i++) {
+              const batch = calls.length > 1;
+              const feePreview = batch
+                ? await estimateEip7702BatchUserOpFee({
+                    client: rpcForHost,
+                    chainId,
+                    senderAddress,
+                    calls,
+                    ...eip7702Tor,
+                  })
+                : await estimateEoaTxFeePreview(
+                    rpcForHost,
+                    {
+                      to: calls[0]!.to,
+                      from: senderAddress,
+                      data: calls[0]!.data,
+                      value: calls[0]!.value,
+                    },
+                    2_000_000n
+                  );
+              const estimatedFeeWei = BigInt(feePreview.estimatedMax);
+              const refined = refineShieldMaxAmount({
+                isEth: tokenMeta.isEth,
+                protocol,
+                currentAmount: amount!,
+                ethBalance: amountMaxEthBalance,
+                estimatedFeeWei,
+                minDenom: amountMaxMinDenom,
+              });
+              if (refined === 0n) {
+                throw new Error(
+                  tokenMeta.isEth
+                    ? `Insufficient ETH for --amount-max after reserving ~${formatUnits(estimatedFeeWei, 18)} ETH for gas.`
+                    : `Insufficient ETH to cover estimated shield gas (~${formatUnits(estimatedFeeWei, 18)} ETH) for --amount-max.`
+                );
+              }
+              if (refined >= amount!) break;
+              if (!quiet) {
+                log.info(
+                  `Refining --amount-max: ${formatUnits(amount!, tokenMeta.decimals)} → ${formatUnits(refined, tokenMeta.decimals)} ${tokenMeta.symbol}`
+                );
+              }
+              amount = refined;
+              const next = await prepareShieldCalls(amount);
+              approvals = next.approvals;
+              shieldTxs = next.shieldTxs;
+              calls = next.calls;
+            }
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
@@ -631,49 +873,57 @@ export function registerShieldCommand(program: Command): void {
           return;
         }
 
-        const calls = buildShieldCallList(approvals, shieldTxs);
         const batchAsUserOp = calls.length > 1;
-        const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
-
-        // Single EOA tx: eth_call is fine. Multi-call UserOp: do NOT eth_call each
-        // payload alone (approve→deposit etc. false-positive). Batch validation is
-        // bundler prepareUserOperation / estimateUserOperationGas below.
-        if (!batchAsUserOp) {
-          const call = calls[0]!;
-          await simulateTransactionOrThrow(
-            rpcForHost,
-            {
-              to: call.to,
-              from: senderAddress,
-              data: call.data,
-              value: call.value,
-            },
-            "Shield transaction"
-          );
-        }
+        const amountPreview = `${formatUnits(amount!, tokenMeta.decimals)} ${tokenMeta.symbol}`;
 
         let fees: FeePreview;
-        if (batchAsUserOp) {
-          fees = await estimateEip7702BatchUserOpFee({
-            client: rpcForHost,
-            chainId,
-            senderAddress,
-            calls,
-            privateKey: senderPrivateKey,
-            ...eip7702Tor,
+        if (opts.skipSim) {
+          fees = buildFeePreview({
+            kind: batchAsUserOp ? "eip7702-userop" : "network-gas",
+            amount: 0n,
+            decimals: 18,
+            asset: "ETH",
           });
         } else {
-          const call = calls[0]!;
-          fees = await estimateEoaTxFeePreview(
-            rpcForHost,
-            {
-              to: call.to,
-              from: senderAddress,
-              data: call.data,
-              value: call.value,
-            },
-            2_000_000n
-          );
+          // Single EOA tx: eth_call is fine. Multi-call UserOp: do NOT eth_call each
+          // payload alone (approve→deposit etc. false-positive). Batch validation is
+          // bundler prepareUserOperation / estimateUserOperationGas below.
+          if (!batchAsUserOp) {
+            const call = calls[0]!;
+            await simulateTransactionOrThrow(
+              rpcForHost,
+              {
+                to: call.to,
+                from: senderAddress,
+                data: call.data,
+                value: call.value,
+              },
+              "Shield transaction"
+            );
+          }
+
+          if (batchAsUserOp) {
+            fees = await estimateEip7702BatchUserOpFee({
+              client: rpcForHost,
+              chainId,
+              senderAddress,
+              calls,
+              privateKey: senderPrivateKey,
+              ...eip7702Tor,
+            });
+          } else {
+            const call = calls[0]!;
+            fees = await estimateEoaTxFeePreview(
+              rpcForHost,
+              {
+                to: call.to,
+                from: senderAddress,
+                data: call.data,
+                value: call.value,
+              },
+              2_000_000n
+            );
+          }
         }
 
         const transactions: TxPayloadJson[] = calls.map((call) => ({
@@ -731,6 +981,13 @@ export function registerShieldCommand(program: Command): void {
               }
             }
             printFeePreview(fees);
+            if (opts.skipSim) {
+              console.log(
+                chalk.dim(
+                  "Simulation skipped (--skip-sim); payloads are not validated on-chain."
+                )
+              );
+            }
             console.log(chalk.green("✔ Shield dry run complete."));
           }
           return;
@@ -801,7 +1058,7 @@ export function registerShieldCommand(program: Command): void {
             !!opts.nonInteractive,
             shieldTransactionConfirmMessage({
               step: "1/1",
-              txValue: call.value > 0n ? call.value : amount,
+              txValue: call.value > 0n ? call.value : amount!,
               shieldTxs,
               tokenMeta,
               senderAddress,

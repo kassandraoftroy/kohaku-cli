@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.5] — 2026-08-29
+
+### Added
+
+- `--skip-sim` on `shield` dry-runs so counterfactual (unfunded) senders still print call payloads. Cannot be combined with `--broadcast`. `--non-interactive` JSON schema is unchanged; `fees` are zeroed.
+- `--amount-max` on `shield`: spend the account's maximum (ETH minus estimated gas; ERC-20 full balance). Tornado amounts are floored to the smallest pool denomination, then refined if gas would push the deposit below a step.
+
 ## [0.0.4] — 2026-08-25
 
 ### Added

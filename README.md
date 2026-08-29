@@ -423,14 +423,16 @@ Move funds from a **public** account into a private protocol.
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount (uses token decimals). |
+| `--amount-max` | Shield the maximum spendable amount. ETH: balance minus estimated gas. ERC-20: full token balance (ETH must still cover gas). Tornado: floored to a multiple of the smallest pool denomination; if gas then knocks the amount below a step, the CLI drops one step and rebuilds. Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and send on-chain. **Omit** for dry-run (transaction JSON only). |
+| `--skip-sim` | Dry-run only: skip `eth_call` / UserOp simulation and fee estimates. `fees` stay in `--non-interactive` JSON but are zeroed. Cannot be combined with `--broadcast`. Use this for counterfactual senders (no balance) so you can still print payloads for later `--tail-calls`. |
 | `--base-fee-gwei`, `--priority-fee-gwei` | Optional fee overrides (reserved; auto fees used today). |
 | `--without-tor` | Disable Tor for privacy HTTP (Subsquid / PPOI / saga / ASP / etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
-| `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, and an amount flag. |
+| `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, and an amount flag (`--amount-wei`, `--amount-formatted`, or `--amount-max`). |
 | `--dataDir <path>` | Data root. |
 
-**Interactive (no amount / from flags):** lists public accounts with balances for the token → amount prompt → account picker → dry-run JSON or confirmations with `--broadcast`.
+**Interactive (no amount / from flags):** lists public accounts with balances for the token → amount prompt (or `max`) → account picker → dry-run JSON or confirmations with `--broadcast`. `--amount-max` skips the amount prompt and picks the account first.
 
 **Protocols:**
 
@@ -444,8 +446,11 @@ When a shield needs more than one on-chain call, the CLI uses EIP-7702 Simple770
 
 ```bash
 kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --broadcast
+kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-max --broadcast
 kohaku shield --protocol railgun --wallet testWallet --from 0 --token 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 --amount-formatted 10 --broadcast
 kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --without-tor
+# Counterfactual sender: print payloads without simulating (e.g. to compose unshield --tail-calls)
+kohaku shield --protocol tornado --wallet testWallet --from 1 --amount-formatted 0.1 --skip-sim --non-interactive
 ```
 
 ---

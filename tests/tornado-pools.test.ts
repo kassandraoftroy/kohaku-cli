@@ -6,6 +6,7 @@ import {
   assertTornadoExactPoolDenomination,
   assertTornadoTokenSupported,
   assertTornadoUnshieldAmountForToken,
+  tornadoMinDenomination,
   tornadoPaymasterPoolsForAsset,
   tornadoPoolsForAsset,
   tornadoPoolsForChain,
@@ -81,6 +82,13 @@ describe("assertTornadoTokenSupported", () => {
       () => assertTornadoTokenSupported(10n, ETH),
       /no ETH pools/
     );
+  });
+});
+
+describe("tornadoMinDenomination", () => {
+  it("returns the smallest catalog denomination for ETH and USDC", () => {
+    assert.equal(tornadoMinDenomination(1n, ETH), ETH_01);
+    assert.equal(tornadoMinDenomination(1n, USDC), USDC_100);
   });
 });
 
