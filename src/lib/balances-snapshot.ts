@@ -131,47 +131,22 @@ function mapProtocolNotes(
   return mapRailgunNotes(notes, tokenMeta);
 }
 
-async function loadProtocolNotes(
-  protocol: SupportedProtocol,
-  rpcUrl: string,
-  walletDir: string,
-  password: string,
-  mnemonic: string,
-  chainId: bigint,
-  tokenMeta: Map<string, { symbol: string; decimals: number }>,
-  onSyncProgress?: (message: string) => void
-): Promise<PrivateNoteRow[]> {
-  const notes = await runWithSyncProgress(
-    {
-      source: protocol,
-      firstRun: isFirstProtocolSync(walletDir, protocol),
-      onUpdate: onSyncProgress,
-    },
-    async () =>
-      withProtocolRuntime(
-        { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-        async (_host, plugin) => {
-          const notesFn = (plugin as AnyPlugin).notes;
-          if (!notesFn) {
-            throw new Error(`${protocol} plugin does not expose notes()`);
-          }
-          // Preserve method `this` binding for class-based plugin implementations.
-          return (plugin as AnyPlugin).notes!(undefined, false);
-        }
-      )
-  );
-  return mapProtocolNotes(protocol, notes, tokenMeta);
-}
+type ProtocolPrivateLoad = {
+  balances: AssetAmount[];
+  rawNotes?: unknown[];
+  notesError?: unknown;
+};
 
-async function loadPrivateBalancesForProtocol(
+async function loadPrivateProtocolData(
   protocol: SupportedProtocol,
   rpcUrl: string,
   walletDir: string,
   password: string,
   mnemonic: string,
   chainId: bigint,
+  includeNotes: boolean,
   onSyncProgress?: (message: string) => void
-): Promise<AssetAmount[]> {
+): Promise<ProtocolPrivateLoad> {
   return runWithSyncProgress(
     {
       source: protocol,
@@ -181,7 +156,23 @@ async function loadPrivateBalancesForProtocol(
     async () =>
       withProtocolRuntime(
         { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-        async (_host, plugin) => plugin.balance(undefined)
+        async (_host, plugin) => {
+          const balances = await plugin.balance(undefined);
+          if (!includeNotes) return { balances };
+          try {
+            const notesFn = (plugin as AnyPlugin).notes;
+            if (!notesFn) {
+              throw new Error(`${protocol} plugin does not expose notes()`);
+            }
+            const rawNotes = await (plugin as AnyPlugin).notes!(
+              undefined,
+              false
+            );
+            return { balances, rawNotes };
+          } catch (e) {
+            return { balances, notesError: e };
+          }
+        }
       )
   );
 }
@@ -258,6 +249,8 @@ export type PrivateBalancesSnapshot = {
 type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
   erc20FromPrivate: `0x${string}`[];
   protocolAvailable: Partial<Record<SupportedProtocol, boolean>>;
+  rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>>;
+  notesErrors: Partial<Record<SupportedProtocol, unknown>>;
 };
 
 function willSyncPrivateProtocols(
@@ -276,6 +269,7 @@ async function resolvePrivateBalanceItems(
     | "mnemonic"
     | "chainId"
     | "includeProtocols"
+    | "verbose"
     | "onWarning"
     | "onSyncProgress"
   >
@@ -287,6 +281,7 @@ async function resolvePrivateBalanceItems(
     mnemonic,
     chainId,
     includeProtocols = null,
+    verbose = false,
     onWarning,
     onSyncProgress,
   } = opts;
@@ -296,18 +291,28 @@ async function resolvePrivateBalanceItems(
   let ppRows: AssetAmount[] = [];
   let tcRows: AssetAmount[] = [];
   const protocolAvailable: Partial<Record<SupportedProtocol, boolean>> = {};
+  const rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>> = {};
+  const notesErrors: Partial<Record<SupportedProtocol, unknown>> = {};
+
+  const loadOne = async (protocol: SupportedProtocol) => {
+    const loaded = await loadPrivateProtocolData(
+      protocol,
+      rpcUrl,
+      walletDir,
+      password,
+      mnemonic,
+      chainId,
+      verbose,
+      onSyncProgress
+    );
+    if (loaded.rawNotes) rawNotesByProtocol[protocol] = loaded.rawNotes;
+    if (loaded.notesError) notesErrors[protocol] = loaded.notesError;
+    return loaded.balances;
+  };
 
   if (shouldIncludeProtocol("railgun", includeProtocols)) {
     try {
-      rgRows = await loadPrivateBalancesForProtocol(
-        "railgun",
-        rpcUrl,
-        walletDir,
-        password,
-        mnemonic,
-        chainId,
-        onSyncProgress
-      );
+      rgRows = await loadOne("railgun");
       protocolAvailable.railgun = true;
     } catch (e) {
       onWarning?.(
@@ -319,15 +324,7 @@ async function resolvePrivateBalanceItems(
 
   if (shouldIncludeProtocol("privacy-pools", includeProtocols)) {
     try {
-      ppRows = await loadPrivateBalancesForProtocol(
-        "privacy-pools",
-        rpcUrl,
-        walletDir,
-        password,
-        mnemonic,
-        chainId,
-        onSyncProgress
-      );
+      ppRows = await loadOne("privacy-pools");
       protocolAvailable["privacy-pools"] = true;
     } catch (e) {
       onWarning?.(
@@ -339,15 +336,7 @@ async function resolvePrivateBalanceItems(
 
   if (shouldIncludeProtocol("tornado", includeProtocols)) {
     try {
-      tcRows = await loadPrivateBalancesForProtocol(
-        "tornado",
-        rpcUrl,
-        walletDir,
-        password,
-        mnemonic,
-        chainId,
-        onSyncProgress
-      );
+      tcRows = await loadOne("tornado");
       protocolAvailable.tornado = true;
     } catch (e) {
       onWarning?.(
@@ -390,6 +379,8 @@ async function resolvePrivateBalanceItems(
       ),
       erc20FromPrivate,
       protocolAvailable,
+      rawNotesByProtocol,
+      notesErrors,
     };
   } finally {
     disposePublicClient(client);
@@ -469,6 +460,8 @@ async function loadBalancesSnapshotInner(
     privateTornado,
     erc20FromPrivate,
     protocolAvailable,
+    rawNotesByProtocol,
+    notesErrors,
   } = await withTor(
     useTor,
     { rpcUrl, onStatus: onTorStatus, walletDir },
@@ -480,6 +473,7 @@ async function loadBalancesSnapshotInner(
         mnemonic,
         chainId,
         includeProtocols,
+        verbose,
         onWarning,
         onSyncProgress,
       })
@@ -590,30 +584,24 @@ async function loadBalancesSnapshotInner(
           privateNotes[protocol] = [];
           continue;
         }
-        try {
-          const rows = await loadProtocolNotes(
-            protocol,
-            rpcUrl,
-            walletDir,
-            password,
-            mnemonic,
-            chainId,
-            tokenMeta,
-            onSyncProgress
-          );
-          privateNotes[protocol] = filterNonZeroNotes(rows);
-        } catch (e) {
-          const label =
-            protocol === "privacy-pools"
-              ? "Privacy pools"
-              : protocol === "tornado"
-                ? "Tornado Cash"
-                : "Railgun";
+        const label =
+          protocol === "privacy-pools"
+            ? "Privacy pools"
+            : protocol === "tornado"
+              ? "Tornado Cash"
+              : "Railgun";
+        const notesError = notesErrors[protocol];
+        if (notesError) {
           onWarning?.(
-            `${label} notes unavailable: ${formatCaughtError(e)}`
+            `${label} notes unavailable: ${formatCaughtError(notesError)}`
           );
           privateNotes[protocol] = [];
+          continue;
         }
+        const raw = rawNotesByProtocol[protocol] ?? [];
+        privateNotes[protocol] = filterNonZeroNotes(
+          mapProtocolNotes(protocol, raw, tokenMeta)
+        );
       }
     }
 

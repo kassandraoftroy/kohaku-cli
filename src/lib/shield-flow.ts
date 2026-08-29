@@ -535,20 +535,17 @@ export async function prepareShieldPlan(opts: {
                 amount,
               };
 
-        const op =
-          protocol === "railgun"
-            ? await prepareProtocolShield(plugin, protocol, asset as AssetAmount)
-            : await runWithSyncProgress(
-                {
-                  source: protocol,
-                  firstRun: isFirstProtocolSync(walletDir, protocol),
-                  onUpdate: onSyncProgress,
-                },
-                async () => {
-                  await syncPluginWithProgress(plugin, protocol);
-                  return prepareProtocolShield(plugin, protocol, asset as AssetAmount);
-                }
-              );
+        const op = await runWithSyncProgress(
+          {
+            source: protocol,
+            firstRun: isFirstProtocolSync(walletDir, protocol),
+            onUpdate: onSyncProgress,
+          },
+          async () => {
+            await syncPluginWithProgress(plugin, protocol);
+            return prepareProtocolShield(plugin, protocol, asset as AssetAmount);
+          }
+        );
         const rawTxs = toShieldTxs(op);
 
         let approvals: ShieldCall[] = [];

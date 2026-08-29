@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   countSyncRequest,
   noteSyncFirstRun,
+  reportSyncBlockProgress,
   reportSyncPhase,
   runWithSyncProgress,
 } from "../src/utils/sync-progress.js";
@@ -34,27 +35,34 @@ describe("sync progress phases", () => {
     assert.doesNotMatch(last, /RPC logs/);
   });
 
-  it("keeps a separate count per phase and never resurrects another phase's", async () => {
+  it("omits request counts for privacy protocols", async () => {
     const messages = await capture({ source: "privacy-pools" }, () => {
       for (let i = 0; i < 7; i++) countSyncRequest("rpc");
       for (let i = 0; i < 2; i++) countSyncRequest("asp");
     });
-    assert.match(messages.at(-1)!, /ASP · 2 req/, messages.join("\n"));
+    const last = messages.at(-1)!;
+    assert.match(last, /ASP/, messages.join("\n"));
+    assert.doesNotMatch(last, /req/, messages.join("\n"));
+    assert.doesNotMatch(last, /RPC logs/, messages.join("\n"));
 
     const backToRpc = await capture({ source: "privacy-pools" }, () => {
       countSyncRequest("rpc");
       countSyncRequest("saga");
       countSyncRequest("rpc");
     });
-    assert.match(backToRpc.at(-1)!, /RPC logs · 2 req/, backToRpc.join("\n"));
+    assert.match(backToRpc.at(-1)!, /RPC logs/, backToRpc.join("\n"));
+    assert.doesNotMatch(backToRpc.at(-1)!, /req/, backToRpc.join("\n"));
+    assert.doesNotMatch(backToRpc.at(-1)!, /saga CDN/, backToRpc.join("\n"));
   });
 
-  it("counts cumulatively across separate getLogs ranges", async () => {
+  it("still switches phase without showing a count", async () => {
     const messages = await capture({ source: "privacy-pools" }, () => {
       for (let i = 0; i < 11; i++) countSyncRequest("rpc");
       for (let i = 0; i < 11; i++) countSyncRequest("rpc");
     });
-    assert.match(messages.at(-1)!, /RPC logs · 22 req/, messages.join("\n"));
+    const last = messages.at(-1)!;
+    assert.match(last, /RPC logs/, messages.join("\n"));
+    assert.doesNotMatch(last, /req/, messages.join("\n"));
   });
 
   it("switches phase without a count via reportSyncPhase", async () => {
@@ -85,16 +93,31 @@ describe("sync progress labels", () => {
     assert.match(incremental.at(-1)!, /^Railgun sync · /, incremental.join("\n"));
   });
 
-  it("calls the stealth source a scan", async () => {
+  it("calls the stealth source a scan and omits request counts", async () => {
     const first = await capture({ source: "stealth", firstRun: true }, () => {
       countSyncRequest("rpc");
     });
     assert.match(first.at(-1)!, /^Stealth first scan · /, first.join("\n"));
+    assert.doesNotMatch(first.at(-1)!, /req/, first.join("\n"));
 
     const incremental = await capture({ source: "stealth" }, () => {
       countSyncRequest("rpc");
     });
     assert.match(incremental.at(-1)!, /^Stealth scan · /, incremental.join("\n"));
+    assert.doesNotMatch(incremental.at(-1)!, /req/, incremental.join("\n"));
+  });
+
+  it("shows stealth block progress as scanned/total", async () => {
+    const messages = await capture({ source: "stealth" }, () => {
+      countSyncRequest("rpc");
+      reportSyncBlockProgress(500n, 1000n);
+    });
+    assert.match(
+      messages.at(-1)!,
+      /RPC logs · 500\/1000 blocks/,
+      messages.join("\n")
+    );
+    assert.doesNotMatch(messages.at(-1)!, /req/, messages.join("\n"));
   });
 
   it("lets an inner scope refine the first-run label", async () => {

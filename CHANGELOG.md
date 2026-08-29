@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--skip-sim` on `shield` dry-runs so counterfactual (unfunded) senders still print call payloads. Cannot be combined with `--broadcast`. `--non-interactive` JSON schema is unchanged; `fees` are zeroed.
 - `--amount-max` on `shield`: spend the account's maximum (ETH minus estimated gas; ERC-20 full balance). Tornado amounts are floored to the smallest pool denomination, then refined if gas would push the deposit below a step.
 
+### Changed
+
+- Privacy-protocol sync progress omits request counts (timer + phase only; `still working` when WASM blocks). Stealth scan keeps the durable `from block · N blocks` prelude and shows `scanned/total` blocks on the animated line (not request counts).
+- `shield` and `unshield` keep a live progress timer during protocol sync (including Railgun WASM), matching `balances`.
+
+### Fixed
+
+- `balances --verbose` no longer re-syncs each privacy protocol to load note details.
+
 ## [0.0.4] — 2026-08-25
 
 ### Added

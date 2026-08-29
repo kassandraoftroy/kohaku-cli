@@ -798,21 +798,19 @@ export function registerShieldCommand(program: Command): void {
         let approvals: Array<{ to: string; data: string; value: bigint }> = [];
         let calls: ReturnType<typeof buildShieldCallList>;
         try {
-          if (protocol !== "railgun") {
-            await runWithSyncProgress(
-              {
-                source: protocol,
-                firstRun: isFirstProtocolSync(walletDir, protocol),
-                onUpdate: quiet ? undefined : (message) => txSpinner.start(message),
-              },
-              async () => {
-                await syncPluginWithProgress(plugin, protocol);
-              }
-            );
-            if (txSpinner.active) txSpinner.stop("Private state synced.");
-          }
-
-          const prepared = await prepareShieldCalls(amount!);
+          if (!quiet) txSpinner.start("Syncing private state...");
+          const prepared = await runWithSyncProgress(
+            {
+              source: protocol,
+              firstRun: isFirstProtocolSync(walletDir, protocol),
+              onUpdate: quiet ? undefined : (message) => txSpinner.start(message),
+            },
+            async () => {
+              await syncPluginWithProgress(plugin, protocol);
+              return prepareShieldCalls(amount!);
+            }
+          );
+          if (txSpinner.active) txSpinner.stop("Private state synced.");
           approvals = prepared.approvals;
           shieldTxs = prepared.shieldTxs;
           calls = prepared.calls;

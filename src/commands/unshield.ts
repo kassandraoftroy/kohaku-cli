@@ -528,6 +528,7 @@ export function registerUnshieldCommand(program: Command): void {
           );
         }
 
+        if (!quiet) spin.start("Syncing private state...");
         const {
           cap: maxAmountHint,
           privacyPoolsLargestNote,
