@@ -116,6 +116,7 @@ const MAINNET_KNOWN_TOKENS: KnownErc20[] = [
 /** Sepolia ERC-20s resolvable by `--token <symbol>`. */
 const SEPOLIA_KNOWN_TOKENS: KnownErc20[] = [
   knownToken("USDC", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", 6),
+  knownToken("DAI", "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357", 18),
   knownToken("WETH", "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", 18),
 ];
 
@@ -165,10 +166,6 @@ export type MergedPublicTokenList = {
   knownMetaByLower: Map<string, { symbol: string; decimals: number }>;
 };
 
-/**
- * Merges chain default tokens with `--tokensList` extras. CLI addresses that duplicate
- * a default are skipped; unknown addresses are appended for RPC metadata + balanceOf.
- */
 /** Canonical WETH for a chain (Railgun shields ETH as this ERC-20). */
 export function wethAddressForChain(
   chainId: string | bigint
@@ -178,6 +175,12 @@ export function wethAddressForChain(
     ?.address;
 }
 
+/**
+ * Merges chain default tokens with `--tokensList` extras (and private ERC-20s).
+ * Addresses that already appear in the default list are skipped; unknown
+ * addresses are appended for RPC metadata + balanceOf. Comparison is
+ * case-insensitive, so the merged list is a set of unique contracts.
+ */
 export function mergeDefaultAndExtraErc20s(
   chainId: string,
   extraFromCli: `0x${string}`[]

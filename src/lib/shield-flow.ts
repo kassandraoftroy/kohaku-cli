@@ -18,7 +18,8 @@ import {
 import { assertTornadoDepositAmount } from "../utils/tornado-pools.js";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
-import { SHIELD_GAS_LIMIT } from "../utils/shield-max.js";
+import { estimateEoaTxFeePreview } from "../utils/fee-preview.js";
+import { eoaShieldSendParams, SHIELD_GAS_LIMIT } from "../utils/shield-max.js";
 import {
   makeStealthAccountsStorage,
   parseStealthIndex,
@@ -686,11 +687,32 @@ export async function broadcastShield(opts: {
       rpc,
       opts.rpcUrl
     );
+    const preview = await estimateEoaTxFeePreview(
+      rpc,
+      {
+        to: tx.to,
+        from: senderAddress,
+        data: tx.data,
+        value: tx.value,
+      },
+      SHIELD_GAS_LIMIT
+    );
+    const params = eoaShieldSendParams({
+      estimatedGas: BigInt(preview.gasLimit ?? SHIELD_GAS_LIMIT),
+      maxFeePerGas: BigInt(preview.maxFeePerGasWei ?? 0n),
+      maxPriorityFeePerGas: BigInt(preview.maxPriorityFeePerGasWei ?? 0n),
+      value: tx.value,
+    });
+    if (params.maxFeePerGas === 0n) {
+      throw new Error("Could not determine gas price for shield broadcast.");
+    }
     const hash = await sendTransactionAndWait(walletClient, rpc, {
       to: tx.to,
       data: tx.data,
       value: tx.value,
-      gas: SHIELD_GAS_LIMIT,
+      gas: params.gas,
+      maxFeePerGas: params.maxFeePerGas,
+      maxPriorityFeePerGas: params.maxPriorityFeePerGas,
     });
     return [{ type: "shield", hash }];
   } finally {

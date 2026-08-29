@@ -4,6 +4,8 @@ import { describe, it } from "node:test";
 import {
   computeShieldMaxAmount,
   eoaShieldFeeReserveWei,
+  eoaShieldSendParams,
+  paddedShieldGasLimit,
   padShieldFeeWei,
   refineShieldMaxAmount,
   SHIELD_FEE_PAD_DEN,
@@ -188,47 +190,70 @@ describe("refineShieldMaxAmount", () => {
   });
 });
 
-describe("padShieldFeeWei / shieldMaxFeeReserveWei", () => {
+describe("padShieldFeeWei / eoaShieldSendParams", () => {
   it("pads 1.3×", () => {
     assert.equal(SHIELD_FEE_PAD_NUM, 13n);
     assert.equal(SHIELD_FEE_PAD_DEN, 10n);
     assert.equal(padShieldFeeWei(1000n), 1300n);
+    assert.equal(paddedShieldGasLimit(1_000_000n), 1_300_000n);
+    assert.equal(paddedShieldGasLimit(SHIELD_GAS_LIMIT), SHIELD_GAS_LIMIT);
   });
 
-  it("EOA reserve uses the 2M broadcast gas cap, not a tighter estimateGas", () => {
+  it("EOA refine reserve uses padded estimateGas, not the 2M cap", () => {
     const maxFeePerGas = 117_279_367n;
     const estimateGas = 1_088_123n;
-    const estimatedMax = estimateGas * maxFeePerGas;
     const reserved = shieldMaxFeeReserveWei({
       batch: false,
-      estimatedMaxWei: estimatedMax,
+      estimatedMaxWei: estimateGas * maxFeePerGas,
+      maxFeePerGasWei: maxFeePerGas,
+      gasLimit: estimateGas,
+    });
+    const sendGas = paddedShieldGasLimit(estimateGas);
+    assert.equal(reserved, padShieldFeeWei(sendGas * maxFeePerGas));
+    assert.ok(reserved < eoaShieldFeeReserveWei(maxFeePerGas));
+  });
+
+  it("first-pass (no estimateGas) still reserves against the 2M cap", () => {
+    const maxFeePerGas = 117_279_367n;
+    const reserved = shieldMaxFeeReserveWei({
+      batch: false,
+      estimatedMaxWei: 1n,
       maxFeePerGasWei: maxFeePerGas,
     });
-    const nodeCheck = SHIELD_GAS_LIMIT * maxFeePerGas;
     assert.equal(reserved, eoaShieldFeeReserveWei(maxFeePerGas));
-    assert.ok(reserved >= nodeCheck);
-    assert.ok(reserved > estimatedMax);
   });
 
-  it("leaves enough ETH for the node's gasLimit × maxFee check", () => {
-    const maxFeePerGas = 117_279_367n;
+  it("send gas matches padded estimateGas so a 2M node check is not required", () => {
     const balance = 16_235_115_418_919_695n;
-    const estimateGas = 1_088_123n;
-    const tooTight = estimateGas * maxFeePerGas;
-    const reserved = shieldMaxFeeReserveWei({
-      batch: false,
-      estimatedMaxWei: tooTight,
-      maxFeePerGasWei: maxFeePerGas,
+    const value = 16_012_153_622_719_695n;
+    const estimateGas = 803_525n;
+    const sendMaxFee = 156_485_998n;
+    const params = eoaShieldSendParams({
+      estimatedGas: estimateGas,
+      maxFeePerGas: sendMaxFee,
+      maxPriorityFeePerGas: 94_426n,
+      value,
+      balance,
     });
-    const amount = refineShieldMaxAmount({
-      isEth: true,
-      protocol: "railgun",
-      currentAmount: balance - tooTight,
-      ethBalance: balance,
-      estimatedFeeWei: reserved,
+    assert.equal(params.gas, paddedShieldGasLimit(estimateGas));
+    assert.equal(params.maxFeePerGas, sendMaxFee);
+    assert.ok(params.gas * params.maxFeePerGas + value <= balance);
+    assert.ok(SHIELD_GAS_LIMIT * sendMaxFee + value > balance);
+  });
+
+  it("caps maxFeePerGas when even padded gas × fee would exceed leftover ETH", () => {
+    const balance = 16_235_115_418_919_695n;
+    const value = 16_012_153_622_719_695n;
+    const params = eoaShieldSendParams({
+      estimatedGas: 803_525n,
+      maxFeePerGas: 500_000_000n,
+      maxPriorityFeePerGas: 94_426n,
+      value,
+      balance,
     });
-    const nodeCost = SHIELD_GAS_LIMIT * maxFeePerGas + amount;
-    assert.ok(nodeCost <= balance);
+    assert.ok(params.maxFeePerGas < 500_000_000n);
+    assert.ok(params.maxFeePerGas > 0n);
+    assert.ok(params.gas * params.maxFeePerGas + value <= balance);
   });
 
   it("batch UserOp reserve pads the bundler estimate", () => {

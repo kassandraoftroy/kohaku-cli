@@ -16,6 +16,7 @@ import {
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+const SEPOLIA_DAI = "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357";
 
 describe("isPrivateBalanceNativeEth", () => {
   it("recognizes the EEE… sentinel and zero-address variants", () => {
@@ -160,5 +161,32 @@ describe("mergeDefaultAndExtraErc20s", () => {
       )
     );
     assert.equal(merged.knownMetaByLower.get(USDC.toLowerCase())?.symbol, "USDC");
+  });
+
+  it("does not double Sepolia DAI when --tokensList repeats the default", () => {
+    const merged = mergeDefaultAndExtraErc20s("11155111", [
+      SEPOLIA_DAI.toLowerCase() as `0x${string}`,
+      getAddress(SEPOLIA_DAI) as `0x${string}`,
+    ]);
+    const daiRows = merged.erc20Addresses.filter(
+      (a) => a.toLowerCase() === SEPOLIA_DAI.toLowerCase()
+    );
+    assert.equal(daiRows.length, 1);
+    assert.equal(
+      merged.knownMetaByLower.get(SEPOLIA_DAI.toLowerCase())?.symbol,
+      "DAI"
+    );
+  });
+
+  it("dedupes repeated extras against each other", () => {
+    const extra = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+    const merged = mergeDefaultAndExtraErc20s("11155111", [
+      extra,
+      extra.toLowerCase() as `0x${string}`,
+    ]);
+    const extraCount = merged.erc20Addresses.filter(
+      (a) => a.toLowerCase() === extra.toLowerCase()
+    ).length;
+    assert.equal(extraCount, 1);
   });
 });

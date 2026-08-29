@@ -86,6 +86,7 @@ import {
 import {
   computeShieldMaxAmount,
   estimateShieldGasReserveWei,
+  eoaShieldSendParams,
   refineShieldMaxAmount,
   SHIELD_GAS_LIMIT,
   shieldMaxFeeReserveWei,
@@ -844,6 +845,9 @@ export function registerShieldCommand(program: Command): void {
                 maxFeePerGasWei: feePreview.maxFeePerGasWei
                   ? BigInt(feePreview.maxFeePerGasWei)
                   : undefined,
+                gasLimit: feePreview.gasLimit
+                  ? BigInt(feePreview.gasLimit)
+                  : undefined,
               });
               const refined = refineShieldMaxAmount({
                 isEth: tokenMeta.isEth,
@@ -1085,6 +1089,43 @@ export function registerShieldCommand(program: Command): void {
               failure: "Shield transaction failed.",
             },
             async () => {
+              const preview = await estimateEoaTxFeePreview(
+                rpcForHost,
+                {
+                  to: call.to,
+                  from: senderAddress,
+                  data: call.data,
+                  value: call.value,
+                },
+                SHIELD_GAS_LIMIT
+              );
+              const params = eoaShieldSendParams({
+                estimatedGas: BigInt(preview.gasLimit ?? SHIELD_GAS_LIMIT),
+                maxFeePerGas: BigInt(preview.maxFeePerGasWei ?? 0n),
+                maxPriorityFeePerGas: BigInt(
+                  preview.maxPriorityFeePerGasWei ?? 0n
+                ),
+                value: call.value,
+                balance:
+                  usedAmountMax && amountMaxEthBalance !== undefined
+                    ? amountMaxEthBalance
+                    : undefined,
+              });
+              if (params.maxFeePerGas === 0n) {
+                throw new Error(
+                  "Could not determine gas price for shield broadcast."
+                );
+              }
+              if (
+                usedAmountMax &&
+                amountMaxEthBalance !== undefined &&
+                params.gas * params.maxFeePerGas + call.value >
+                  amountMaxEthBalance
+              ) {
+                throw new Error(
+                  `Insufficient ETH for --amount-max after reserving ~${formatUnits(params.gas * params.maxFeePerGas, 18)} ETH for gas.`
+                );
+              }
               const hash = await sendTransactionAndWait(
                 walletClient,
                 rpcForHost,
@@ -1092,7 +1133,9 @@ export function registerShieldCommand(program: Command): void {
                   to: call.to,
                   data: call.data,
                   value: call.value,
-                  gas: SHIELD_GAS_LIMIT,
+                  gas: params.gas,
+                  maxFeePerGas: params.maxFeePerGas,
+                  maxPriorityFeePerGas: params.maxPriorityFeePerGas,
                 }
               );
               return { hash };

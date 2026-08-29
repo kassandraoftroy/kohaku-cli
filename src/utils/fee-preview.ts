@@ -19,6 +19,7 @@ export type FeePreview = {
   estimatedMaxFormatted: string;
   asset: string;
   maxFeePerGasWei?: string;
+  maxPriorityFeePerGasWei?: string;
   gasLimit?: string;
   relayFeeBps?: string;
   components?: Array<{
@@ -67,7 +68,9 @@ export function printFeePreview(fees: FeePreview): void {
   }
 }
 
-async function resolveMaxFeePerGas(client: KohakuPublicClient): Promise<bigint> {
+export async function resolveEip1559Fees(
+  client: KohakuPublicClient
+): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
   const latest = await client.getBlock({ blockTag: "latest" });
   const base = latest.baseFeePerGas ?? 0n;
   let maxFeePerGas = (base * 110n) / 100n;
@@ -78,7 +81,11 @@ async function resolveMaxFeePerGas(client: KohakuPublicClient): Promise<bigint> 
   if (maxFeePerGas === 0n && feeData.gasPrice != null) {
     maxFeePerGas = feeData.gasPrice;
   }
-  return maxFeePerGas;
+  let maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? 0n;
+  if (maxPriorityFeePerGas > maxFeePerGas) {
+    maxPriorityFeePerGas = maxFeePerGas;
+  }
+  return { maxFeePerGas, maxPriorityFeePerGas };
 }
 
 /** Estimate max network fee for a single EIP-1559-style transaction. */
@@ -87,7 +94,7 @@ export async function estimateEoaTxFeePreview(
   tx: { to: string; from: string; data?: string; value?: bigint },
   gasLimitFallback = 100_000n
 ): Promise<FeePreview> {
-  const maxFeePerGas = await resolveMaxFeePerGas(client);
+  const { maxFeePerGas, maxPriorityFeePerGas } = await resolveEip1559Fees(client);
   let gasLimit = gasLimitFallback;
   let usedFallback = true;
   try {
@@ -109,6 +116,7 @@ export async function estimateEoaTxFeePreview(
     estimatedMaxFormatted: formatFeeAmount(estimatedMax, 18, "ETH"),
     asset: "ETH",
     maxFeePerGasWei: maxFeePerGas.toString(),
+    maxPriorityFeePerGasWei: maxPriorityFeePerGas.toString(),
     gasLimit: gasLimit.toString(),
     note: usedFallback
       ? "gas limit fallback × maxFeePerGas; actual usually lower"
