@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.5] — 2026-08-29
+
+### Added
+
+- add `--skip-sim` flag on `shield` dry-runs so counterfactual (unfunded) senders still print call payloads. Cannot be combined with `--broadcast` (we always do simulation on broadcast).
+- add `--amount-max` flag on `shield`: spend the account's maximum (ETH minus estimated gas; ERC-20 full balance).
+
+### Changed
+
+- Privacy-protocol sync progress logs: omit confusing request counts (timer + phase only). Stealth scan now shows `scanned/total` blocks on the progress log.
+
+### Fixed
+
+- fix `balances --verbose` to no longer sync privacy protocols twice unnecessarily.
+- `shield` and `unshield` keep a live progress timer during protocol sync (including Railgun WASM), matching `balances`.
+
 ## [0.0.4] — 2026-08-25
 
 ### Added

@@ -7,7 +7,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { resolveGetLogsMaxBlockSpan } from "../../host/chunked-get-logs.js";
 import type { KohakuPublicClient } from "../../utils/rpc.js";
-import { countSyncRequest, noteSyncFirstRun } from "../../utils/sync-progress.js";
+import { countSyncRequest, noteSyncFirstRun, reportSyncBlockProgress } from "../../utils/sync-progress.js";
 import {
   STEALTH_ANNOUNCER_ADDRESS,
   defaultStealthImportStartBlock,
@@ -220,6 +220,7 @@ export async function scanAndImportStealthAnnouncements(opts: {
   let announcementsChecked = 0;
   let alreadyKnown = 0;
   const name = store.name;
+  const totalBlocks = latest >= fromBlock ? latest - fromBlock + 1n : 0n;
 
   let cursor = fromBlock;
   while (cursor <= latest) {
@@ -260,6 +261,7 @@ export async function scanAndImportStealthAnnouncements(opts: {
 
     // Persist cursor after each chunk so a mid-scan interrupt can resume.
     storage.setLastScannedBlock(to);
+    reportSyncBlockProgress(to - fromBlock + 1n, totalBlocks);
     cursor = to + 1n;
   }
 

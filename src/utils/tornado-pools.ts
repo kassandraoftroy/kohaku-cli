@@ -223,6 +223,18 @@ export function assertTornadoTokenSupported(
   return pools;
 }
 
+/** Smallest pool denomination for this asset (deposit strategizer step size). */
+export function tornadoMinDenomination(
+  chainId: bigint,
+  opts: { isEth: boolean; tokenAddress: string; symbol: string }
+): bigint {
+  const pools = assertTornadoTokenSupported(chainId, opts);
+  return pools.reduce(
+    (m, p) => (p.denomination < m ? p.denomination : m),
+    pools[0]!.denomination
+  );
+}
+
 /**
  * Pool addresses the on-chain Tornado paymaster can sponsor (FeeAdapter map).
  * ERC-20 unshields require the withdrawn asset to be quoteable as `feeToken`.
@@ -286,11 +298,7 @@ export function assertTornadoDepositAmount(
   if (amount <= 0n) {
     throw new Error("Amount must be greater than zero.");
   }
-  const pools = assertTornadoTokenSupported(chainId, opts);
-  const min = pools.reduce(
-    (m, p) => (p.denomination < m ? p.denomination : m),
-    pools[0]!.denomination
-  );
+  const min = tornadoMinDenomination(chainId, opts);
   if (amount % min !== 0n) {
     const minFmt = formatUnits(min, opts.decimals);
     throw new Error(

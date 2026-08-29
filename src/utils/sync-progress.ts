@@ -20,6 +20,9 @@ type SyncProgressStore = {
   onUpdate?: (message: string) => void;
   phase?: SyncProgressPhase;
   counts: Partial<Record<SyncProgressPhase, number>>;
+  /** Inclusive blocks scanned / total for stealth getLogs windows. */
+  blockScanned?: bigint;
+  blockTotal?: bigint;
   lastEmit: number;
   lastMessage: string;
   emitTimer?: ReturnType<typeof setTimeout>;
@@ -66,8 +69,13 @@ function formatPrefix(store: SyncProgressStore): string {
   const verb = store.source === "stealth" ? "scan" : "sync";
   const label = store.firstRun ? `${name} first ${verb}` : `${name} ${verb}`;
   const phase = store.phase ? PHASE_LABEL[store.phase] : "starting";
-  const count = store.phase ? store.counts[store.phase] : undefined;
-  return `${label} · ${phase}${count ? ` · ${count} req` : ""}`;
+  const blocks =
+    store.source === "stealth" &&
+    store.blockScanned != null &&
+    store.blockTotal != null
+      ? ` · ${store.blockScanned.toString()}/${store.blockTotal.toString()} blocks`
+      : "";
+  return `${label} · ${phase}${blocks}`;
 }
 
 function formatMessage(store: SyncProgressStore): string {
@@ -137,6 +145,18 @@ export function noteSyncFirstRun(firstRun: boolean): void {
   const store = als.getStore();
   if (!store) return;
   store.firstRun = firstRun;
+  flush(store);
+}
+
+/** Inclusive stealth scan window progress (`scanned/total` blocks). */
+export function reportSyncBlockProgress(
+  scanned: bigint,
+  total: bigint
+): void {
+  const store = als.getStore();
+  if (!store) return;
+  store.blockScanned = scanned;
+  store.blockTotal = total;
   flush(store);
 }
 
