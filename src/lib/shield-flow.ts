@@ -18,6 +18,7 @@ import {
 import { assertTornadoDepositAmount } from "../utils/tornado-pools.js";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
+import { SHIELD_GAS_LIMIT } from "../utils/shield-max.js";
 import {
   makeStealthAccountsStorage,
   parseStealthIndex,
@@ -689,7 +690,7 @@ export async function broadcastShield(opts: {
       to: tx.to,
       data: tx.data,
       value: tx.value,
-      gas: 2_000_000n,
+      gas: SHIELD_GAS_LIMIT,
     });
     return [{ type: "shield", hash }];
   } finally {
