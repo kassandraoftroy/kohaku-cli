@@ -80,6 +80,8 @@ export async function sendTransactionAndWait(
     data?: Hex | string;
     value?: bigint;
     gas?: bigint;
+    maxFeePerGas?: bigint;
+    maxPriorityFeePerGas?: bigint;
   }
 ): Promise<`0x${string}`> {
   const hash = await walletClient.sendTransaction({
@@ -89,6 +91,10 @@ export async function sendTransactionAndWait(
     data: (tx.data ?? "0x") as Hex,
     value: tx.value ?? 0n,
     gas: tx.gas,
+    ...(tx.maxFeePerGas != null ? { maxFeePerGas: tx.maxFeePerGas } : {}),
+    ...(tx.maxPriorityFeePerGas != null
+      ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas }
+      : {}),
   });
   await publicClient.waitForTransactionReceipt({ hash });
   return hash;

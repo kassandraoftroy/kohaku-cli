@@ -330,7 +330,7 @@ By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (i
 
 **Interactive:** wallet picker, password, loading spinner, formatted tables.
 
-Default Sepolia ERC-20s include USDC and WETH; mainnet adds USDC, USDT, DAI, WETH.
+Default Sepolia ERC-20s include USDC, DAI, and WETH; mainnet adds USDC, USDT, DAI, WETH.
 
 **Examples:**
 
