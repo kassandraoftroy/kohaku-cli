@@ -3,7 +3,13 @@ import { describe, it } from "node:test";
 
 import {
   computeShieldMaxAmount,
+  eoaShieldFeeReserveWei,
+  padShieldFeeWei,
   refineShieldMaxAmount,
+  SHIELD_FEE_PAD_DEN,
+  SHIELD_FEE_PAD_NUM,
+  SHIELD_GAS_LIMIT,
+  shieldMaxFeeReserveWei,
   tornadoFloorToMinDenom,
 } from "../src/utils/shield-max.js";
 
@@ -178,6 +184,58 @@ describe("refineShieldMaxAmount", () => {
         minDenom: ETH_01,
       }),
       0n
+    );
+  });
+});
+
+describe("padShieldFeeWei / shieldMaxFeeReserveWei", () => {
+  it("pads 1.3×", () => {
+    assert.equal(SHIELD_FEE_PAD_NUM, 13n);
+    assert.equal(SHIELD_FEE_PAD_DEN, 10n);
+    assert.equal(padShieldFeeWei(1000n), 1300n);
+  });
+
+  it("EOA reserve uses the 2M broadcast gas cap, not a tighter estimateGas", () => {
+    const maxFeePerGas = 117_279_367n;
+    const estimateGas = 1_088_123n;
+    const estimatedMax = estimateGas * maxFeePerGas;
+    const reserved = shieldMaxFeeReserveWei({
+      batch: false,
+      estimatedMaxWei: estimatedMax,
+      maxFeePerGasWei: maxFeePerGas,
+    });
+    const nodeCheck = SHIELD_GAS_LIMIT * maxFeePerGas;
+    assert.equal(reserved, eoaShieldFeeReserveWei(maxFeePerGas));
+    assert.ok(reserved >= nodeCheck);
+    assert.ok(reserved > estimatedMax);
+  });
+
+  it("leaves enough ETH for the node's gasLimit × maxFee check", () => {
+    const maxFeePerGas = 117_279_367n;
+    const balance = 16_235_115_418_919_695n;
+    const estimateGas = 1_088_123n;
+    const tooTight = estimateGas * maxFeePerGas;
+    const reserved = shieldMaxFeeReserveWei({
+      batch: false,
+      estimatedMaxWei: tooTight,
+      maxFeePerGasWei: maxFeePerGas,
+    });
+    const amount = refineShieldMaxAmount({
+      isEth: true,
+      protocol: "railgun",
+      currentAmount: balance - tooTight,
+      ethBalance: balance,
+      estimatedFeeWei: reserved,
+    });
+    const nodeCost = SHIELD_GAS_LIMIT * maxFeePerGas + amount;
+    assert.ok(nodeCost <= balance);
+  });
+
+  it("batch UserOp reserve pads the bundler estimate", () => {
+    const estimatedMax = 50_000_000_000_000n;
+    assert.equal(
+      shieldMaxFeeReserveWei({ batch: true, estimatedMaxWei: estimatedMax }),
+      padShieldFeeWei(estimatedMax)
     );
   });
 });

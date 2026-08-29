@@ -87,6 +87,8 @@ import {
   computeShieldMaxAmount,
   estimateShieldGasReserveWei,
   refineShieldMaxAmount,
+  SHIELD_GAS_LIMIT,
+  shieldMaxFeeReserveWei,
 } from "../utils/shield-max.js";
 import {
   assertTornadoDepositAmount,
@@ -834,9 +836,15 @@ export function registerShieldCommand(program: Command): void {
                       data: calls[0]!.data,
                       value: calls[0]!.value,
                     },
-                    2_000_000n
+                    SHIELD_GAS_LIMIT
                   );
-              const estimatedFeeWei = BigInt(feePreview.estimatedMax);
+              const estimatedFeeWei = shieldMaxFeeReserveWei({
+                batch,
+                estimatedMaxWei: BigInt(feePreview.estimatedMax),
+                maxFeePerGasWei: feePreview.maxFeePerGasWei
+                  ? BigInt(feePreview.maxFeePerGasWei)
+                  : undefined,
+              });
               const refined = refineShieldMaxAmount({
                 isEth: tokenMeta.isEth,
                 protocol,
@@ -919,7 +927,7 @@ export function registerShieldCommand(program: Command): void {
                 data: call.data,
                 value: call.value,
               },
-              2_000_000n
+              SHIELD_GAS_LIMIT
             );
           }
         }
@@ -1084,7 +1092,7 @@ export function registerShieldCommand(program: Command): void {
                   to: call.to,
                   data: call.data,
                   value: call.value,
-                  gas: 2_000_000n,
+                  gas: SHIELD_GAS_LIMIT,
                 }
               );
               return { hash };

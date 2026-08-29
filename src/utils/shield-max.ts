@@ -3,8 +3,39 @@ import { makePublicClient } from "./rpc.js";
 /** Same gas cap shield uses when broadcasting a single EOA deposit. */
 export const SHIELD_GAS_LIMIT = 2_000_000n;
 
+/** 1.3× pad on gas × maxFee so --amount-max survives fee ticks before send. */
+export const SHIELD_FEE_PAD_NUM = 13n;
+export const SHIELD_FEE_PAD_DEN = 10n;
+
+export function padShieldFeeWei(feeWei: bigint): bigint {
+  return (feeWei * SHIELD_FEE_PAD_NUM) / SHIELD_FEE_PAD_DEN;
+}
+
+/** Node checks `gasLimit × maxFee + value`; EOA broadcast pins gas to SHIELD_GAS_LIMIT. */
+export function eoaShieldFeeReserveWei(maxFeePerGas: bigint): bigint {
+  return padShieldFeeWei(SHIELD_GAS_LIMIT * maxFeePerGas);
+}
+
 /**
- * Conservative wei reserve for a shield (gas × fee × 1.2).
+ * Wei to reserve when refining --amount-max after a live fee preview.
+ * EOA must not use a tighter `estimateGas` — the signed tx still sets
+ * `gas: SHIELD_GAS_LIMIT`, and the node charges the full limit at submission.
+ */
+export function shieldMaxFeeReserveWei(opts: {
+  batch: boolean;
+  estimatedMaxWei: bigint;
+  maxFeePerGasWei?: bigint;
+}): bigint {
+  if (!opts.batch && opts.maxFeePerGasWei != null && opts.maxFeePerGasWei > 0n) {
+    const fromLimit = eoaShieldFeeReserveWei(opts.maxFeePerGasWei);
+    const fromEstimate = padShieldFeeWei(opts.estimatedMaxWei);
+    return fromLimit > fromEstimate ? fromLimit : fromEstimate;
+  }
+  return padShieldFeeWei(opts.estimatedMaxWei);
+}
+
+/**
+ * Conservative wei reserve for a shield (gas × fee × pad).
  * Uses ~110% of latest base fee, same pattern as transfer --amount-max.
  */
 export async function estimateShieldGasReserveWei(
@@ -27,7 +58,7 @@ export async function estimateShieldGasReserveWei(
       "Could not determine gas price to compute shield --amount-max."
     );
   }
-  return (SHIELD_GAS_LIMIT * maxFeePerGas * 12n) / 10n;
+  return eoaShieldFeeReserveWei(maxFeePerGas);
 }
 
 /** Floor `amount` down to a multiple of `minDenom` (0 if amount < min). */
