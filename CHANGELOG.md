@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - fix `balances --verbose` to no longer sync privacy protocols twice unnecessarily.
 - `shield` and `unshield` keep a live progress timer during protocol sync (including Railgun WASM), matching `balances`.
+- the `--from` flag on `shield` correctly supports `<stealth address>` or `sN` (stealth address by index)
 
 ## [0.0.4] — 2026-08-25
 
@@ -37,3 +38,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Unshielding to a custom / ephemeral recipient (`--to` an address that is not a stored HD account) no longer fails or mis-routes funds.
+

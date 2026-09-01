@@ -4,7 +4,6 @@ import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
 import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
-import { Mnemonic } from "derive-railgun-keys";
 
 import { makeHost } from "../host/makeHost";
 import {
@@ -12,8 +11,10 @@ import {
   formatAccountSelector,
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
+  parseFromIndex,
   partitionShieldTxs,
   resolveShieldApprovalCalls,
+  resolveShieldSender,
   shieldTransactionConfirmMessage,
   summarizeMultiShieldPlan,
   toShieldTxs,
@@ -42,7 +43,6 @@ import {
 } from "../utils/fee-preview.js";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
 import {
-  addressFromPrivateKey,
   makeWalletClient,
   sendTransactionAndWait,
   simulateCallOrThrow,
@@ -71,7 +71,6 @@ import {
   resolveWalletPassword,
 } from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
-import { makePublicAccountsStorage } from "../utils/public-accounts";
 import {
   assertPpErc20TokenWhitelisted,
   createProtocolPlugin,
@@ -133,13 +132,6 @@ type BroadcastTxResultJson = {
 function etherscanTxUrl(chainId: bigint, txHash: string): string {
   const host = chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
   return `https://${host}/tx/${txHash}`;
-}
-
-function parseFromIndex(fromValue: string): number | null {
-  if (!/^\d+$/.test(fromValue)) return null;
-  const parsed = Number(fromValue);
-  if (!Number.isInteger(parsed) || parsed < 0) return null;
-  return parsed;
 }
 
 function findAccountWithBalance(
@@ -290,7 +282,10 @@ export function registerShieldCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
-    .option("--from <address-or-index>", "Public sender address or public-account index")
+    .option(
+      "--from <address-or-index>",
+      "Public sender address, HD index, or stealth selector (s0)"
+    )
     .option(
       "--from-priv",
       "With --broadcast: derive --from index from mnemonic when missing from public accounts (not required for dry-run)"
@@ -454,8 +449,6 @@ export function registerShieldCommand(program: Command): void {
         );
         return;
       }
-
-      const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
 
       const withBalances = await listPublicAccountsWithBalance(
         rpcUrl,
@@ -676,40 +669,21 @@ export function registerShieldCommand(program: Command): void {
         }
       }
 
-      const fromIndex = parseFromIndex(fromValue);
-      let senderPrivateKey: string | undefined;
       let senderAddress: string;
-      if (fromIndex !== null) {
-        const account = publicStorage.getAccount(fromIndex);
-        if (account) {
-          senderPrivateKey = account.priv;
-          senderAddress = account.address;
-        } else if (opts.fromPriv || dryRun) {
-          senderPrivateKey = Mnemonic.to0xPrivateKeyByIndex(mnemonic, fromIndex);
-          senderAddress = addressFromPrivateKey(senderPrivateKey);
-        } else {
-          cliError(
-            `Public account index ${fromIndex} not found. Use --from-priv with --broadcast to derive from mnemonic, or omit --broadcast for a dry-run.`
-          );
-          return;
-        }
-      } else if (isAddress(fromValue)) {
-        senderAddress = getAddress(fromValue);
-        const match = publicStorage
-          .getAccounts()
-          .find((x) => x.address.toLowerCase() === senderAddress.toLowerCase());
-        if (match) {
-          senderPrivateKey = match.priv;
-        } else if (dryRun) {
-          senderPrivateKey = undefined;
-        } else {
-          cliError(
-            `Address ${senderAddress} is not in this wallet's public accounts. Use --broadcast with --from-priv and an index, or omit --broadcast to preview txs for this address.`
-          );
-          return;
-        }
-      } else {
-        cliError("--from must be either a valid address or a non-negative index.");
+      let senderPrivateKey: string | undefined;
+      try {
+        const resolved = resolveShieldSender({
+          fromValue,
+          walletDir,
+          mnemonic,
+          password,
+          dryRun,
+          allowDeriveFromMnemonic: !!opts.fromPriv,
+        });
+        senderAddress = resolved.senderAddress;
+        senderPrivateKey = resolved.senderPrivateKey;
+      } catch (e) {
+        cliErrorFromCaught(e);
         return;
       }
 
@@ -1005,7 +979,7 @@ export function registerShieldCommand(program: Command): void {
 
         if (!senderPrivateKey) {
           cliError(
-            "Cannot sign: no private key for this --from (use a saved public account or --from-priv with --broadcast)."
+            "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
           );
           return;
         }

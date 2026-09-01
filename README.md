@@ -418,7 +418,7 @@ Move funds from a **public** account into a private protocol.
 | `--protocol <railgun\|privacy-pools\|tornado>` | Required unless `DEFAULT_PRIVACY_PROTOCOL` is set to one of those values. |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
-| `--from <address-or-index>` | Sender public account (address or HD index). |
+| `--from <address-or-index>` | Sender public account address, HD index, or stealth selector (`s0`). |
 | `--from-priv` | With `--broadcast`: derive private key by index from mnemonic if account not yet in stored public list. |
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
@@ -446,6 +446,7 @@ When a shield needs more than one on-chain call, the CLI uses EIP-7702 Simple770
 
 ```bash
 kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --broadcast
+kohaku shield --protocol tornado --wallet testWallet --from s0 --amount-formatted 0.1 --broadcast
 kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-max --broadcast
 kohaku shield --protocol railgun --wallet testWallet --from 0 --token 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 --amount-formatted 10 --broadcast
 kohaku shield --protocol tornado --wallet testWallet --from 0 --amount-formatted 0.1 --without-tor
