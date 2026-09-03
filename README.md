@@ -154,11 +154,14 @@ Global behavior:
 | **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
 | **Data directory** | `--dataDir <path>` (default `~/.kohaku-cli`). |
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
-| **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
-| **`--password`** | Wallet unlock password. In non-interactive mode, required where the wallet is encrypted. Value can be a literal string or a path to a file containing the password. |
+| **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password-file` or `--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
+| **`--password-file <path>`** | Preferred for automation on POSIX. Reads the wallet password from a regular, non-symlink file, so the password is not exposed in process arguments. The file must be owned by the current user with mode `0400` or `0600`. Secure file inputs fail closed on Windows because ACLs are not validated. Mutually exclusive with `--password`. |
+| **`--password <password>`** | Legacy wallet unlock input. A literal string or existing file path is accepted for compatibility; prefer the unambiguous `--password-file` form in scripts. |
 | **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands, including `transfer` / `transact-raw` / names). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
 | **Proving artifacts** | Railgun/Tornado keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
 | **Public-sync cache** | Shared **Railgun Subsquid** and **Tornado saga** HTTP pages live under `<dataDir>/public-sync-cache` and speed up those syncs (`balances`, `shield`, `unshield`). Prefetch with `fetch-sync-cache`. Snapshot base: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v1`). Snapshot is historical; live HTTP still fills anything newer. Never evicts — at `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new pages stop being stored instead. Privacy Pools is **not** covered (its cold sync is bundled state JSON plus `eth_getLogs`, which is never HTTP-cached). Wipe with `kohaku clear-tor-cache --public-sync`. |
+
+`--password-file` removes one trailing line ending and otherwise preserves password whitespace. When unlocking an existing wallet, it also retries the fully trimmed value for compatibility with the legacy `--password <existing-file>` behavior. New wallets created with `--password-file` use the preserved value exactly.
 
 ---
 
@@ -178,7 +181,9 @@ Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single
 | `--rpc-url <url>` | Required with `--import` (or `RPC_URL`) to scan used addresses. Optional for new wallets when writing `.stealth-start-block`. |
 | `--stealth-start-block [block]` | With `--import`: write `.stealth-start-block`. Omit the flag to record the current tip (same as a new wallet). Bare flag: Kohaku floor (mainnet `25700000`, Sepolia `11455454`). With a number: that block, rounded up to the ERC-5564 announcer deploy if lower. |
 | `--mnemonic <phrase>` | Mnemonic (required with `--non-interactive --import`). |
-| `--password <password>` | Encryption password (required with `--non-interactive`). |
+| `--mnemonic-file <path>` | Preferred POSIX import input for automation. Reads the mnemonic from an owner-only regular file without following symlinks; fails closed on Windows. Mutually exclusive with `--mnemonic`. |
+| `--password <password>` | Encryption password required with `--non-interactive`. As before, interactive creation prompts instead of consuming this legacy flag. |
+| `--password-file <path>` | Preferred POSIX automation input; see global behavior above. Mutually exclusive with `--password`. |
 | `--non-interactive` | No prompts; no mnemonic box on create. |
 | `--dataDir <path>` | Data root. |
 
@@ -192,6 +197,8 @@ kohaku create-wallet myWallet24 --testnet --long-seed
 kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL"
 kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL" --stealth-start-block
 kohaku create-wallet restored --testnet --import --rpc-url "$RPC_URL" --stealth-start-block 10000000
+chmod 600 ./wallet-password ./wallet-mnemonic
+kohaku create-wallet restored-safe --testnet --import --rpc-url "$RPC_URL" --password-file ./wallet-password --mnemonic-file ./wallet-mnemonic --non-interactive
 ```
 
 ---
@@ -853,4 +860,4 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
 - **Tornado notes:** Use `export-tornado-note` / `import-tornado-note` to move legacy note secrets between wallets for testing or recovery.
 - **Private key / seed exports:** `export-private-key`, `reveal-seed-phrase`, and `export-tornado-note` print raw secrets to stdout. Avoid terminal logs, shell history, and shared environments.
-- **Agents:** Pass `--non-interactive --password … --wallet …` and parse JSON stdout; set `RPC_URL` in the environment to avoid repeating `--rpc-url`.
+- **Agents:** Pass `--non-interactive --password-file … --wallet …` and parse JSON stdout. Set `RPC_URL` in the environment to avoid repeating `--rpc-url`. Secret files must be regular files, cannot be symlinks, and on POSIX must be owned by the current user with mode `0400` or `0600` (`chmod 600`).

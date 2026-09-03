@@ -4,7 +4,7 @@ import type { Command } from "commander";
 
 import { readSeedKeystore } from "../utils/mnemonic";
 import { DEFAULT_DATA_DIR } from "../utils/rpc";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   resolveWalletDir,
@@ -15,6 +15,7 @@ import {
 type RevealSeedPhraseOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   nonInteractive?: boolean;
   dataDir?: string;
 };
@@ -51,6 +52,7 @@ export function registerRevealSeedPhraseCommand(program: Command): void {
     .description("Decrypt and print the wallet BIP-39 seed phrase")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: RevealSeedPhraseOpts) => {
@@ -72,6 +74,7 @@ export function registerRevealSeedPhraseCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

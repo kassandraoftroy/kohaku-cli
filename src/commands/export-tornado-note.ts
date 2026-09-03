@@ -7,7 +7,7 @@ import { SecretManager, TornadoCashConfigs, type TCNote } from "@kohaku-eth/torn
 
 import { withProtocolRuntime } from "../lib/protocol-runtime.js";
 import { addressishToHex } from "../lib/private-notes.js";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   logCliJson,
@@ -39,6 +39,7 @@ import {
 type ExportTornadoNoteOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   rpcUrl?: string;
   token?: string;
   amountWei?: string;
@@ -153,6 +154,7 @@ export function registerExportTornadoNoteCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Exact pool denomination in wei/base units")
@@ -196,6 +198,7 @@ export function registerExportTornadoNoteCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

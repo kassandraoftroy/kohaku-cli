@@ -21,7 +21,7 @@ import {
   type PublicAccountWithBalance,
 } from "../lib/shield-flow.js";
 import { parseStealthIndex } from "../lib/stealth/storage.js";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import {
   logCliJson,
   manageSpinner,
@@ -100,6 +100,7 @@ type ShieldOpts = {
   protocol?: string;
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   from?: string;
   fromPriv?: boolean;
   token?: string;
@@ -282,6 +283,7 @@ export function registerShieldCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option(
       "--from <address-or-index>",
       "Public sender address, HD index, or stealth selector (s0)"
@@ -360,6 +362,7 @@ export function registerShieldCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

@@ -1,20 +1,25 @@
+import { Option } from "commander";
+
 /**
  * Shared Commander `--help` strings for options repeated across commands.
  * Keeps wording in one place without dictating `.option()` call order.
  */
 export const cliOptions = {
-  password: "Wallet password (required with --non-interactive; else prompted)",
+  password:
+    "Wallet password (legacy literal-or-file input; prefer --password-file for automation)",
+  passwordFile:
+    "POSIX only: read wallet password from an owner-only file (conflicts with --password)",
   rpcUrl: "RPC URL (or set RPC_URL in env; default: http://localhost:8545)",
   dataDir: "Kohaku data directory (default: ~/.kohaku-cli)",
   walletPickList: "Wallet name (omit to choose interactively from the list)",
   walletBalancesOptional:
     "Wallet name (optional without --non-interactive; omit to pick from the list)",
   nonInteractiveShieldLike:
-    "Agent mode: JSON where applicable, no confirmations or spinners; requires --password and --wallet",
+    "Agent mode: JSON where applicable, no confirmations or spinners; requires --password/--password-file and --wallet",
   nonInteractiveBalances:
-    "Agent mode: JSON only, no prompts or spinners; requires --password and --wallet",
+    "Agent mode: JSON only, no prompts or spinners; requires --password/--password-file and --wallet",
   nonInteractiveCompact:
-    "Agent mode: no prompts or spinners; requires --password and --wallet",
+    "Agent mode: no prompts or spinners; requires --password/--password-file and --wallet",
   nonInteractiveListWallets:
     "Agent mode: print JSON instead of human-readable output (no prompts)",
   withoutTor:
@@ -26,3 +31,16 @@ export const cliOptions = {
   stealthStartBlock:
     "Start ERC-5564 announcement scan at this block (decimal or 0x-hex); skips older history on first/full scan. Can back-date below the wallet `.stealth-start-block` (often the creation/import tip; down to the announcer deploy block). When omitted, uses that file, or the Kohaku import default. Does not skip the scan itself (use --skip-stealth-scan)",
 } as const;
+
+export function passwordFileOption(): Option {
+  return new Option("--password-file <path>", cliOptions.passwordFile).conflicts(
+    "password"
+  );
+}
+
+export function mnemonicFileOption(): Option {
+  return new Option(
+    "--mnemonic-file <path>",
+    "POSIX only: read an import mnemonic from an owner-only file (conflicts with --mnemonic)"
+  ).conflicts("mnemonic");
+}

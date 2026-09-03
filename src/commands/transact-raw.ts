@@ -11,7 +11,7 @@ import {
   resolveShieldSender,
   simulateTransactionOrThrow,
 } from "../lib/shield-flow.js";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
@@ -49,6 +49,7 @@ import {
 type TransactRawOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   from?: string;
   fromPriv?: boolean;
   targets?: string;
@@ -214,6 +215,7 @@ export function registerTransactRawCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--from <address-or-index>", "Public sender address or public-account index")
     .option(
       "--from-priv",
@@ -270,6 +272,7 @@ export function registerTransactRawCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

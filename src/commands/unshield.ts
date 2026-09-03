@@ -14,7 +14,7 @@ import {
   parseUnshieldAmount,
   privacyPoolsRelayerFeeWei,
 } from "../lib/unshield-flow.js";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   buildFeePreview,
@@ -115,6 +115,7 @@ type UnshieldOpts = {
   protocol?: string;
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   to?: string;
   next?: boolean;
   token?: string;
@@ -164,6 +165,7 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option(
       "--to <address>",
       "Recipient: public address, HD index address, stealth selector (s0), or name (.eth/.gwei/.wei)"
@@ -265,6 +267,7 @@ export function registerUnshieldCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

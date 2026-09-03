@@ -4,7 +4,7 @@ import type { Command } from "commander";
 import type { ImportNoteResult } from "@kohaku-eth/tornado-cash";
 
 import { withProtocolRuntime } from "../lib/protocol-runtime.js";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   logCliJson,
@@ -30,6 +30,7 @@ import {
 type ImportTornadoNoteOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   rpcUrl?: string;
   nonInteractive?: boolean;
   withoutTor?: boolean;
@@ -82,6 +83,7 @@ export function registerImportTornadoNoteCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--without-tor", cliOptions.withoutTor)
@@ -115,6 +117,7 @@ export function registerImportTornadoNoteCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

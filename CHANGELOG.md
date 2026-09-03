@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- add explicit `--password-file` support to every command that unlocks a wallet, and `--mnemonic-file` to `create-wallet --import`. These POSIX inputs are mutually exclusive with their literal counterparts and require owner-only, regular, non-symlink files; they fail closed on Windows where ACLs are not validated.
+
 ## [0.0.5] — 2026-08-29
 
 ### Added
@@ -38,4 +44,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Unshielding to a custom / ephemeral recipient (`--to` an address that is not a stored HD account) no longer fails or mis-routes funds.
-

@@ -6,7 +6,7 @@ import { getAddress, isAddress } from "viem";
 import { readSeedKeystore } from "../utils/mnemonic";
 import { findPublicAccountByAddress, makePublicAccountsStorage } from "../utils/public-accounts";
 import { DEFAULT_DATA_DIR, resolveRpcUrl } from "../utils/rpc";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
 import { addressFromPrivateKey } from "../utils/viem-tx.js";
@@ -19,6 +19,7 @@ import {
 type ExportPrivateKeyOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   address?: string;
   index?: string;
   rpcUrl?: string;
@@ -39,6 +40,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
     .description("Export the private key for a wallet public account")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--address <address>", "Public account address or ENS/GNS/WNS name to export")
     .option("--index <index>", "Public account index to export")
     .option("--rpc-url <url>", `${cliOptions.rpcUrl} (required when --address is a name)`)
@@ -72,6 +74,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);
