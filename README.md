@@ -203,7 +203,10 @@ List wallet names and network kind (mainnet / testnet).
 | Option | Description |
 |--------|-------------|
 | `--non-interactive` | Output `{"wallets":{"name":{"mainnet":true|false|null}}}` |
+| `--format json-v1` | Opt-in versioned JSON: `{kind:"kohaku-cli/wallet-list",version:1,wallets:[{name,network,chainId,caip2}]}`. Does not require `--non-interactive`. |
 | `--dataDir <path>` | Data root. |
+
+The legacy `--non-interactive` object shape remains unchanged for compatibility. New machine integrations should use `--format json-v1`; `network` is `mainnet`, `testnet`, or `unknown`, and `caip2` is the CAIP-2 identifier when the network is known.
 
 ---
 
@@ -853,4 +856,4 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 - **Privacy Pools note size:** Each unshield uses one note; large shields may require multiple unshields if balances are split across notes.
 - **Tornado notes:** Use `export-tornado-note` / `import-tornado-note` to move legacy note secrets between wallets for testing or recovery.
 - **Private key / seed exports:** `export-private-key`, `reveal-seed-phrase`, and `export-tornado-note` print raw secrets to stdout. Avoid terminal logs, shell history, and shared environments.
-- **Agents:** Pass `--non-interactive --password … --wallet …` and parse JSON stdout; set `RPC_URL` in the environment to avoid repeating `--rpc-url`.
+- **Agents:** Pass `--non-interactive --password … --wallet …` and parse JSON stdout; use `list-wallets --format json-v1` for a stable discovery schema. Set `RPC_URL` in the environment to avoid repeating `--rpc-url`.
