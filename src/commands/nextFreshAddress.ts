@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliErrorFromCaught } from "../utils/cli-errors";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import { DEFAULT_DATA_DIR } from "../utils/rpc";
@@ -14,6 +14,7 @@ import { readSeedKeystore } from "../utils/mnemonic";
 type NextFreshAddressOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   peek?: boolean;
   nonInteractive?: boolean;
   dataDir?: string;
@@ -25,6 +26,7 @@ export function registerNextFreshAddressCommand(program: Command): void {
     .description("Generate and persist the next public account address")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option(
       "--peek",
       "Print the next fresh address without persisting it (useful for crafting payloads before --next)"
@@ -50,6 +52,7 @@ export function registerNextFreshAddressCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

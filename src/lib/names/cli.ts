@@ -1,6 +1,9 @@
 import type { Command } from "commander";
 
-import { cliOptions } from "../../utils/cli-command-options.js";
+import {
+  cliOptions,
+  passwordFileOption,
+} from "../../utils/cli-command-options.js";
 import { cliError, cliErrorFromCaught } from "../../utils/cli-errors.js";
 import { readSeedKeystore } from "../../utils/mnemonic.js";
 import {
@@ -37,6 +40,7 @@ export type NameCommandContext = {
 export type NameWalletOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -74,6 +78,7 @@ export async function withNameCommandContext(
 
   const password = await resolveWalletPassword({
     flagPassword: opts.password,
+    flagPasswordFile: opts.passwordFile,
     nonInteractive: opts.nonInteractive,
     validate: (candidate) => {
       readSeedKeystore(candidate, walletDir);
@@ -129,6 +134,7 @@ export function addNameWalletOptions(cmd: Command): Command {
   return cmd
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option(
       "--broadcast",

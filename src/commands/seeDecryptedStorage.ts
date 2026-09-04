@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Command } from "commander";
 
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { DEFAULT_DATA_DIR } from "../utils/rpc";
 import {
@@ -25,6 +25,7 @@ const TYPE_TO_FILENAME: Record<StorageType, string> = {
 type SeeDecryptedStorageOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   nonInteractive?: boolean;
   dataDir?: string;
 };
@@ -57,6 +58,7 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (typeArg: string, opts: SeeDecryptedStorageOpts) => {
@@ -88,6 +90,7 @@ export function registerSeeDecryptedStorageCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           loadStore(storePath, candidate);

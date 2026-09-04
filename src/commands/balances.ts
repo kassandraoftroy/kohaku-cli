@@ -23,7 +23,7 @@ import {
   type StealthWalletProfile,
 } from "../lib/stealth/storage.js";
 import { resolveRegisterSigner } from "../lib/names/ownership.js";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { quietNonInteractive, runQuietSpinner, manageSpinner } from "../utils/cli-quiet";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
@@ -47,6 +47,7 @@ import { readSeedKeystore } from "../utils/mnemonic";
 type BalancesOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   nonInteractive?: boolean;
   verbose?: boolean;
   include?: string;
@@ -493,6 +494,7 @@ export function registerBalancesCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletBalancesOptional)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--non-interactive", cliOptions.nonInteractiveBalances)
     .option(
       "--verbose",
@@ -562,6 +564,7 @@ export function registerBalancesCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

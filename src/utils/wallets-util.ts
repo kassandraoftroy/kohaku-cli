@@ -5,6 +5,7 @@ import { password, select } from "@inquirer/prompts";
 
 import { cliError } from "./cli-errors";
 import { SEED_FILENAME } from "./mnemonic";
+import { readSecretFile } from "./secret-file";
 
 // --- Paths: CLI wallet name → filesystem ---
 
@@ -94,11 +95,42 @@ export function expectedChainIdStringFromWalletDir(walletDir: string): string {
  */
 export async function resolveWalletPassword(opts: {
   flagPassword?: string | undefined;
+  flagPasswordFile?: string | undefined;
   nonInteractive?: boolean | undefined;
   /** Prompt text when asking interactively (default: "Wallet password:"). */
   promptMessage?: string | undefined;
   validate?: ((password: string) => void | Promise<void>) | undefined;
 }): Promise<string | null> {
+  if (opts.flagPassword !== undefined && opts.flagPasswordFile !== undefined) {
+    throw new Error("--password and --password-file are mutually exclusive.");
+  }
+
+  if (opts.flagPasswordFile !== undefined) {
+    const fromFile = readSecretFile(opts.flagPasswordFile, {
+      label: "Password",
+    });
+    if (opts.validate) {
+      const candidates = [fromFile];
+      const legacyTrimmed = fromFile.trim();
+      if (legacyTrimmed && legacyTrimmed !== fromFile) {
+        candidates.push(legacyTrimmed);
+      }
+      let lastErr: unknown;
+      for (const candidate of candidates) {
+        try {
+          await opts.validate(candidate);
+          return candidate;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error("Invalid wallet password.");
+    }
+    return fromFile;
+  }
+
   const fromFlag = opts.flagPassword?.trim();
   if (fromFlag) {
     const candidates: string[] = [fromFlag];
@@ -127,7 +159,9 @@ export async function resolveWalletPassword(opts: {
     return candidates[0]!;
   }
   if (opts.nonInteractive) {
-    cliError("--password is required when using --non-interactive.");
+    cliError(
+      "--password or --password-file is required when using --non-interactive."
+    );
     return null;
   }
   for (;;) {
@@ -158,8 +192,16 @@ export async function resolveWalletPassword(opts: {
  * treat --password as the literal password text.
  */
 export function resolvePasswordInputPreferFile(
-  flagPassword: string | undefined
+  flagPassword: string | undefined,
+  flagPasswordFile?: string | undefined
 ): string | null {
+  if (flagPassword !== undefined && flagPasswordFile !== undefined) {
+    throw new Error("--password and --password-file are mutually exclusive.");
+  }
+  if (flagPasswordFile !== undefined) {
+    return readSecretFile(flagPasswordFile, { label: "Password" });
+  }
+
   const raw = flagPassword?.trim();
   if (!raw) return null;
 

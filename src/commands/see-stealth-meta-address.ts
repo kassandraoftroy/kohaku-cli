@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { deriveStealthKeypair } from "../lib/stealth/keys.js";
 import { readSeedKeystore } from "../utils/mnemonic";
 import { DEFAULT_DATA_DIR } from "../utils/rpc";
-import { cliOptions } from "../utils/cli-command-options";
+import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliErrorFromCaught } from "../utils/cli-errors";
 import {
   expectedChainIdStringFromWalletDir,
@@ -15,6 +15,7 @@ import {
 type SeeStealthMetaAddressOpts = {
   wallet?: string;
   password?: string;
+  passwordFile?: string;
   nonInteractive?: boolean;
   dataDir?: string;
 };
@@ -27,6 +28,7 @@ export function registerSeeStealthMetaAddressCommand(program: Command): void {
     )
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: SeeStealthMetaAddressOpts) => {
@@ -48,6 +50,7 @@ export function registerSeeStealthMetaAddressCommand(program: Command): void {
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
+        flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
           readSeedKeystore(candidate, walletDir);

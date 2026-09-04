@@ -4,7 +4,11 @@ import { password } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 
-import { cliOptions } from "../utils/cli-command-options";
+import {
+  cliOptions,
+  mnemonicFileOption,
+  passwordFileOption,
+} from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   createWalletOnDisk,
@@ -21,18 +25,29 @@ import {
   resolveWalletDir,
 } from "../utils/wallets-util";
 import { normalizeValidatedMnemonic } from "../utils/mnemonic";
+import { readSecretFile } from "../utils/secret-file";
 
 type CreateWalletOpts = {
   import?: boolean;
   nonInteractive?: boolean;
   password?: string;
+  passwordFile?: string;
   mnemonic?: string;
+  mnemonicFile?: string;
   rpcUrl?: string;
   testnet?: boolean;
   longSeed?: boolean;
   stealthStartBlock?: string | true;
   dataDir?: string;
 };
+
+export function shouldResolveCreatePasswordFromFlags(opts: {
+  nonInteractive?: boolean;
+  password?: string;
+  passwordFile?: string;
+}): boolean {
+  return !!opts.nonInteractive || opts.passwordFile !== undefined;
+}
 
 function printMnemonicBox(mnemonic: string): void {
   const line = mnemonic.trim();
@@ -89,13 +104,15 @@ export function registerCreateWalletCommand(program: Command): void {
     .option("--import", "Paste an existing mnemonic instead of generating one")
     .option(
       "--non-interactive",
-      "Agent mode: no interactive prompts (requires --password and other flags as documented)"
+      "Agent mode: no prompts (requires --password/--password-file and other documented flags)"
     )
     .option(
       "--password <password>",
-      "Password to encrypt this wallet (required with --non-interactive; else prompted)"
+      "Non-interactive encryption password (legacy literal-or-file input)"
     )
+    .addOption(passwordFileOption())
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
+    .addOption(mnemonicFileOption())
     .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
@@ -116,6 +133,10 @@ export function registerCreateWalletCommand(program: Command): void {
         cliError("--long-seed only applies when generating a new mnemonic (omit --import).");
         return;
       }
+      if (!opts.import && opts.mnemonicFile !== undefined) {
+        cliError("--mnemonic-file only applies with --import.");
+        return;
+      }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       let walletDir: string;
@@ -134,14 +155,30 @@ export function registerCreateWalletCommand(program: Command): void {
       let mnemonicPhrase: string;
       let importRpcUrl: string | undefined;
       if (opts.import) {
-        const pasted = opts.nonInteractive
-          ? opts.mnemonic
-          : await password({
+        let pasted: string | undefined;
+        if (opts.mnemonicFile !== undefined) {
+          try {
+            pasted = readSecretFile(opts.mnemonicFile, {
+              label: "Mnemonic",
+              allowNewlines: true,
+              maxBytes: 4096,
+            }).replace(/\s+/g, " ");
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
+        } else {
+          pasted = opts.nonInteractive
+            ? opts.mnemonic
+            : await password({
               message: "Enter your 12 or 24-word mnemonic:",
               mask: "*",
             });
+        }
         if (opts.nonInteractive && !pasted?.trim()) {
-          cliError("--mnemonic is required when using --non-interactive --import.");
+          cliError(
+            "--mnemonic or --mnemonic-file is required when using --non-interactive --import."
+          );
           return;
         }
         importRpcUrl = resolveRpcUrl(opts.rpcUrl);
@@ -160,10 +197,21 @@ export function registerCreateWalletCommand(program: Command): void {
       }
 
       let encryptPassword: string;
-      if (opts.nonInteractive) {
-        const resolved = resolvePasswordInputPreferFile(opts.password);
+      if (shouldResolveCreatePasswordFromFlags(opts)) {
+        let resolved: string | null;
+        try {
+          resolved = resolvePasswordInputPreferFile(
+            opts.nonInteractive ? opts.password : undefined,
+            opts.passwordFile
+          );
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
         if (!resolved) {
-          cliError("--password is required when using --non-interactive.");
+          cliError(
+            "--password or --password-file is required when using --non-interactive."
+          );
           return;
         }
         encryptPassword = resolved;
