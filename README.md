@@ -210,7 +210,10 @@ List wallet names and network kind (mainnet / testnet).
 | Option | Description |
 |--------|-------------|
 | `--non-interactive` | Output `{"wallets":{"name":{"mainnet":true|false|null}}}` |
+| `--format json-v1` | Opt-in versioned JSON: `{kind:"kohaku-cli/wallet-list",version:1,wallets:[{name,network,chainId,caip2}]}`. Does not require `--non-interactive`. |
 | `--dataDir <path>` | Data root. |
+
+The legacy `--non-interactive` object shape remains unchanged for compatibility. New machine integrations should use `--format json-v1`; `network` is `mainnet`, `testnet`, or `unknown`, and `caip2` is the CAIP-2 identifier when the network is known.
 
 ---
 

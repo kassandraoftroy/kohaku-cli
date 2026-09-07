@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- add `list-wallets --format json-v1`, an opt-in versioned discovery schema with network, numeric chain ID, and CAIP-2 chain ID. The existing `--non-interactive` JSON shape remains unchanged.
 - add explicit `--password-file` support to every command that unlocks a wallet, and `--mnemonic-file` to `create-wallet --import`. These POSIX inputs are mutually exclusive with their literal counterparts and require owner-only, regular, non-symlink files; they fail closed on Windows where ACLs are not validated.
 
 ## [0.0.5] — 2026-08-29
