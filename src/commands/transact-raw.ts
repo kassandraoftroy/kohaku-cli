@@ -7,7 +7,7 @@ import { getAddress, isAddress } from "viem";
 import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
-  parseFromIndex,
+  fromValueNeedsNameResolution,
   resolveShieldSender,
   simulateTransactionOrThrow,
 } from "../lib/shield-flow.js";
@@ -216,7 +216,10 @@ export function registerTransactRawCommand(program: Command): void {
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
-    .option("--from <address-or-index>", "Public sender address or public-account index")
+    .option(
+      "--from <address-or-index>",
+      "Public sender address, HD index, or stealth selector (s0)"
+    )
     .option(
       "--from-priv",
       "With --broadcast: derive --from index from mnemonic when missing from public accounts"
@@ -300,7 +303,7 @@ export function registerTransactRawCommand(program: Command): void {
       const dryRun = !broadcast;
       let fromValue = opts.from ?? "";
 
-      if (fromValue && parseFromIndex(fromValue) === null && !isAddress(fromValue)) {
+      if (fromValueNeedsNameResolution(fromValue)) {
         try {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         } catch (e) {
