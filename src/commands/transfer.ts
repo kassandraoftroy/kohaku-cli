@@ -6,6 +6,7 @@ import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import {
   formatAccountSelector,
+  fromValueNeedsNameResolution,
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   parseFromIndex,
@@ -314,12 +315,7 @@ export function registerTransferCommand(program: Command): void {
       let toValue = opts.to ?? "";
 
       // Resolve names to addresses early so downstream index/address logic sees plain 0x… values.
-      if (
-        fromValue &&
-        parseFromIndex(fromValue) === null &&
-        parseStealthIndex(fromValue) === null &&
-        !isAddress(fromValue)
-      ) {
+      if (fromValueNeedsNameResolution(fromValue)) {
         try {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         } catch (e) {

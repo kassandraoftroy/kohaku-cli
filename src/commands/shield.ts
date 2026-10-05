@@ -9,6 +9,7 @@ import { makeHost } from "../host/makeHost";
 import {
   buildShieldCallList,
   formatAccountSelector,
+  fromValueNeedsNameResolution,
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   parseFromIndex,
@@ -466,12 +467,7 @@ export function registerShieldCommand(program: Command): void {
       let amountMaxMinDenom: bigint | undefined;
 
       try {
-        if (
-          fromValue &&
-          parseFromIndex(fromValue) === null &&
-          parseStealthIndex(fromValue) === null &&
-          !isAddress(fromValue)
-        ) {
+        if (fromValueNeedsNameResolution(fromValue)) {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         }
 
@@ -658,12 +654,7 @@ export function registerShieldCommand(program: Command): void {
       }
 
       // Resolve ENS / GNS / WNS names to addresses before the index/address branch.
-      if (
-        fromValue &&
-        parseFromIndex(fromValue) === null &&
-        parseStealthIndex(fromValue) === null &&
-        !isAddress(fromValue)
-      ) {
+      if (fromValueNeedsNameResolution(fromValue)) {
         try {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         } catch (e) {

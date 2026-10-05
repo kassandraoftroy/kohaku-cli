@@ -106,6 +106,21 @@ export function parseFromIndex(fromValue: string): number | null {
   return parsed;
 }
 
+/**
+ * True when `--from` is a name to resolve rather than something
+ * {@link resolveShieldSender} already understands (HD index, stealth selector
+ * `s0`/`stealth:0`, or a plain address). Shared so every command's `--from`
+ * accepts the same selectors.
+ */
+export function fromValueNeedsNameResolution(fromValue: string): boolean {
+  if (!fromValue) return false;
+  return (
+    parseFromIndex(fromValue) === null &&
+    parseStealthIndex(fromValue) === null &&
+    !isAddress(fromValue)
+  );
+}
+
 /** Build shield account rows from the balances snapshot (no RPC). */
 export function publicAccountsWithBalanceFromSnapshot(
   snap: BalancesSnapshot,

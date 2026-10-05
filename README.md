@@ -362,7 +362,7 @@ Transfer ETH or ERC-20 tokens from one wallet public account to any public addre
 |--------|-------------|
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
-| `--from <address-or-index>` | Sender public account address or HD index. |
+| `--from <address-or-index>` | Sender public account address, HD index, or stealth selector (`s0`). |
 | `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
 | `--to <address>` | Recipient address. |
 | `--token <address\|symbol\|eth>` | Token address or symbol (default: `eth`). |
@@ -400,7 +400,7 @@ Simulate or submit one or more raw contract calls from a public account.
 | `--values <wei>` | ETH value in wei for each call (default: `0` for every call). The count must match `--targets`. |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
-| `--from <address-or-index>` | Sender public account address or HD index. |
+| `--from <address-or-index>` | Sender public account address, HD index, or stealth selector (`s0`). |
 | `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit on-chain (single EOA tx, or one batched UserOp for 2+ calls). Omit to simulate and print payloads. |

@@ -7,6 +7,7 @@ import { encodeFunctionData, getAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import {
+  fromValueNeedsNameResolution,
   parseFromIndex,
   partitionShieldTxs,
   resolveShieldSender,
@@ -213,5 +214,64 @@ describe("toShieldTxs", () => {
   it("rejects an empty or unknown prepareShield shape", () => {
     assert.throws(() => toShieldTxs([]), /no transactions/);
     assert.throws(() => toShieldTxs({}), /Unsupported shield operation/);
+  });
+});
+
+describe("fromValueNeedsNameResolution", () => {
+  // `--from` only goes to ENS/GNS/WNS when resolveShieldSender cannot already
+  // handle it. A stealth selector that leaks through fails with
+  // "is not a valid Ethereum address".
+  it("keeps every selector resolveShieldSender accepts out of name resolution", () => {
+    for (const value of [
+      "0",
+      "12",
+      "s0",
+      "S0",
+      "s12",
+      "stealth:0",
+      "STEALTH:3",
+      OTHER,
+      OTHER.toLowerCase(),
+    ]) {
+      assert.equal(fromValueNeedsNameResolution(value), false, value);
+    }
+  });
+
+  it("routes names and unknown selectors to name resolution", () => {
+    for (const value of ["vitalik.eth", "foo.gwei", "bar.wei", "not-an-address"]) {
+      assert.equal(fromValueNeedsNameResolution(value), true, value);
+    }
+  });
+
+  it("treats an empty --from as nothing to resolve", () => {
+    assert.equal(fromValueNeedsNameResolution(""), false);
+  });
+
+  it("agrees with resolveShieldSender on a stored stealth account", () => {
+    withWalletDir((walletDir) => {
+      makeStealthAccountsStorage(walletDir, "pw").upsertAccount({
+        address: STEALTH_ADDRESS,
+        priv: STEALTH_PRIV,
+        ephemeralPublicKey:
+          "0x02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        schemeId: 1,
+        lastUpdated: 1,
+        ethBalance: "0",
+        erc20Balances: {},
+      });
+
+      for (const fromValue of ["s0", "S0", "stealth:0"]) {
+        assert.equal(fromValueNeedsNameResolution(fromValue), false, fromValue);
+        const resolved = resolveShieldSender({
+          fromValue,
+          walletDir,
+          mnemonic: MNEMONIC,
+          password: "pw",
+          dryRun: true,
+          allowDeriveFromMnemonic: false,
+        });
+        assert.equal(resolved.senderAddress, getAddress(STEALTH_ADDRESS));
+      }
+    });
   });
 });
