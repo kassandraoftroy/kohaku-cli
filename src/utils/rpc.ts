@@ -57,19 +57,35 @@ async function detectChainId(rpcUrl: string): Promise<bigint> {
   return BigInt(json.result);
 }
 
+function rpcMethodFromBody(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as
+      | { method?: string }
+      | Array<{ method?: string }>;
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) return "batch(0)";
+      const methods = parsed.map((item) => item.method ?? "?");
+      const unique = [...new Set(methods)];
+      const summary =
+        unique.length <= 4
+          ? unique.join(",")
+          : `${unique.slice(0, 3).join(",")},+${unique.length - 3}`;
+      return `batch(${parsed.length}:${summary})`;
+    }
+    return parsed.method;
+  } catch {
+    return undefined;
+  }
+}
+
 function wrapFetchWithTrafficLog(rpcUrl: string): typeof fetch {
   const redacted = redactUrl(rpcUrl);
   return async (input, init) => {
     const started = Date.now();
     let rpcMethod: string | undefined;
-    try {
-      const body = init?.body;
-      if (typeof body === "string") {
-        const parsed = JSON.parse(body) as { method?: string };
-        rpcMethod = parsed.method;
-      }
-    } catch {
-      // ignore parse errors for traffic metadata
+    const body = init?.body;
+    if (typeof body === "string") {
+      rpcMethod = rpcMethodFromBody(body);
     }
 
     try {
@@ -121,7 +137,11 @@ export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClie
   const chain = chainForId(chainId, rpcUrl);
   return createPublicClient({
     chain,
-    transport: http(rpcUrl, { fetchFn: wrapFetchWithTrafficLog(rpcUrl) }),
+    transport: http(rpcUrl, {
+      fetchFn: wrapFetchWithTrafficLog(rpcUrl),
+      // Coalesce concurrent JSON-RPC calls into one HTTP POST (any compliant node).
+      batch: { batchSize: 100, wait: 10 },
+    }),
   });
 }
 

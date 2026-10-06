@@ -182,22 +182,30 @@ async function loadErc20Meta(
   token: `0x${string}`
 ): Promise<{ symbol: string; decimals: number }> {
   let decimals: number;
+  let symbol: string;
   try {
-    decimals = Number(
-      await client.readContract({
+    const [decimalsResult, symbolResult] = await Promise.all([
+      client.readContract({
         address: token,
         abi: ERC20_ABI,
         functionName: "decimals",
-      })
-    );
+      }),
+      client
+        .readContract({
+          address: token,
+          abi: ERC20_ABI,
+          functionName: "symbol",
+        })
+        .catch(() => "UNKNOWN" as const),
+    ]);
+    decimals = Number(decimalsResult);
+    symbol = symbolResult;
   } catch {
     throw new Error(`Failed to read decimals() for token ${token}`);
   }
-  const symbol = await client.readContract({
-    address: token,
-    abi: ERC20_ABI,
-    functionName: "symbol",
-  }).catch(() => "UNKNOWN");
+  if (!Number.isFinite(decimals)) {
+    throw new Error(`Failed to read decimals() for token ${token}`);
+  }
   return { symbol, decimals };
 }
 
@@ -561,15 +569,17 @@ async function loadBalancesSnapshotInner(
   const tokenMeta = new Map<string, { symbol: string; decimals: number }>();
   let privateNotes: PrivateNotesByProtocol | undefined;
   try {
-    for (const token of tokenAddresses) {
-      const key = token.toLowerCase();
-      const known = knownMetaByLower.get(key);
-      if (known) {
-        tokenMeta.set(key, known);
-      } else {
-        tokenMeta.set(key, await loadErc20Meta(rpcForPublic, token));
-      }
-    }
+    await Promise.all(
+      tokenAddresses.map(async (token) => {
+        const key = token.toLowerCase();
+        const known = knownMetaByLower.get(key);
+        if (known) {
+          tokenMeta.set(key, known);
+        } else {
+          tokenMeta.set(key, await loadErc20Meta(rpcForPublic, token));
+        }
+      })
+    );
 
     if (verbose) {
       privateNotes = {};
@@ -626,10 +636,64 @@ async function loadBalancesSnapshotInner(
       })),
     ];
 
-    for (const entry of allSpendable) {
-      const ethBalance = await rpcForPublic.getBalance({
-        address: entry.address as `0x${string}`,
-      });
+    // Fire all independent ETH + ERC-20 reads together so viem HTTP batching
+    // packs them into one (or few) JSON-RPC POSTs.
+    type EthSlot = { kind: "eth"; entryIndex: number; balance: bigint };
+    type TokenSlot = {
+      kind: "token";
+      entryIndex: number;
+      token: `0x${string}`;
+      balance: bigint;
+    };
+    const balanceJobs: Array<Promise<EthSlot | TokenSlot>> = [];
+    for (let entryIndex = 0; entryIndex < allSpendable.length; entryIndex++) {
+      const entry = allSpendable[entryIndex]!;
+      const address = entry.address as `0x${string}`;
+      balanceJobs.push(
+        rpcForPublic.getBalance({ address }).then((balance) => ({
+          kind: "eth" as const,
+          entryIndex,
+          balance,
+        }))
+      );
+      for (const token of tokenAddresses) {
+        balanceJobs.push(
+          rpcForPublic
+            .readContract({
+              address: token,
+              abi: ERC20_ABI,
+              functionName: "balanceOf",
+              args: [address],
+            })
+            .then((balance) => ({
+              kind: "token" as const,
+              entryIndex,
+              token,
+              balance,
+            }))
+        );
+      }
+    }
+    const balanceResults = await Promise.all(balanceJobs);
+
+    const ethByEntry = new Map<number, bigint>();
+    const tokenByEntry = new Map<number, Map<string, bigint>>();
+    for (const result of balanceResults) {
+      if (result.kind === "eth") {
+        ethByEntry.set(result.entryIndex, result.balance);
+        continue;
+      }
+      let byToken = tokenByEntry.get(result.entryIndex);
+      if (!byToken) {
+        byToken = new Map();
+        tokenByEntry.set(result.entryIndex, byToken);
+      }
+      byToken.set(result.token.toLowerCase(), result.balance);
+    }
+
+    for (let entryIndex = 0; entryIndex < allSpendable.length; entryIndex++) {
+      const entry = allSpendable[entryIndex]!;
+      const ethBalance = ethByEntry.get(entryIndex) ?? 0n;
       aggregatedEth.push(ethBalance);
 
       const priorErc20 =
@@ -646,14 +710,10 @@ async function loadBalancesSnapshotInner(
         },
       ];
 
+      const tokenBalances = tokenByEntry.get(entryIndex) ?? new Map();
       for (const token of tokenAddresses) {
         const key = token.toLowerCase();
-        const bal = await rpcForPublic.readContract({
-          address: token,
-          abi: ERC20_ABI,
-          functionName: "balanceOf",
-          args: [entry.address as `0x${string}`],
-        });
+        const bal = tokenBalances.get(key) ?? 0n;
         erc20Balances[key] = bal.toString();
         aggregatedByToken.set(key, (aggregatedByToken.get(key) ?? 0n) + bal);
         const meta = tokenMeta.get(key)!;

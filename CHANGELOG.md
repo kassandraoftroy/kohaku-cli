@@ -6,10 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.6] — 2026-10-06
+
 ### Added
 
 - add `list-wallets --format json-v1`, an opt-in versioned discovery schema with network, numeric chain ID, and CAIP-2 chain ID. The existing `--non-interactive` JSON shape remains unchanged.
 - add explicit `--password-file` support to every command that unlocks a wallet, and `--mnemonic-file` to `create-wallet --import`. These POSIX inputs are mutually exclusive with their literal counterparts and require owner-only, regular, non-symlink files; they fail closed on Windows where ACLs are not validated.
+
+### Changed
+
+- Public Ethereum RPC client (`makePublicClient`) uses viem HTTP JSON-RPC batching by default, so concurrent reads share HTTP round-trips against any compliant node.
+- `balances` loads public ETH + ERC-20 balances (and unknown token meta) concurrently so independent state reads pack into batched JSON-RPC POSTs.
 
 ### Fixed
 
