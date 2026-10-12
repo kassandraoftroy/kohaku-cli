@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Public Ethereum RPC client (`makePublicClient`) uses viem HTTP JSON-RPC batching by default, so concurrent reads share HTTP round-trips against any compliant node.
+- Public Ethereum RPC HTTP timeout raised from viem's default 10s to 180s so large batched POSTs (e.g. `balances` against slow PIR RPC) do not abort mid-batch.
 - `balances` loads public ETH + ERC-20 balances (and unknown token meta) concurrently so independent state reads pack into batched JSON-RPC POSTs.
 
 ### Fixed

@@ -22,6 +22,14 @@ export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
 /** Used when neither `--rpc-url` nor `RPC_URL` is set (local node). */
 export const DEFAULT_RPC_URL = "http://localhost:8545";
 
+/**
+ * viem's default is 10s. One balances POST can hold up to 100 calls, and
+ * clearnet local-pir-rpc answers that batch one PIR lookup at a time
+ * (~1s each). The server only logs the batch once it has finished, so a
+ * client abort looks like a silent timeout.
+ */
+const RPC_HTTP_TIMEOUT_MS = 180_000;
+
 function chainForId(chainId: bigint, rpcUrl: string): Chain {
   if (chainId === 1n) return mainnet;
   if (chainId === 11155111n) return sepolia;
@@ -139,6 +147,7 @@ export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClie
     chain,
     transport: http(rpcUrl, {
       fetchFn: wrapFetchWithTrafficLog(rpcUrl),
+      timeout: RPC_HTTP_TIMEOUT_MS,
       // Coalesce concurrent JSON-RPC calls into one HTTP POST (any compliant node).
       batch: { batchSize: 100, wait: 10 },
     }),
