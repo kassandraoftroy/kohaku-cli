@@ -22,6 +22,14 @@ export const DEFAULT_DATA_DIR = join(homedir(), ".kohaku-cli");
 /** Used when neither `--rpc-url` nor `RPC_URL` is set (local node). */
 export const DEFAULT_RPC_URL = "http://localhost:8545";
 
+/**
+ * viem's default is 10s. One balances POST can hold up to 100 calls, and
+ * clearnet local-pir-rpc answers that batch one PIR lookup at a time
+ * (~1s each). The server only logs the batch once it has finished, so a
+ * client abort looks like a silent timeout.
+ */
+const RPC_HTTP_TIMEOUT_MS = 180_000;
+
 function chainForId(chainId: bigint, rpcUrl: string): Chain {
   if (chainId === 1n) return mainnet;
   if (chainId === 11155111n) return sepolia;
@@ -57,19 +65,35 @@ async function detectChainId(rpcUrl: string): Promise<bigint> {
   return BigInt(json.result);
 }
 
+function rpcMethodFromBody(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as
+      | { method?: string }
+      | Array<{ method?: string }>;
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) return "batch(0)";
+      const methods = parsed.map((item) => item.method ?? "?");
+      const unique = [...new Set(methods)];
+      const summary =
+        unique.length <= 4
+          ? unique.join(",")
+          : `${unique.slice(0, 3).join(",")},+${unique.length - 3}`;
+      return `batch(${parsed.length}:${summary})`;
+    }
+    return parsed.method;
+  } catch {
+    return undefined;
+  }
+}
+
 function wrapFetchWithTrafficLog(rpcUrl: string): typeof fetch {
   const redacted = redactUrl(rpcUrl);
   return async (input, init) => {
     const started = Date.now();
     let rpcMethod: string | undefined;
-    try {
-      const body = init?.body;
-      if (typeof body === "string") {
-        const parsed = JSON.parse(body) as { method?: string };
-        rpcMethod = parsed.method;
-      }
-    } catch {
-      // ignore parse errors for traffic metadata
+    const body = init?.body;
+    if (typeof body === "string") {
+      rpcMethod = rpcMethodFromBody(body);
     }
 
     try {
@@ -121,7 +145,12 @@ export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClie
   const chain = chainForId(chainId, rpcUrl);
   return createPublicClient({
     chain,
-    transport: http(rpcUrl, { fetchFn: wrapFetchWithTrafficLog(rpcUrl) }),
+    transport: http(rpcUrl, {
+      fetchFn: wrapFetchWithTrafficLog(rpcUrl),
+      timeout: RPC_HTTP_TIMEOUT_MS,
+      // Coalesce concurrent JSON-RPC calls into one HTTP POST (any compliant node).
+      batch: { batchSize: 100, wait: 10 },
+    }),
   });
 }
 
