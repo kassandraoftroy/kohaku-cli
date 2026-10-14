@@ -159,7 +159,7 @@ Global behavior:
 | **`--password <password>`** | Legacy wallet unlock input. A literal string or existing file path is accepted for compatibility; prefer the unambiguous `--password-file` form in scripts. |
 | **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands, including `transfer` / `transact-raw` / names). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
 | **Proving artifacts** | Railgun/Tornado keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
-| **Public-sync cache** | Shared **Railgun Subsquid** and **Tornado saga** HTTP pages live under `<dataDir>/public-sync-cache` and speed up those syncs (`balances`, `shield`, `unshield`). Prefetch with `fetch-sync-cache`. Snapshot base: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v1`). Snapshot is historical; live HTTP still fills anything newer. Never evicts — at `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new pages stop being stored instead. Privacy Pools is **not** covered (its cold sync is bundled state JSON plus `eth_getLogs`, which is never HTTP-cached). Wipe with `kohaku clear-tor-cache --public-sync`. |
+| **Public-sync cache** | Shared **Railgun Subsquid** and saga HTTP pages live under `<dataDir>/public-sync-cache` and speed up those syncs (`balances`, `shield`, `unshield`). Prefetch with `fetch-sync-cache`. Snapshot base: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v1`). Snapshot is historical; live HTTP still fills anything newer. Sealed saga chunks are cached; `index.json` and hot heads are always fetched live. Never evicts — at `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new pages stop being stored instead. Privacy Pools **mainnet** history comes from the saga CDN (`saga-pp-state.global.ssl.fastly.net`) with only the tip from `eth_getLogs`. Sepolia Privacy Pools has no saga stream, so it stays on bundled state plus `eth_getLogs`. Wipe with `kohaku clear-tor-cache --public-sync`. |
 
 `--password-file` removes one trailing line ending and otherwise preserves password whitespace. When unlocking an existing wallet, it also retries the fully trimmed value for compatibility with the legacy `--password <existing-file>` behavior. New wallets created with `--password-file` use the preserved value exactly.
 
@@ -706,7 +706,7 @@ kohaku set-name-reverse-record --wallet testWallet --name alice.eth --broadcast
 
 ### `fetch-artifacts`
 
-Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado cold sync is saga CDN + chain, Railgun is Subsquid, Privacy Pools is bundled state JSON + `eth_getLogs` + ASP.
+Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado and Privacy Pools mainnet cold sync is saga CDN + a chain tip, Railgun is Subsquid. Sepolia Privacy Pools is bundled state JSON + `eth_getLogs` + ASP.
 
 With no selectors, downloads the **full proving set** (~260 MB). Narrow with `--variant` / `--poi` / `--tornado` / keys. The public-sync snapshot is a separate concern — see [`fetch-sync-cache`](#fetch-sync-cache).
 
@@ -738,7 +738,7 @@ kohaku fetch-artifacts railgun/01x03/proving_key.bin.br
 
 Download a published snapshot of public protocol-sync HTTP pages into `<dataDir>/public-sync-cache`, so a fresh wallet's first `balances` / `shield` / `unshield` replays **Railgun Subsquid** and **Tornado saga** history from disk instead of paging it over Tor. Anything newer than the snapshot is still fetched live and written through, so the cache stays current as you use it.
 
-Privacy Pools is deliberately **not** in the snapshot: its cold sync is a bundled state JSON plus `eth_getLogs`, and RPC calls never pass through the HTTP cache. Its first sync stays slow.
+Privacy Pools mainnet history is fetched live from its saga CDN (sealed chunks are cached on the way). Sepolia Privacy Pools is not in that CDN, so its sync stays bundled state JSON plus `eth_getLogs`.
 
 The snapshot ships as a **manifest plus ~8 MiB chunks** rather than one large archive. Each chunk is fetched one at a time, checked against the `sha256` in the manifest, and extracted on arrival, so a dropped Tor circuit costs one chunk instead of the whole transfer. Re-running skips chunks whose entries are already on disk, which makes an interrupted download resumable and a partial cache repairable.
 

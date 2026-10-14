@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Privacy Pools unshield is an ERC-4337 paymaster user operation. The typed amount is the net the recipient receives; the paymaster fee is paid from the private balance. Approved notes are spent largest first, and further notes run as execution-phase withdrawals. `--tail-calls` are supported. Sepolia unshield fails until a paymaster adapter is configured; shield and `balances` still work there. Withdrawals are no longer sent through fastrelay.
 - Privacy Pools shield accepts any asset the entrypoint has a pool for, rejects deposits below that pool's minimum, and shows the vetting fee in the shield preview.
 - `@kohaku-eth/privacy-pools` `0.0.2-alpha.24`, `@kohaku-eth/tornado-cash` `0.0.2-alpha.25`, `@kohaku-eth/plugins` `0.0.1-alpha.17`.
+- Privacy Pools mainnet sync reads history from the saga CDN and uses `eth_getLogs` only for the tip past that coverage. The bundled mainnet state snapshot is no longer seeded. Sepolia has no Privacy Pools saga stream, so it keeps the bundled snapshot and syncs the tip from logs.
 
 ## [0.0.6] — 2026-10-06
 

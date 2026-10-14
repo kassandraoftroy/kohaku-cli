@@ -6,8 +6,8 @@ import { pluginIdForProtocol, type SupportedProtocol } from "./plugins.js";
 /**
  * `${walletDir}|${pluginId}` -> storage file was missing when the Host was built.
  *
- * Privacy Pools seeds a bundled state snapshot into `ppv1-storage.json` while the
- * plugin is constructed, i.e. before any sync runs, so a plain file check made at
+ * Sepolia Privacy Pools seeds a bundled state snapshot into `ppv1-storage.json`
+ * while the plugin is constructed, i.e. before any sync runs, so a plain file check made at
  * sync time would report an incremental sync on a genuinely first one. Recording
  * the answer at Host creation (the one step that always precedes plugin
  * construction) keeps callers free to ask whenever it suits them.

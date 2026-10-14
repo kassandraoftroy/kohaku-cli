@@ -39,7 +39,27 @@ export function setPublicSyncCacheDataDir(dataDir: string): void {
   activeDataDir = dataDir;
 }
 
+/**
+ * `index.json` and `*.hot.jsonl.gz` move as the publisher advances. Sealed
+ * chunk files are content-addressed by their block range and stay cached.
+ */
+export function isMutableSagaSyncUrl(url: string): boolean {
+  let path: string;
+  try {
+    path = new URL(url).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    path.endsWith("/index.json") ||
+    path.endsWith("/index.json.sig") ||
+    path.endsWith("/index.json.sigs") ||
+    path.endsWith(".hot.jsonl.gz")
+  );
+}
+
 export function isPublicSyncCacheableUrl(url: string): boolean {
+  if (isMutableSagaSyncUrl(url)) return false;
   const category = categorizeUrl(url);
   return category === "subsquid" || category === "saga";
 }

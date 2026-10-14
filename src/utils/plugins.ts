@@ -35,10 +35,13 @@ import {
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { makeTornadoArtifactsLoader } from "./proving-artifacts.js";
 import { privacyPoolsPaymasterConfig } from "./privacy-pools-paymaster.js";
+import {
+  createPrivacyPoolsSagaDataService,
+  privacyPoolsSagaSourceUrl,
+} from "./privacy-pools-saga.js";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
-import ppv1MainnetState from "./ppv1-mainnet-state.json";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
@@ -607,10 +610,8 @@ export async function prepareProtocolShield(
 }
 
 function ppv1BundledSnapshotMap(chainId: bigint): Record<string, unknown> {
-  return (chainId === 11155111n ? ppv1SepoliaState : ppv1MainnetState) as Record<
-    string,
-    unknown
-  >;
+  if (chainId !== 11155111n) return {};
+  return ppv1SepoliaState as Record<string, unknown>;
 }
 
 function ppv1StorageKey(chainId: bigint, entrypointAddress: bigint): string {
@@ -625,9 +626,8 @@ function ppv1LastSyncedBlock(state: unknown): bigint {
 }
 
 /**
- * Privacy Pools only uses bundled JSON when wallet storage has no entry for this
- * chain/entrypoint. Seed (or upgrade stale) ppv1-storage so first sync resumes from
- * the snapshot instead of deployment block.
+ * Sepolia has no saga stream, so seed its bundled snapshot when wallet storage
+ * is missing or older. Mainnet history comes from the saga CDN instead.
  */
 async function ensurePpv1BundledStateSeeded(
   host: Host,
@@ -707,13 +707,25 @@ export async function createProtocolPlugin(
         network: host.network,
         aspUrl: oxbowAspUrlForChain(chainId),
       }),
-    initialState:
-      chainId === 11155111n
-        ? async () => ppv1SepoliaState as never
-        : async () => ppv1MainnetState as never,
+    ...(chainId === 11155111n
+      ? { initialState: async () => ppv1SepoliaState as never }
+      : {}),
   };
 
-  return createPPv1Plugin(host, ppv1Params) as AnyPlugin;
+  // Sepolia's saga index does not publish Privacy Pools, so that chain keeps
+  // the default eth_getLogs sync. Mainnet reads history from the saga CDN and
+  // only the blocks past saga's head from RPC.
+  const dataService = privacyPoolsSagaSourceUrl(chainId)
+    ? createPrivacyPoolsSagaDataService({
+        provider: host.provider,
+        chainId,
+      })
+    : undefined;
+
+  return createPPv1Plugin(host, {
+    ...ppv1Params,
+    ...(dataService ? { dataService } : {}),
+  } as never) as AnyPlugin;
 }
 
 export async function broadcastTornadoPrivateOp(
