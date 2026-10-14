@@ -1,18 +1,18 @@
-import {
-  createPPv1Broadcaster,
-  PrivacyPoolsV1_0xBow,
-} from "@kohaku-eth/privacy-pools";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
-import { formatUnits, getAddress, parseAbi, parseUnits } from "viem";
+import { formatUnits, parseUnits } from "viem";
 
+import { fetchPimlicoMaxFeePerGas } from "../utils/pimlico-gas.js";
 import {
-  makePublicClient,
-  disposePublicClient,
-  railgunPimlicoBundlerUrl,
-} from "../utils/rpc.js";
-import { makePublicAccountsStorage } from "../utils/public-accounts.js";
-import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progress.js";
-import { isFirstProtocolSync } from "../utils/first-sync.js";
+  privacyPoolsApprovedNotes,
+  privacyPoolsAssetAddress,
+  privacyPoolsFeeWei,
+  privacyPoolsRequiredGas,
+  quotePrivacyPoolsPaymasterFeeInToken,
+  sumPrivacyPoolsNoteBalances,
+  countPrivacyPoolsNotesForAmount,
+  type PpNoteBalance,
+} from "../utils/privacy-pools-paymaster.js";
+import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import { withTor } from "../utils/tor.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
@@ -20,149 +20,115 @@ import {
   privateBalanceRowMatchesUnshieldToken,
 } from "../utils/tokens-util.js";
 import {
-  assertTornadoPaymasterConfigured,
   broadcastTornadoPrivateOp,
-  countTornadoWithdrawals,
-  configureRailgunForUnshield,
-  assertRailgunExternalRecipientAllowed,
   ETH_AS_ERC20,
   totalTornadoUnspentBalance,
-  PRIVACY_POOLS_BROADCASTER_URL,
-  railgunErc20AssetAmount,
-  railgunNativeEthAssetAmount,
-  tornadoUnshieldOptions,
   type AnyPlugin,
   type SupportedProtocol,
 } from "../utils/plugins.js";
+import { createTorAwarePaymasterBroadcaster } from "../utils/tornado-paymaster-broadcaster.js";
 import {
   computeRailgunMaxUnshieldAmount,
   railgunMaxReceivableFromBalance,
   railgunUnshieldFeeBps,
 } from "../utils/railgun-unshield-max.js";
-import { resolveTornadoPrepareMaxFeePerGas } from "../utils/tornado-paymaster-gas.js";
-import {
-  assertTornadoUnshieldAmountForToken,
-} from "../utils/tornado-pools.js";
 import { withProtocolRuntime } from "./protocol-runtime.js";
-
-type PpNoteForMax = { balance: bigint; assetAddress: bigint | string };
-
-const PP_ENTRYPOINT_ASSET_CONFIG_ABI = parseAbi([
-  "function assetConfig(address _asset) view returns (address pool, uint256 minimumDepositAmount, uint256 vettingFeeBPS, uint256 maxRelayFeeBPS)",
-]);
-
-type PpPreparedOp = {
-  rawData?: {
-    relayData?: { relayFeeBps?: bigint | number | string };
-  };
-};
-
-function relayFeeBpsFromPreparedOp(prepared: unknown): bigint | null {
-  const raw = (prepared as PpPreparedOp)?.rawData?.relayData?.relayFeeBps;
-  return raw != null ? BigInt(raw) : null;
-}
-
-/** Relayer fee in token units from a prepared Privacy Pools unshield. */
-export function privacyPoolsRelayerFeeWei(
-  prepared: unknown,
-  amountWei: bigint
-): { relayFeeBps: bigint; feeWei: bigint } | null {
-  const relayFeeBps = relayFeeBpsFromPreparedOp(prepared);
-  if (relayFeeBps == null) return null;
-  return {
-    relayFeeBps,
-    feeWei: (amountWei * relayFeeBps) / 10_000n,
-  };
-}
-
-async function fetchPrivacyPoolsMaxRelayFeeBps(
-  rpcUrl: string,
-  chainId: bigint
-): Promise<bigint | null> {
-  const deployment = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
-  if (!deployment) return null;
-  const client = await makePublicClient(rpcUrl);
-  try {
-    const cfg = await client.readContract({
-      address: deployment.entrypoint.entrypointAddress as `0x${string}`,
-      abi: PP_ENTRYPOINT_ASSET_CONFIG_ABI,
-      functionName: "assetConfig",
-      args: [ETH_AS_ERC20 as `0x${string}`],
-    });
-    return BigInt(cfg[3]);
-  } catch {
-    return null;
-  } finally {
-    disposePublicClient(client);
-  }
-}
-
-/** Rejects before broadcast when the relayer quote exceeds the entrypoint relay-fee cap. */
-export async function assertPrivacyPoolsRelayFeeWithinCap(
-  prepared: unknown,
-  rpcUrl: string,
-  chainId: bigint
-): Promise<void> {
-  const relayFeeBps = relayFeeBpsFromPreparedOp(prepared);
-  const maxBps = await fetchPrivacyPoolsMaxRelayFeeBps(rpcUrl, chainId);
-  if (relayFeeBps == null || maxBps == null) return;
-  if (relayFeeBps <= maxBps) return;
-
-  throw new Error(
-    `Privacy Pools relayer fee too high: ${PRIVACY_POOLS_BROADCASTER_URL} quoted ${relayFeeBps} bps ` +
-      `(${(Number(relayFeeBps) / 100).toFixed(2)}%) but this chain's entrypoint allows at most ` +
-      `${maxBps} bps (${(Number(maxBps) / 100).toFixed(2)}%). ` +
-      `This is not about note size — try a larger withdrawal amount or ask the relayer operator to lower fees.`
-  );
-}
-
-function ppNoteAssetLower(n: PpNoteForMax): string {
-  if (typeof n.assetAddress === "bigint") {
-    return `0x${n.assetAddress.toString(16).padStart(40, "0")}`.toLowerCase();
-  }
-  return String(n.assetAddress).toLowerCase();
-}
 
 export type MaxUnshieldAmountHint = {
   cap: bigint;
-  privacyPoolsLargestNote: boolean;
-  /** Railgun: estimated bundler fee reserved from WETH (0 for other assets). */
+  /** Estimated bundler fee reserved from the unshielded ETH balance. */
   estimatedGasFeeWei?: bigint;
-  /** Railgun fee-token max used BPS-only because bundler gas price fetch failed. */
+  /** Bundler gas price fetch failed, so --amount-max is not reliable. */
   railgunGasEstimateFailed?: boolean;
   /** Railgun: raw spendable balance before fee reserves (for --amount-max refine). */
   railgunBalance?: bigint;
 };
 
+async function privacyPoolsMaxReceivable(opts: {
+  plugin: unknown;
+  tokenMeta: ResolvedTokenMeta;
+  chainId: bigint;
+  rpcUrl?: string;
+}): Promise<MaxUnshieldAmountHint> {
+  const target = privacyPoolsAssetAddress(
+    opts.tokenMeta.isEth,
+    opts.tokenMeta.tokenAddress
+  );
+  let notes: PpNoteBalance[] = [];
+  try {
+    const raw = await (
+      opts.plugin as {
+        notes: (assets?: unknown[], includeSpent?: boolean) => Promise<PpNoteBalance[]>;
+      }
+    ).notes(undefined, false);
+    notes = raw.map((note) => ({
+      balance: BigInt(note.balance),
+      approved: note.approved,
+      assetAddress: note.assetAddress,
+    }));
+  } catch {
+    return { cap: 0n };
+  }
+  const approved = privacyPoolsApprovedNotes(notes, target);
+  const total = sumPrivacyPoolsNoteBalances(approved);
+  if (total <= 0n) return { cap: 0n };
+
+  let maxFeePerGas: bigint;
+  try {
+    maxFeePerGas = await fetchPimlicoMaxFeePerGas(
+      railgunPimlicoBundlerUrl(opts.chainId)
+    );
+  } catch {
+    return { cap: 0n, railgunGasEstimateFailed: true };
+  }
+
+  let noteCount = 1;
+  try {
+    noteCount = countPrivacyPoolsNotesForAmount(approved, total);
+  } catch {
+    return { cap: 0n };
+  }
+  const feeWei = privacyPoolsFeeWei(
+    privacyPoolsRequiredGas({
+      isErc20: !opts.tokenMeta.isEth,
+      extraWithdrawals: Math.max(0, noteCount - 1),
+      hasUserTailCalls: false,
+    }),
+    maxFeePerGas
+  );
+  let fee = feeWei;
+  if (!opts.tokenMeta.isEth) {
+    if (!opts.rpcUrl) return { cap: 0n, railgunGasEstimateFailed: true };
+    try {
+      fee = await quotePrivacyPoolsPaymasterFeeInToken({
+        rpcUrl: opts.rpcUrl,
+        chainId: opts.chainId,
+        feeToken: opts.tokenMeta.tokenAddress as `0x${string}`,
+        feeWei,
+      });
+    } catch {
+      return { cap: 0n, railgunGasEstimateFailed: true };
+    }
+  }
+  return {
+    cap: fee >= total ? 0n : total - fee,
+    estimatedGasFeeWei: opts.tokenMeta.isEth ? feeWei : undefined,
+  };
+}
+
 export async function maxUnshieldAmountHint(
   protocol: SupportedProtocol,
   plugin: unknown,
   tokenMeta: ResolvedTokenMeta,
-  chainId: bigint
+  chainId: bigint,
+  rpcUrl?: string
 ): Promise<MaxUnshieldAmountHint> {
   if (protocol === "privacy-pools") {
-    const targetAddr = tokenMeta.isEth
-      ? ETH_AS_ERC20.toLowerCase()
-      : tokenMeta.tokenAddress.toLowerCase();
-    let largest = 0n;
-    try {
-      const notes = await (
-        plugin as unknown as {
-          notes: (assets?: unknown[], includeSpent?: boolean) => Promise<PpNoteForMax[]>;
-        }
-      ).notes(undefined, false);
-      for (const n of notes) {
-        if (ppNoteAssetLower(n) !== targetAddr || n.balance <= 0n) continue;
-        if (n.balance > largest) largest = n.balance;
-      }
-    } catch {
-      // ignore
-    }
-    return { cap: largest, privacyPoolsLargestNote: true };
+    return privacyPoolsMaxReceivable({ plugin, tokenMeta, chainId, rpcUrl });
   }
 
   if (protocol !== "railgun" && protocol !== "tornado") {
-    return { cap: 0n, privacyPoolsLargestNote: false };
+    return { cap: 0n };
   }
 
   // Tornado: max is the sum of all unspent notes for this asset.
@@ -173,9 +139,9 @@ export async function maxUnshieldAmountHint(
     };
     try {
       const cap = await totalTornadoUnspentBalance(plugin as AnyPlugin, asset);
-      return { cap, privacyPoolsLargestNote: false };
+      return { cap };
     } catch {
-      return { cap: 0n, privacyPoolsLargestNote: false };
+      return { cap: 0n };
     }
   }
 
@@ -212,7 +178,6 @@ export async function maxUnshieldAmountHint(
       });
       return {
         cap: amount,
-        privacyPoolsLargestNote: false,
         estimatedGasFeeWei,
         railgunBalance: sum,
       };
@@ -225,14 +190,13 @@ export async function maxUnshieldAmountHint(
       );
       return {
         cap: amount,
-        privacyPoolsLargestNote: false,
         railgunGasEstimateFailed: true,
         railgunBalance: sum,
       };
     }
   }
 
-  return { cap: sum, privacyPoolsLargestNote: false, railgunBalance: sum };
+  return { cap: sum, railgunBalance: sum };
 }
 
 export async function broadcastPreparedPrivateOp(
@@ -248,10 +212,26 @@ export async function broadcastPreparedPrivateOp(
   if (protocol === "tornado") {
     return await broadcastTornadoPrivateOp(host, operation, chainId);
   }
-  const broadcaster = createPPv1Broadcaster(host, {
-    broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
-  });
-  return await broadcaster.broadcast(operation as never);
+  const withdrawal = (
+    operation as {
+      withdrawal?: {
+        mode: "paymaster";
+        bundlerUrl: string;
+        entryPointAddress: `0x${string}`;
+        userOperation: unknown;
+      };
+    }
+  ).withdrawal;
+  if (!withdrawal?.userOperation) {
+    throw new Error("Privacy Pools paymaster withdrawal is missing a signed user operation.");
+  }
+  const [result] = await createTorAwarePaymasterBroadcaster(chainId).broadcast([
+    withdrawal as never,
+  ]);
+  if (!result) {
+    throw new Error("Privacy Pools paymaster withdrawal failed to broadcast.");
+  }
+  return result;
 }
 
 type RailgunBroadcastPlugin = {
@@ -294,225 +274,6 @@ async function broadcastRailgunOp(
   return userOpHash ? { userOpHash } : undefined;
 }
 
-export type UnshieldPrepared = {
-  privateOp: unknown;
-  amount: bigint;
-  recipient: `0x${string}`;
-};
-
-type UnshieldRuntimeOpts = {
-  protocol: SupportedProtocol;
-  rpcUrl: string;
-  walletDir: string;
-  password: string;
-  mnemonic: string;
-  chainId: bigint;
-  tokenMeta: ResolvedTokenMeta;
-  amount: bigint;
-  recipient: `0x${string}`;
-  recipientPriv?: `0x${string}`;
-  recipientDerivationPath?: string;
-  /** Skip Tor for Pimlico (railgun/tornado). Default: Tor enabled. */
-  withoutTor?: boolean;
-  onStatus?: (message: string) => void;
-};
-
-async function runUnshieldWithPlugin(
-  opts: UnshieldRuntimeOpts,
-  host: Host,
-  plugin: unknown,
-  mode: "prepare" | "broadcast"
-): Promise<UnshieldPrepared | unknown> {
-  if (opts.protocol === "railgun") {
-    if (!opts.recipientPriv) {
-      assertRailgunExternalRecipientAllowed({
-        isEth: opts.tokenMeta.isEth,
-        hasTailCalls: false,
-      });
-    }
-    let smartAccountPriv = opts.recipientPriv;
-    if (!smartAccountPriv) {
-      const fallback = makePublicAccountsStorage(
-        opts.walletDir,
-        opts.mnemonic,
-        opts.password
-      ).peekNextAccounts(1)[0]!.priv;
-      smartAccountPriv = (
-        fallback.startsWith("0x") ? fallback : `0x${fallback}`
-      ) as `0x${string}`;
-    }
-    configureRailgunForUnshield(
-      plugin,
-      host,
-      opts.chainId,
-      smartAccountPriv,
-      railgunPimlicoBundlerUrl(opts.chainId)
-    );
-  }
-
-  const maybeSync = plugin as { sync?: () => Promise<void> };
-  if (
-    (opts.protocol === "privacy-pools" || opts.protocol === "tornado") &&
-    typeof maybeSync.sync === "function"
-  ) {
-    await syncPluginWithProgress(maybeSync, opts.protocol, {
-      firstRun: isFirstProtocolSync(opts.walletDir, opts.protocol),
-      onUpdate: opts.onStatus,
-    });
-  } else if (opts.protocol === "railgun") {
-    await runWithSyncProgress(
-      {
-        source: opts.protocol,
-        firstRun: isFirstProtocolSync(opts.walletDir, opts.protocol),
-        onUpdate: opts.onStatus,
-      },
-      async () => {
-        // Railgun syncs on balance(); warm it so prepareUnshield is not silent.
-        await (
-          plugin as { balance: (assets: unknown) => Promise<unknown> }
-        ).balance(undefined);
-      }
-    );
-  }
-
-  const asset =
-    opts.protocol === "railgun"
-      ? opts.tokenMeta.isEth
-        ? railgunNativeEthAssetAmount(opts.chainId, opts.amount)
-        : railgunErc20AssetAmount(opts.tokenMeta.tokenAddress, opts.amount)
-      : {
-          asset: {
-            __type: "erc20" as const,
-            contract: (opts.tokenMeta.isEth
-              ? ETH_AS_ERC20
-              : opts.tokenMeta.tokenAddress) as `0x${string}`,
-          },
-          amount: opts.amount,
-        };
-
-  const prepareUnshield = (
-    plugin as unknown as {
-      prepareUnshield: (
-        a: AssetAmount,
-        t: `0x${string}`,
-        options?: { mode: "paymaster" } | { mode: "relayer" }
-      ) => Promise<unknown>;
-    }
-  ).prepareUnshield.bind(plugin);
-
-  if (opts.protocol === "tornado") {
-    assertTornadoPaymasterConfigured(opts.chainId);
-    assertTornadoUnshieldAmountForToken(opts.chainId, opts.amount, {
-      isEth: opts.tokenMeta.isEth,
-      tokenAddress: opts.tokenMeta.tokenAddress,
-      symbol: opts.tokenMeta.symbol,
-      decimals: opts.tokenMeta.decimals,
-    });
-  }
-
-  let tornadoMaxFeePerGas: bigint | undefined;
-  if (opts.protocol === "tornado") {
-    tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(opts.chainId);
-  }
-  const tornadoWithdrawalCount =
-    opts.protocol === "tornado"
-      ? await countTornadoWithdrawals(
-          plugin as AnyPlugin,
-          asset as AssetAmount,
-          opts.amount
-        )
-      : undefined;
-
-  opts.onStatus?.(
-    mode === "broadcast"
-      ? "Preparing unshield"
-      : opts.protocol === "railgun"
-        ? "Building Railgun unshield"
-        : opts.protocol === "tornado"
-          ? "Building Tornado Cash unshield"
-          : "Building Privacy Pools unshield"
-  );
-
-  const privateOp =
-    opts.protocol === "tornado"
-      ? await prepareUnshield(
-          asset as AssetAmount,
-          opts.recipient,
-          tornadoUnshieldOptions(
-            opts.recipient,
-            opts.amount,
-            tornadoMaxFeePerGas!,
-            opts.recipientDerivationPath,
-            tornadoWithdrawalCount!
-          )
-        )
-      : await prepareUnshield(asset as AssetAmount, opts.recipient);
-
-  if (opts.protocol === "privacy-pools") {
-    await assertPrivacyPoolsRelayFeeWithinCap(
-      privateOp,
-      opts.rpcUrl,
-      opts.chainId
-    );
-  }
-
-  if (mode === "prepare") {
-    return {
-      privateOp,
-      amount: opts.amount,
-      recipient: getAddress(opts.recipient) as `0x${string}`,
-    };
-  }
-
-  opts.onStatus?.("Broadcasting unshield");
-  return await broadcastPreparedPrivateOp(
-    opts.protocol,
-    host,
-    plugin,
-    privateOp,
-    opts.chainId
-  );
-}
-
-export async function prepareUnshieldOperation(
-  opts: UnshieldRuntimeOpts
-): Promise<UnshieldPrepared> {
-  return (await withTor(
-    !opts.withoutTor,
-    { onStatus: opts.onStatus, rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
-    () =>
-      withProtocolRuntime(
-        {
-          protocol: opts.protocol,
-          rpcUrl: opts.rpcUrl,
-          walletDir: opts.walletDir,
-          password: opts.password,
-          mnemonic: opts.mnemonic,
-          chainId: opts.chainId,
-        },
-        (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "prepare")
-      )
-  )) as UnshieldPrepared;
-}
-
-export async function broadcastUnshield(opts: UnshieldRuntimeOpts): Promise<unknown> {
-  return withTor(
-    !opts.withoutTor,
-    { onStatus: opts.onStatus, rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
-    () =>
-      withProtocolRuntime(
-        {
-          protocol: opts.protocol,
-          rpcUrl: opts.rpcUrl,
-          walletDir: opts.walletDir,
-          password: opts.password,
-          mnemonic: opts.mnemonic,
-          chainId: opts.chainId,
-        },
-        (host, plugin) => runUnshieldWithPlugin(opts, host, plugin, "broadcast")
-      )
-  );
-}
 
 const ON_CHAIN_TX_HASH_KEYS = [
   "txHash",
@@ -555,19 +316,11 @@ function findHashDeep(
 }
 
 /**
- * Hash suitable for Etherscan `/tx/` after unshield broadcast.
- * - Railgun / Tornado paymaster (4337): userOpHash from Pimlico, or a mined tx hash.
- * - Privacy Pools: on-chain tx hash only (`txHash` from relayer) — no userOpHash.
+ * Hash suitable for an explorer `/tx/` after an ERC-4337 unshield.
+ * Prefers the bundler userOpHash, then a mined transaction hash.
  */
-export function extractUnshieldExplorerHash(
-  result: unknown,
-  protocol: SupportedProtocol
-): string | null {
-  const keys =
-    protocol === "railgun" || protocol === "tornado"
-      ? RAILGUN_EXPLORER_HASH_KEYS
-      : ON_CHAIN_TX_HASH_KEYS;
-  return findHashDeep(result, keys);
+export function extractUnshieldExplorerHash(result: unknown): string | null {
+  return findHashDeep(result, RAILGUN_EXPLORER_HASH_KEYS);
 }
 
 /** Max unshield amount using the shared protocol runtime (safe to call repeatedly for Railgun). */
@@ -592,7 +345,13 @@ export async function maxUnshieldAmountHintForWallet(opts: {
         chainId: opts.chainId,
       },
       async (_host, plugin) =>
-        maxUnshieldAmountHint(opts.protocol, plugin, opts.tokenMeta, opts.chainId)
+        maxUnshieldAmountHint(
+          opts.protocol,
+          plugin,
+          opts.tokenMeta,
+          opts.chainId,
+          opts.rpcUrl
+        )
     )
   );
 }

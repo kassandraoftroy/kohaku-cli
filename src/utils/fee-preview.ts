@@ -13,7 +13,7 @@ export type FeePreview = {
     | "eip7702-userop"
     | "railgun-paymaster"
     | "tornado-paymaster"
-    | "privacy-pools-relayer";
+    | "privacy-pools-paymaster";
   /** Primary fee in asset base units (wei / token raw). */
   estimatedMax: string;
   estimatedMaxFormatted: string;
@@ -21,7 +21,6 @@ export type FeePreview = {
   maxFeePerGasWei?: string;
   maxPriorityFeePerGasWei?: string;
   gasLimit?: string;
-  relayFeeBps?: string;
   components?: Array<{
     label: string;
     amount: string;
@@ -58,13 +57,6 @@ export function printFeePreview(fees: FeePreview): void {
   }
   if (fees.gasLimit != null) {
     console.log(chalk.dim(`  gasLimit: ${fees.gasLimit}`));
-  }
-  if (fees.relayFeeBps != null) {
-    console.log(
-      chalk.dim(
-        `  relayFeeBps: ${fees.relayFeeBps} (${(Number(fees.relayFeeBps) / 100).toFixed(2)}%)`
-      )
-    );
   }
 }
 
@@ -175,7 +167,6 @@ export function buildFeePreview(opts: {
   asset: string;
   maxFeePerGasWei?: bigint;
   gasLimit?: bigint;
-  relayFeeBps?: bigint | number | string;
   components?: FeePreview["components"];
   note?: string;
 }): FeePreview {
@@ -190,8 +181,6 @@ export function buildFeePreview(opts: {
     asset: opts.asset,
     maxFeePerGasWei: opts.maxFeePerGasWei?.toString(),
     gasLimit: opts.gasLimit?.toString(),
-    relayFeeBps:
-      opts.relayFeeBps != null ? opts.relayFeeBps.toString() : undefined,
     components: opts.components,
     note: opts.note,
   };

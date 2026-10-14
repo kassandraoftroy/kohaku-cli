@@ -39,6 +39,7 @@ import {
   buildFeePreview,
   estimateEoaTxFeePreview,
   feeConfirmLine,
+  formatFeeAmount,
   printFeePreview,
   type FeePreview,
 } from "../utils/fee-preview.js";
@@ -73,7 +74,14 @@ import {
 } from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
 import {
-  assertPpErc20TokenWhitelisted,
+  assertPrivacyPoolsMinimumDeposit,
+  assertPrivacyPoolsPoolConfigured,
+  fetchPrivacyPoolsAssetConfig,
+  privacyPoolsAssetAddress,
+  privacyPoolsVettingFee,
+  type PrivacyPoolsAssetConfig,
+} from "../utils/privacy-pools-paymaster.js";
+import {
   createProtocolPlugin,
   ETH_AS_ERC20,
   pluginIdForProtocol,
@@ -395,14 +403,33 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      if (protocol === "privacy-pools" && !tokenMeta.isEth) {
+      let ppAssetConfig: PrivacyPoolsAssetConfig | undefined;
+      if (protocol === "privacy-pools") {
         try {
-          assertPpErc20TokenWhitelisted(chainId, tokenMeta.tokenAddress);
+          ppAssetConfig = await fetchPrivacyPoolsAssetConfig(
+            rpcUrl,
+            chainId,
+            privacyPoolsAssetAddress(tokenMeta.isEth, tokenMeta.tokenAddress)
+          );
+          assertPrivacyPoolsPoolConfigured(
+            ppAssetConfig,
+            chainId,
+            tokenMeta.symbol
+          );
         } catch (e) {
           cliErrorFromCaught(e);
           return;
         }
       }
+      const assertPpDepositAmount = (value: bigint) => {
+        if (!ppAssetConfig) return;
+        assertPrivacyPoolsMinimumDeposit(
+          value,
+          ppAssetConfig.minimumDeposit,
+          tokenMeta.decimals,
+          tokenMeta.symbol
+        );
+      };
       if (protocol === "tornado") {
         try {
           assertTornadoTokenSupported(chainId, {
@@ -426,14 +453,18 @@ export function registerShieldCommand(program: Command): void {
         cliError("Amount must be greater than zero.");
         return;
       }
-      if (amount !== null && protocol === "tornado") {
+      if (amount !== null && (protocol === "tornado" || protocol === "privacy-pools")) {
         try {
-          assertTornadoDepositAmount(chainId, amount, {
-            isEth: tokenMeta.isEth,
-            tokenAddress: tokenMeta.tokenAddress,
-            symbol: tokenMeta.symbol,
-            decimals: tokenMeta.decimals,
-          });
+          if (protocol === "tornado") {
+            assertTornadoDepositAmount(chainId, amount, {
+              isEth: tokenMeta.isEth,
+              tokenAddress: tokenMeta.tokenAddress,
+              symbol: tokenMeta.symbol,
+              decimals: tokenMeta.decimals,
+            });
+          } else {
+            assertPpDepositAmount(amount);
+          }
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -582,6 +613,7 @@ export function registerShieldCommand(program: Command): void {
                     decimals: tokenMeta.decimals,
                   });
                 }
+                assertPpDepositAmount(parsed);
               } catch (e) {
                 return e instanceof Error
                   ? e.message
@@ -612,12 +644,14 @@ export function registerShieldCommand(program: Command): void {
                 decimals: tokenMeta.decimals,
               });
             }
+            assertPpDepositAmount(amount);
           }
         }
         if (amount === null) {
           cliError("Amount is required.");
           return;
         }
+        assertPpDepositAmount(amount);
 
         if (!fromValue) {
           if (opts.nonInteractive) {
@@ -768,6 +802,13 @@ export function registerShieldCommand(program: Command): void {
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         let approvals: Array<{ to: string; data: string; value: bigint }> = [];
         let calls: ReturnType<typeof buildShieldCallList>;
+        let ppShieldEstimate:
+          | {
+              fee: bigint;
+              vettingFeeBPS: bigint;
+              minimumDeposit: bigint;
+            }
+          | undefined;
         try {
           if (!quiet) txSpinner.start("Syncing private state...");
           const prepared = await runWithSyncProgress(
@@ -845,6 +886,38 @@ export function registerShieldCommand(program: Command): void {
               calls = next.calls;
             }
           }
+
+          if (protocol === "privacy-pools") {
+            const ppPlugin = plugin as {
+              estimateShield?: (asset: AssetAmount) => Promise<{
+                fee: bigint;
+                vettingFeeBPS: bigint;
+                minimumDeposit: bigint;
+              }>;
+            };
+            if (typeof ppPlugin.estimateShield !== "function") {
+              throw new Error(
+                "Privacy Pools plugin does not expose estimateShield."
+              );
+            }
+            const estimate = await ppPlugin.estimateShield(assetFor(amount!));
+            assertPrivacyPoolsMinimumDeposit(
+              amount!,
+              estimate.minimumDeposit,
+              tokenMeta.decimals,
+              tokenMeta.symbol
+            );
+            const bps = estimate.vettingFeeBPS;
+            const fee =
+              estimate.fee > 0n || bps === 0n
+                ? estimate.fee
+                : privacyPoolsVettingFee(amount!, ppAssetConfig?.vettingFeeBps ?? bps);
+            ppShieldEstimate = {
+              fee,
+              vettingFeeBPS: bps,
+              minimumDeposit: estimate.minimumDeposit,
+            };
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : JSON.stringify(e);
           cliError(msg);
@@ -902,6 +975,29 @@ export function registerShieldCommand(program: Command): void {
               SHIELD_GAS_LIMIT
             );
           }
+        }
+
+        if (ppShieldEstimate) {
+          const formatted = formatFeeAmount(
+            ppShieldEstimate.fee,
+            tokenMeta.decimals,
+            tokenMeta.symbol
+          );
+          fees = {
+            ...fees,
+            components: [
+              ...(fees.components ?? []),
+              {
+                label: `vetting fee (${ppShieldEstimate.vettingFeeBPS.toString()} bps)`,
+                amount: ppShieldEstimate.fee.toString(),
+                amountFormatted: formatted,
+                asset: tokenMeta.symbol,
+              },
+            ],
+            note: [fees.note, `vetting fee ${formatted} deducted from the deposit`]
+              .filter(Boolean)
+              .join("; "),
+          };
         }
 
         const transactions: TxPayloadJson[] = calls.map((call) => ({

@@ -234,7 +234,7 @@ export async function runWithSyncProgress<T>(
 }
 
 /**
- * Explicit `plugin.sync()` for Tornado / Privacy Pools (no-op for Railgun).
+ * Explicit `plugin.sync()` when the plugin has one (no-op for Railgun).
  * Safe to call inside or outside {@link runWithSyncProgress}.
  */
 export async function syncPluginWithProgress(
@@ -245,7 +245,6 @@ export async function syncPluginWithProgress(
     onUpdate?: (message: string) => void;
   } = {}
 ): Promise<void> {
-  if (protocol !== "privacy-pools" && protocol !== "tornado") return;
   if (typeof plugin.sync !== "function") return;
   await runWithSyncProgress(
     { source: protocol, firstRun: opts.firstRun, onUpdate: opts.onUpdate },
