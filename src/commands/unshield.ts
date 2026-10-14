@@ -9,6 +9,7 @@ import { makeHost } from "../host/makeHost";
 import {
   prepareProtocolUnshield,
   privacyPoolsPreparedFee,
+  privacyPoolsPreparedSender,
 } from "../lib/privacy-pools-unshield.js";
 import {
   broadcastPreparedPrivateOp,
@@ -97,6 +98,10 @@ import {
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
+import {
+  assertPrivacyPoolsTailCallsHaveHdDelegator,
+  privacyPoolsUnshieldConfirmExtraLines,
+} from "../utils/privacy-pools-unshield-delegation.js";
 import {
   assertTornadoTailCallsHaveHdDelegator,
   tornadoDelegationConfig,
@@ -187,7 +192,7 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option(
       "--tail-calls <target:calldata[:value],...>",
-      "Ordered calls appended to the UserOperation execution (optional value in hex or decimal wei; ERC-20 tails cannot include value)"
+      "Ordered calls appended to the UserOperation execution (optional value in hex or decimal wei; ERC-20 tails cannot include value). Tornado and Privacy Pools require --next, a stored public HD --to, or a stored stealth --to"
     )
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
@@ -467,6 +472,18 @@ export function registerUnshieldCommand(program: Command): void {
       if (protocol === "tornado") {
         try {
           assertTornadoTailCallsHaveHdDelegator(
+            recipientDerivationPath,
+            tailCalls.length
+          );
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
+      if (protocol === "privacy-pools") {
+        try {
+          assertPrivacyPoolsTailCallsHaveHdDelegator(
             recipientDerivationPath,
             tailCalls.length
           );
@@ -860,6 +877,7 @@ export function registerUnshieldCommand(program: Command): void {
               recipient,
               tailCalls,
               recipientDerivationPath,
+              recipientPrivateKey: recipientPriv,
               tornadoMaxFeePerGas,
               tornadoWithdrawalCount,
               tornadoTailCallsGasEstimate,
@@ -1061,14 +1079,22 @@ export function registerUnshieldCommand(program: Command): void {
                   withdrawalCount: tornadoWithdrawalCount ?? 1,
                 })
               : [];
+          const privacyPoolsConfirmExtra =
+            protocol === "privacy-pools"
+              ? privacyPoolsUnshieldConfirmExtraLines({
+                  recipient,
+                  delegationPath: recipientDerivationPath,
+                  hasTailCalls: tailCalls.length > 0,
+                  sender: privacyPoolsPreparedSender(privateOp),
+                })
+              : [];
+          const confirmExtra = [...tornadoConfirmExtra, ...privacyPoolsConfirmExtra];
           const ok = await confirm({
             message:
               `Broadcast this unshield via ${via}?\n` +
               `  Amount: ${amountLabel}\n` +
               `  To: ${recipient}\n` +
-              (tornadoConfirmExtra.length > 0
-                ? `${tornadoConfirmExtra.join("\n")}\n`
-                : "") +
+              (confirmExtra.length > 0 ? `${confirmExtra.join("\n")}\n` : "") +
               `  ${feeConfirmLine(fees)}\n` +
               `This submits the operation to the network and may be irreversible.`,
             default: false,

@@ -9,7 +9,7 @@
 import { PrivacyPoolsV1_0xBow } from "@kohaku-eth/privacy-pools";
 import { formatUnits, getAddress, parseAbi, zeroAddress } from "viem";
 
-import { encodeTornadoErc20TransferTailCall, type TornadoTailCall } from "./tornado-tail-gas.js";
+import type { TornadoTailCall } from "./tornado-tail-gas.js";
 import { disposePublicClient, makePublicClient, railgunPimlicoBundlerUrl } from "./rpc.js";
 
 /** Same sentinel plugins use for native ETH inside ERC-20-shaped private assets. */
@@ -331,15 +331,13 @@ export function privacyPoolsFeeWei(requiredGas: bigint, maxFeePerGas: bigint): b
 }
 
 /**
- * Execution-phase calls when the user passed `--tail-calls`. The SDK omits its
- * own forward in that case, so the net (minus tail `msg.value`) is forwarded
- * first. Fee stays in the gross and is not taken from this net.
+ * User `--tail-calls` run on the wallet `--to` account. That account is the
+ * EIP-7702 delegator and already holds the withdrawal, so leftovers stay there.
+ * Do not prepend a transfer to `--to`.
  */
-export function privacyPoolsPayoutTailCalls(opts: {
-  recipient: `0x${string}`;
+export function privacyPoolsUserTailCalls(opts: {
   net: bigint;
   isEth: boolean;
-  token: `0x${string}`;
   userTailCalls: readonly UnshieldTailCall[];
 }): UnshieldTailCall[] {
   const tailValue = opts.userTailCalls.reduce((sum, call) => sum + call.value, 0n);
@@ -353,24 +351,18 @@ export function privacyPoolsPayoutTailCalls(opts: {
       `--tail-calls msg.value total (${tailValue.toString()} wei) exceeds the unshield amount (${opts.net.toString()} wei).`
     );
   }
-  const payout = opts.net - tailValue;
-  const forward: UnshieldTailCall[] =
-    payout > 0n
-      ? [
-          opts.isEth
-            ? { to: opts.recipient, data: "0x", value: payout }
-            : encodeTornadoErc20TransferTailCall(opts.token, opts.recipient, payout),
-        ]
-      : [];
-  return [...forward, ...opts.userTailCalls];
+  return [...opts.userTailCalls];
 }
 
-/** Static execution-tail gas passed to the SDK when the user supplied tails. */
+/**
+ * Static execution-tail gas passed to the SDK when the user supplied tails.
+ * No leftover-forward is baked, so this is the default tail budget plus a
+ * per-call buffer. The SDK uses it in place of its own forward gas.
+ */
 export function privacyPoolsTailCallsGasEstimate(userTailCount: number): bigint {
   if (userTailCount <= 0) return 0n;
   return (
-    PP_PAYMASTER_GAS.forwardGas +
     PP_PAYMASTER_GAS.tailCallsDefaultGas +
-    80_000n * BigInt(userTailCount)
+    PP_PAYMASTER_GAS.forwardGas * BigInt(userTailCount)
   );
 }

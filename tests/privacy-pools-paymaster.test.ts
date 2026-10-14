@@ -9,16 +9,13 @@ import {
   privacyPoolsAdapterForPool,
   privacyPoolsApprovedNotes,
   privacyPoolsFeeWei,
-  privacyPoolsPayoutTailCalls,
   privacyPoolsRequiredGas,
+  privacyPoolsUserTailCalls,
   privacyPoolsVettingFee,
   type PpNoteBalance,
 } from "../src/utils/privacy-pools-paymaster.js";
-import { encodeTornadoErc20TransferTailCall } from "../src/utils/tornado-tail-gas.js";
-
 const ETH_POOL = "0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb";
 const RECIPIENT = "0x1111111111111111111111111111111111111111" as const;
-const TOKEN = "0x2222222222222222222222222222222222222222" as const;
 
 function note(
   balance: bigint,
@@ -115,56 +112,45 @@ describe("privacyPools paymaster fee", () => {
   });
 });
 
-describe("privacyPoolsPayoutTailCalls", () => {
-  it("forwards the net minus tail value, then the user calls", () => {
+describe("privacyPoolsUserTailCalls", () => {
+  it("keeps user calls on the wallet account and does not forward leftovers", () => {
     const user = {
       to: "0x3333333333333333333333333333333333333333" as const,
       data: "0xabcd" as const,
       value: 100n,
     };
     assert.deepEqual(
-      privacyPoolsPayoutTailCalls({
-        recipient: RECIPIENT,
+      privacyPoolsUserTailCalls({
         net: 1_000n,
         isEth: true,
-        token: TOKEN,
         userTailCalls: [user],
       }),
-      [
-        { to: RECIPIENT, data: "0x", value: 900n },
-        user,
-      ]
+      [user]
     );
   });
 
-  it("forwards an ERC-20 transfer of the full net when tails have no value", () => {
+  it("keeps an ERC-20 tail with no value and no payout transfer", () => {
     const user = {
       to: "0x3333333333333333333333333333333333333333" as const,
       data: "0xabcd" as const,
       value: 0n,
     };
-    const [forward, tail] = privacyPoolsPayoutTailCalls({
-      recipient: RECIPIENT,
-      net: 1_000n,
-      isEth: false,
-      token: TOKEN,
-      userTailCalls: [user],
-    });
     assert.deepEqual(
-      forward,
-      encodeTornadoErc20TransferTailCall(TOKEN, RECIPIENT, 1_000n)
+      privacyPoolsUserTailCalls({
+        net: 1_000n,
+        isEth: false,
+        userTailCalls: [user],
+      }),
+      [user]
     );
-    assert.equal(tail, user);
   });
 
   it("rejects ERC-20 tails that include msg.value", () => {
     assert.throws(
       () =>
-        privacyPoolsPayoutTailCalls({
-          recipient: RECIPIENT,
+        privacyPoolsUserTailCalls({
           net: 1_000n,
           isEth: false,
-          token: TOKEN,
           userTailCalls: [
             {
               to: RECIPIENT,
@@ -180,11 +166,9 @@ describe("privacyPoolsPayoutTailCalls", () => {
   it("rejects tail value above the net", () => {
     assert.throws(
       () =>
-        privacyPoolsPayoutTailCalls({
-          recipient: RECIPIENT,
+        privacyPoolsUserTailCalls({
           net: 10n,
           isEth: true,
-          token: TOKEN,
           userTailCalls: [{ to: RECIPIENT, data: "0x", value: 11n }],
         }),
       /exceeds the unshield amount/

@@ -8,9 +8,9 @@ import {
   privacyPoolsApprovedNotes,
   privacyPoolsAssetAddress,
   privacyPoolsFeeWei,
-  privacyPoolsPayoutTailCalls,
   privacyPoolsRequiredGas,
   privacyPoolsTailCallsGasEstimate,
+  privacyPoolsUserTailCalls,
   quotePrivacyPoolsPaymasterFeeInToken,
   type PpNoteBalance,
   type UnshieldTailCall,
@@ -23,6 +23,10 @@ import {
   type SupportedProtocol,
   type TornadoErc20TailForward,
 } from "../utils/plugins.js";
+import {
+  assertPrivacyPoolsWalletDelegator,
+  bindPrivacyPoolsWalletDelegator,
+} from "../utils/privacy-pools-unshield-delegation.js";
 import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 
@@ -57,10 +61,26 @@ export function privacyPoolsPreparedFee(operation: unknown): bigint | null {
   return raw == null ? null : BigInt(raw);
 }
 
+/** UserOp sender after a paymaster prepare, when the SDK included one. */
+export function privacyPoolsPreparedSender(
+  operation: unknown
+): `0x${string}` | undefined {
+  const sender = (
+    operation as {
+      withdrawal?: { userOperation?: { sender?: string } };
+    }
+  ).withdrawal?.userOperation?.sender;
+  return typeof sender === "string" && sender.startsWith("0x")
+    ? (sender as `0x${string}`)
+    : undefined;
+}
+
 /**
  * Prepare a paymaster unshield whose recipient receives `amountWei` (the net).
  * The private balance pays the net plus the paymaster fee. Largest approved
- * note is spent first; further notes run as execution-phase withdrawals.
+ * note is spent first; further notes run as execution-phase withdrawals on
+ * `--to`, which must be a stored wallet account so it can sign the 7702
+ * delegation and keep any change.
  */
 export async function preparePrivacyPoolsUnshield(opts: {
   plugin: AnyPlugin;
@@ -70,6 +90,8 @@ export async function preparePrivacyPoolsUnshield(opts: {
   amountWei: bigint;
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
+  recipientDerivationPath?: string;
+  recipientPrivateKey?: `0x${string}`;
 }): Promise<unknown> {
   assertPrivacyPoolsPaymasterConfigured(opts.chainId);
   const prepare = opts.plugin.prepareUnshield as PrepareUnshield | undefined;
@@ -130,6 +152,12 @@ export async function preparePrivacyPoolsUnshield(opts: {
   const assetFor = (amount: bigint) =>
     privateUnshieldAsset("privacy-pools", opts.chainId, opts.tokenMeta, amount);
 
+  assertPrivacyPoolsWalletDelegator({
+    delegationPath: opts.recipientDerivationPath,
+    tailCallsCount: opts.tailCalls.length,
+    withdrawalCount: extra + 1,
+  });
+
   if (!hasTails && extra === 0) {
     try {
       return await prepare(assetFor(opts.amountWei), opts.recipient, {
@@ -144,12 +172,10 @@ export async function preparePrivacyPoolsUnshield(opts: {
     }
   }
 
-  const tailCalls = hasTails
-    ? privacyPoolsPayoutTailCalls({
-        recipient: opts.recipient,
+  const userTailCalls = hasTails
+    ? privacyPoolsUserTailCalls({
         net: opts.amountWei,
         isEth: opts.tokenMeta.isEth,
-        token: opts.tokenMeta.tokenAddress as `0x${string}`,
         userTailCalls: opts.tailCalls,
       })
     : undefined;
@@ -158,46 +184,53 @@ export async function preparePrivacyPoolsUnshield(opts: {
     mode: "paymaster" as const,
     batch: true as const,
     refundRecipient: opts.recipient,
-    ...(tailCalls
+    ...(userTailCalls
       ? {
-          tailCalls: async () => tailCalls,
+          tailCalls: async () => userTailCalls,
           tailCallsGasEstimate: tailGas,
         }
       : {}),
   };
 
-  let reserved = fee;
-  let operation: unknown;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    operation = await prepare(
-      assetFor(opts.amountWei + reserved),
-      opts.recipient,
-      options
+  const needsWalletDelegator = hasTails || extra > 0;
+  let restoreDelegator: (() => void) | undefined;
+  if (needsWalletDelegator) {
+    const privateKey = opts.recipientPrivateKey;
+    if (!privateKey) {
+      throw new Error("Privacy Pools unshield is missing the wallet key for --to.");
+    }
+    restoreDelegator = bindPrivacyPoolsWalletDelegator(
+      opts.plugin,
+      privateKey,
+      opts.recipient
     );
-    const built = privacyPoolsPreparedFee(operation);
-    if (built == null) {
-      throw new Error("Privacy Pools paymaster withdrawal did not include a fee.");
-    }
-    if (!hasTails) {
+  }
+  try {
+    let reserved = fee;
+    let operation: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      operation = await prepare(
+        assetFor(opts.amountWei + reserved),
+        opts.recipient,
+        options
+      );
+      const built = privacyPoolsPreparedFee(operation);
+      if (built == null) {
+        throw new Error("Privacy Pools paymaster withdrawal did not include a fee.");
+      }
       if (reserved >= built) return operation;
-      reserved = built;
-      continue;
-    }
-    if (built === reserved) return operation;
-    if (attempt === 0) {
-      reserved = built;
-      continue;
-    }
-    if (built > reserved) {
+      if (attempt === 0) {
+        reserved = built;
+        continue;
+      }
       throw new Error(
         "Privacy Pools paymaster fee rose above the reserved private balance. Retry the unshield."
       );
     }
-    throw new Error(
-      "Privacy Pools paymaster fee left a remainder on the ephemeral sender. Retry the unshield."
-    );
+    return operation;
+  } finally {
+    restoreDelegator?.();
   }
-  return operation;
 }
 
 /** One prepare entry for every protocol. Protocol-specific options stay inside. */
@@ -211,6 +244,7 @@ export async function prepareProtocolUnshield(opts: {
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
   recipientDerivationPath?: string;
+  recipientPrivateKey?: `0x${string}`;
   tornadoMaxFeePerGas?: bigint;
   tornadoWithdrawalCount?: number;
   tornadoTailCallsGasEstimate?: bigint;
