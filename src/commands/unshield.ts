@@ -7,12 +7,15 @@ import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import { makeHost } from "../host/makeHost";
 import {
-  assertPrivacyPoolsRelayFeeWithinCap,
+  prepareProtocolUnshield,
+  privacyPoolsPreparedFee,
+  privacyPoolsPreparedSender,
+} from "../lib/privacy-pools-unshield.js";
+import {
   broadcastPreparedPrivateOp,
   extractUnshieldExplorerHash,
   maxUnshieldAmountHint,
   parseUnshieldAmount,
-  privacyPoolsRelayerFeeWei,
 } from "../lib/unshield-flow.js";
 import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
@@ -42,21 +45,17 @@ import {
   makeStealthAccountsStorage,
   parseStealthIndex,
 } from "../lib/stealth/storage.js";
+import { assertPrivacyPoolsUnshieldSupported } from "../utils/privacy-pools-paymaster.js";
 import {
-  ETH_AS_ERC20,
-  assertPpErc20TokenWhitelisted,
   assertTornadoPaymasterConfigured,
   countTornadoWithdrawals,
   assertRailgunExternalRecipientAllowed,
   configureRailgunForUnshield,
   createProtocolPlugin,
   pluginIdForProtocol,
-  railgunErc20AssetAmount,
-  railgunNativeEthAssetAmount,
-  railgunUnshieldOptions,
+  privateUnshieldAsset,
   resolveProtocolOption,
   SUPPORTED_PROTOCOLS_HELP,
-  tornadoUnshieldOptions,
   type UnshieldTailCall,
   type TornadoErc20TailForward,
   type SupportedProtocol,
@@ -99,6 +98,10 @@ import {
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { resolveTornadoTailCallsGasEstimate } from "../utils/tornado-tail-gas.js";
+import {
+  assertPrivacyPoolsTailCallsHaveHdDelegator,
+  privacyPoolsUnshieldConfirmExtraLines,
+} from "../utils/privacy-pools-unshield-delegation.js";
 import {
   assertTornadoTailCallsHaveHdDelegator,
   tornadoDelegationConfig,
@@ -179,7 +182,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option(
       "--amount-max",
-      "Unshield the maximum spendable amount (Railgun: after estimated gas + treasury fee; Privacy Pools: largest single note; Tornado: full note balance)"
+      "Unshield the maximum spendable amount (Railgun and Privacy Pools: after estimated fees; Tornado: full note balance)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
@@ -189,7 +192,7 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option(
       "--tail-calls <target:calldata[:value],...>",
-      "Ordered calls appended to Tornado / Railgun UserOperation execution (optional value in hex or decimal wei; Tornado ERC-20 tails cannot include value)"
+      "Ordered calls appended to the UserOperation execution (optional value in hex or decimal wei; ERC-20 tails cannot include value). Tornado and Privacy Pools require --next, a stored public HD --to, or a stored stealth --to"
     )
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
@@ -207,10 +210,6 @@ export function registerUnshieldCommand(program: Command): void {
 
       let tailCalls: UnshieldTailCall[] = [];
       if (opts.tailCalls !== undefined) {
-        if (protocol === "privacy-pools") {
-          cliError("--tail-calls is not supported for privacy-pools.");
-          return;
-        }
         try {
           tailCalls = parseTailCalls(opts.tailCalls);
         } catch (e) {
@@ -299,9 +298,15 @@ export function registerUnshieldCommand(program: Command): void {
         return;
       }
 
-      if (protocol === "privacy-pools" && !tokenMeta.isEth) {
+      if (!tokenMeta.isEth && tailCalls.some((call) => call.value > 0n)) {
+        cliError(
+          "--tail-calls cannot include msg.value when unshielding an ERC-20."
+        );
+        return;
+      }
+      if (protocol === "privacy-pools") {
         try {
-          assertPpErc20TokenWhitelisted(chainId, tokenMeta.tokenAddress);
+          await assertPrivacyPoolsUnshieldSupported(rpcUrl, chainId, tokenMeta);
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -317,15 +322,6 @@ export function registerUnshieldCommand(program: Command): void {
         } catch (e) {
           cliErrorFromCaught(e);
           return;
-        }
-        if (tailCalls.length > 0 && !tokenMeta.isEth) {
-          const withValue = tailCalls.some((c) => c.value > 0n);
-          if (withValue) {
-            cliError(
-              "Tornado --tail-calls cannot include msg.value when unshielding an ERC-20: the 7702 account does not receive native ETH."
-            );
-            return;
-          }
         }
       }
 
@@ -485,6 +481,18 @@ export function registerUnshieldCommand(program: Command): void {
         }
       }
 
+      if (protocol === "privacy-pools") {
+        try {
+          assertPrivacyPoolsTailCallsHaveHdDelegator(
+            recipientDerivationPath,
+            tailCalls.length
+          );
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      }
+
       if (!opts.nonInteractive) {
         console.log(
           chalk.yellow(
@@ -534,7 +542,6 @@ export function registerUnshieldCommand(program: Command): void {
         if (!quiet) spin.start("Syncing private state...");
         const {
           cap: maxAmountHint,
-          privacyPoolsLargestNote,
           estimatedGasFeeWei,
           railgunGasEstimateFailed,
           railgunBalance,
@@ -546,17 +553,19 @@ export function registerUnshieldCommand(program: Command): void {
           },
           async () => {
             await syncPluginWithProgress(plugin, protocol);
-            return maxUnshieldAmountHint(protocol, plugin, tokenMeta, chainId);
+            return maxUnshieldAmountHint(
+              protocol,
+              plugin,
+              tokenMeta,
+              chainId,
+              rpcUrl
+            );
           }
         );
         if (spin.active) spin.stop("Private state synced.");
         const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
         const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
-        const maxPromptLabel = privacyPoolsLargestNote
-            ? "max (largest single note)"
-            : protocol === "railgun"
-              ? "max (after fees)"
-              : "max";
+        const maxPromptLabel = protocol === "tornado" ? "max" : "max (after fees)";
         const maxCapLabel = isRailgunEth
           ? `WETH ${maxPromptLabel}`
           : maxPromptLabel;
@@ -564,9 +573,8 @@ export function registerUnshieldCommand(program: Command): void {
         let amount: bigint | null = null;
         if (opts.amountMax) {
           if (
-            protocol === "railgun" &&
-            isRailgunFeeToken(tokenMeta, chainId) &&
-            railgunGasEstimateFailed
+            railgunGasEstimateFailed &&
+            (protocol !== "railgun" || isRailgunFeeToken(tokenMeta, chainId))
           ) {
             cliError(
               "Could not fetch bundler gas price to compute --amount-max. Retry when Pimlico is reachable."
@@ -596,11 +604,10 @@ export function registerUnshieldCommand(program: Command): void {
           maxAmountHint > 0n &&
           amount > maxAmountHint
         ) {
-          const scope = privacyPoolsLargestNote
-            ? "largest Privacy Pools note for this token (one withdrawal uses one note)"
-            : protocol === "railgun"
-              ? "max unshield after estimated fees for this token"
-              : "shielded balance for this token";
+          const scope =
+            protocol === "tornado"
+              ? "shielded balance for this token"
+              : "max unshield after estimated fees for this token";
           cliError(
             `Amount exceeds ${scope} (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`
           );
@@ -634,9 +641,8 @@ export function registerUnshieldCommand(program: Command): void {
           });
           if (
             amountInput.trim().toLowerCase() === "max" &&
-            protocol === "railgun" &&
-            isRailgunFeeToken(tokenMeta, chainId) &&
-            railgunGasEstimateFailed
+            railgunGasEstimateFailed &&
+            (protocol !== "railgun" || isRailgunFeeToken(tokenMeta, chainId))
           ) {
             cliError(
               "Could not fetch bundler gas price to compute max. Enter an explicit amount or retry."
@@ -677,20 +683,7 @@ export function registerUnshieldCommand(program: Command): void {
 
         let asset: AssetAmount;
         try {
-          asset =
-            protocol === "railgun"
-              ? tokenMeta.isEth
-                ? railgunNativeEthAssetAmount(chainId, amountWei)
-                : railgunErc20AssetAmount(tokenMeta.tokenAddress, amountWei)
-              : {
-                  asset: {
-                    __type: "erc20",
-                    contract: (tokenMeta.isEth
-                      ? ETH_AS_ERC20
-                      : tokenMeta.tokenAddress) as `0x${string}`,
-                  },
-                  amount: amountWei,
-                };
+          asset = privateUnshieldAsset(protocol, chainId, tokenMeta, amountWei);
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -717,17 +710,8 @@ export function registerUnshieldCommand(program: Command): void {
             ? "Building Railgun unshield (proof + broadcaster selection)"
             : protocol === "tornado"
               ? "Building Tornado Cash unshield (proof + paymaster)"
-              : "Building Privacy Pools unshield (proof + relayer quote)";
+              : "Building Privacy Pools unshield (proof + paymaster)";
 
-        const prepareUnshield = (
-          plugin as unknown as {
-            prepareUnshield: (
-              a: AssetAmount,
-              t: `0x${string}`,
-              options?: unknown
-            ) => Promise<unknown>;
-          }
-        ).prepareUnshield.bind(plugin);
         if (protocol === "tornado") {
           assertTornadoPaymasterConfigured(chainId);
         }
@@ -865,10 +849,12 @@ export function registerUnshieldCommand(program: Command): void {
                   );
                 }
                 amountWei = refined.amount;
-                asset =
-                  tokenMeta.isEth
-                    ? railgunNativeEthAssetAmount(chainId, amountWei)
-                    : railgunErc20AssetAmount(tokenMeta.tokenAddress, amountWei);
+                asset = privateUnshieldAsset(
+                  protocol,
+                  chainId,
+                  tokenMeta,
+                  amountWei
+                );
               }
             } catch (e) {
               cliErrorFromCaught(e);
@@ -876,40 +862,29 @@ export function registerUnshieldCommand(program: Command): void {
             }
           }
         }
-        const railgunOptions = railgunUnshieldOptions(tailCalls);
         const privateOp = await runQuietSpinner(
           quiet,
           spin,
           { start: prepareLabel, failure: "Prepare failed." },
           () =>
-            protocol === "tornado"
-              ? prepareUnshield(
-                  asset,
-                  recipient,
-                  tornadoUnshieldOptions(
-                    recipient,
-                    amountWei,
-                    tornadoMaxFeePerGas!,
-                    recipientDerivationPath,
-                    tornadoWithdrawalCount!,
-                    tailCalls,
-                    tornadoTailCallsGasEstimate,
-                    tornadoErc20Tail
-                  )
-                )
-              : protocol === "railgun" && railgunOptions
-                ? prepareUnshield(asset, recipient, railgunOptions)
-                : prepareUnshield(asset, recipient),
+            prepareProtocolUnshield({
+              protocol,
+              plugin,
+              chainId,
+              rpcUrl,
+              tokenMeta,
+              amountWei,
+              recipient,
+              tailCalls,
+              recipientDerivationPath,
+              recipientPrivateKey: recipientPriv,
+              tornadoMaxFeePerGas,
+              tornadoWithdrawalCount,
+              tornadoTailCallsGasEstimate,
+              tornadoErc20Tail,
+            }),
           () => "Unshield operation prepared."
         );
-
-        if (protocol === "privacy-pools") {
-          await assertPrivacyPoolsRelayFeeWithinCap(
-            privateOp,
-            rpcUrl,
-            chainId
-          );
-        }
 
         const amountLabel = `${formatUnits(amountWei, tokenMeta.decimals)} ${tokenMeta.symbol}`;
         const via =
@@ -917,29 +892,18 @@ export function registerUnshieldCommand(program: Command): void {
             ? "Railgun (ERC-4337 bundler)"
             : protocol === "tornado"
               ? "Tornado Cash (ERC-4337 paymaster)"
-              : "Privacy Pools relayer";
+              : "Privacy Pools (ERC-4337 paymaster)";
 
         let fees: FeePreview;
         if (protocol === "privacy-pools") {
-          const rel = privacyPoolsRelayerFeeWei(privateOp, amountWei);
-          if (!rel) {
-            fees = buildFeePreview({
-              kind: "privacy-pools-relayer",
-              amount: 0n,
-              decimals: tokenMeta.decimals,
-              asset: tokenMeta.symbol,
-              note: "relayer fee bps missing from prepared op",
-            });
-          } else {
-            fees = buildFeePreview({
-              kind: "privacy-pools-relayer",
-              amount: rel.feeWei,
-              decimals: tokenMeta.decimals,
-              asset: tokenMeta.symbol,
-              relayFeeBps: rel.relayFeeBps,
-              note: "relayer fee = amount × relayFeeBps / 10000",
-            });
-          }
+          const fee = privacyPoolsPreparedFee(privateOp) ?? 0n;
+          fees = buildFeePreview({
+            kind: "privacy-pools-paymaster",
+            amount: fee,
+            decimals: tokenMeta.decimals,
+            asset: tokenMeta.symbol,
+            note: "paymaster fee paid from private balance so the recipient receives the requested amount (unused gas may refund to the recipient)",
+          });
         } else if (protocol === "tornado") {
           const tornadoIsErc20 = !tokenMeta.isEth;
           const callGasLimit = tornadoWithdrawalCallGasLimit(
@@ -1115,14 +1079,22 @@ export function registerUnshieldCommand(program: Command): void {
                   withdrawalCount: tornadoWithdrawalCount ?? 1,
                 })
               : [];
+          const privacyPoolsConfirmExtra =
+            protocol === "privacy-pools"
+              ? privacyPoolsUnshieldConfirmExtraLines({
+                  recipient,
+                  delegationPath: recipientDerivationPath,
+                  hasTailCalls: tailCalls.length > 0,
+                  sender: privacyPoolsPreparedSender(privateOp),
+                })
+              : [];
+          const confirmExtra = [...tornadoConfirmExtra, ...privacyPoolsConfirmExtra];
           const ok = await confirm({
             message:
               `Broadcast this unshield via ${via}?\n` +
               `  Amount: ${amountLabel}\n` +
               `  To: ${recipient}\n` +
-              (tornadoConfirmExtra.length > 0
-                ? `${tornadoConfirmExtra.join("\n")}\n`
-                : "") +
+              (confirmExtra.length > 0 ? `${confirmExtra.join("\n")}\n` : "") +
               `  ${feeConfirmLine(fees)}\n` +
               `This submits the operation to the network and may be irreversible.`,
             default: false,
@@ -1149,7 +1121,7 @@ export function registerUnshieldCommand(program: Command): void {
         if (opts.nonInteractive) {
           const amountRaw = amountWei.toString();
           const amountFormatted = formatUnits(amountWei, tokenMeta.decimals);
-          const explorerHash = extractUnshieldExplorerHash(relayResult, protocol);
+          const explorerHash = extractUnshieldExplorerHash(relayResult);
           logCliJson({
             mode: "broadcast" as const,
             protocol,
@@ -1166,17 +1138,13 @@ export function registerUnshieldCommand(program: Command): void {
           });
           return;
         }
-        const explorerHash = extractUnshieldExplorerHash(relayResult, protocol);
+        const explorerHash = extractUnshieldExplorerHash(relayResult);
         if (explorerHash) {
           console.log(chalk.bold("Etherscan link:"));
           console.log(chalk.cyan(`  ${etherscanTxUrl(chainId, explorerHash)}`));
         } else {
           const noHashMsg =
-            protocol === "privacy-pools"
-              ? "Relayer response did not include an on-chain tx hash."
-              : protocol === "tornado"
-                ? "Tornado paymaster bundler did not return a userOpHash or tx hash."
-                : "Bundler response did not include a userOpHash or tx hash.";
+            "Bundler response did not include a userOpHash or tx hash.";
           console.log(chalk.dim(noHashMsg));
         }
           }

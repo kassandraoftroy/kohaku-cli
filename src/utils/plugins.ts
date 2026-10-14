@@ -34,10 +34,14 @@ import {
 } from "./tornado-tail-gas.js";
 import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
 import { makeTornadoArtifactsLoader } from "./proving-artifacts.js";
+import { privacyPoolsPaymasterConfig } from "./privacy-pools-paymaster.js";
+import {
+  createPrivacyPoolsSagaDataService,
+  privacyPoolsSagaSourceUrl,
+} from "./privacy-pools-saga.js";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
-import ppv1MainnetState from "./ppv1-mainnet-state.json";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
@@ -236,20 +240,6 @@ export function assertTornadoUnshieldAmount(
   assertTornadoShieldAmount(chainId, amount);
 }
 
-/** Throws if the ERC-20 is not on the Privacy Pools whitelist for this chain (non-ETH tokens only). */
-export function assertPpErc20TokenWhitelisted(
-  chainId: bigint,
-  tokenAddress: string
-): void {
-  const wl =
-    PRIVACY_POOLS_TOKEN_WHITELIST[chainId.toString()] ?? new Set<string>();
-  if (!wl.has(tokenAddress.toLowerCase())) {
-    throw new Error(
-      `Token ${tokenAddress} is not whitelisted for privacy-pools on chain ${chainId.toString()}.`
-    );
-  }
-}
-
 /** Use saga CDN when a pool is at least this many blocks behind head. */
 export const TORNADO_MIN_EXTERNAL_SYNC_BLOCKS = 1_000;
 
@@ -269,11 +259,10 @@ export type AnyPlugin = {
 
 export const ETH_AS_ERC20 = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
-export const PRIVACY_POOLS_TOKEN_WHITELIST: Record<string, Set<string>> = {
-  "1": new Set<string>(),
-  "11155111": new Set<string>(),
-};
-
+/**
+ * Still required by `createPPv1Plugin`. Unshields do not quote or broadcast
+ * through this relayer; they use the ERC-4337 paymaster.
+ */
 export const PRIVACY_POOLS_BROADCASTER_URL = "https://fastrelay.xyz/relayer";
 
 type RailgunUnshieldConfigurable = {
@@ -316,6 +305,32 @@ export function railgunErc20AssetAmount(
     asset: {
       __type: "erc20",
       contract: tokenAddress.toLowerCase() as `0x${string}`,
+    },
+    amount,
+  };
+}
+
+/**
+ * Asset passed to `prepareUnshield`. Railgun uses native/WETH; Privacy Pools
+ * and Tornado use the ERC-20 shape (ETH as the `0xeee…` sentinel).
+ */
+export function privateUnshieldAsset(
+  protocol: SupportedProtocol,
+  chainId: bigint,
+  tokenMeta: { isEth: boolean; tokenAddress: string },
+  amount: bigint
+): AssetAmount {
+  if (protocol === "railgun") {
+    return tokenMeta.isEth
+      ? railgunNativeEthAssetAmount(chainId, amount)
+      : railgunErc20AssetAmount(tokenMeta.tokenAddress, amount);
+  }
+  return {
+    asset: {
+      __type: "erc20",
+      contract: (tokenMeta.isEth
+        ? ETH_AS_ERC20
+        : tokenMeta.tokenAddress) as `0x${string}`,
     },
     amount,
   };
@@ -595,10 +610,8 @@ export async function prepareProtocolShield(
 }
 
 function ppv1BundledSnapshotMap(chainId: bigint): Record<string, unknown> {
-  return (chainId === 11155111n ? ppv1SepoliaState : ppv1MainnetState) as Record<
-    string,
-    unknown
-  >;
+  if (chainId !== 11155111n) return {};
+  return ppv1SepoliaState as Record<string, unknown>;
 }
 
 function ppv1StorageKey(chainId: bigint, entrypointAddress: bigint): string {
@@ -613,9 +626,8 @@ function ppv1LastSyncedBlock(state: unknown): bigint {
 }
 
 /**
- * Privacy Pools only uses bundled JSON when wallet storage has no entry for this
- * chain/entrypoint. Seed (or upgrade stale) ppv1-storage so first sync resumes from
- * the snapshot instead of deployment block.
+ * Sepolia has no saga stream, so seed its bundled snapshot when wallet storage
+ * is missing or older. Mainnet history comes from the saga CDN instead.
  */
 async function ensurePpv1BundledStateSeeded(
   host: Host,
@@ -681,6 +693,7 @@ export async function createProtocolPlugin(
 
   await ensurePpv1BundledStateSeeded(host, chainId, entrypointAddress);
 
+  const paymasterConfig = privacyPoolsPaymasterConfig(chainId);
   const ppv1Params = {
     accountIndex: 0,
     entrypoint: {
@@ -688,18 +701,31 @@ export async function createProtocolPlugin(
       deploymentBlock: params.entrypoint.deploymentBlock,
     },
     broadcasterUrl: PRIVACY_POOLS_BROADCASTER_URL,
+    ...(paymasterConfig ? { paymasterConfig: paymasterConfig as never } : {}),
     aspServiceFactory: () =>
       new OxBowAspService({
         network: host.network,
         aspUrl: oxbowAspUrlForChain(chainId),
       }),
-    initialState:
-      chainId === 11155111n
-        ? async () => ppv1SepoliaState as never
-        : async () => ppv1MainnetState as never,
+    ...(chainId === 11155111n
+      ? { initialState: async () => ppv1SepoliaState as never }
+      : {}),
   };
 
-  return createPPv1Plugin(host, ppv1Params) as AnyPlugin;
+  // Sepolia's saga index does not publish Privacy Pools, so that chain keeps
+  // the default eth_getLogs sync. Mainnet reads history from the saga CDN and
+  // only the blocks past saga's head from RPC.
+  const dataService = privacyPoolsSagaSourceUrl(chainId)
+    ? createPrivacyPoolsSagaDataService({
+        provider: host.provider,
+        chainId,
+      })
+    : undefined;
+
+  return createPPv1Plugin(host, {
+    ...ppv1Params,
+    ...(dataService ? { dataService } : {}),
+  } as never) as AnyPlugin;
 }
 
 export async function broadcastTornadoPrivateOp(

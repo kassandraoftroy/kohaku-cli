@@ -105,7 +105,7 @@ function resolveTorCdnTimeoutMs(): number {
   return Math.floor(n);
 }
 
-/** Railgun + Tornado talk to public Pimlico; Privacy Pools uses fastrelay. */
+/** Railgun, Tornado, and Privacy Pools unshield talk to public Pimlico. */
 export function protocolUsesPimlicoBundler(protocol: string): boolean {
   return protocol === "railgun" || protocol === "tornado";
 }

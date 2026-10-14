@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import {
-  parseUnshieldAmount,
-  privacyPoolsRelayerFeeWei,
-} from "../src/lib/unshield-flow.js";
+import { privacyPoolsPreparedFee } from "../src/lib/privacy-pools-unshield.js";
+import { parseUnshieldAmount } from "../src/lib/unshield-flow.js";
 
 describe("parseUnshieldAmount", () => {
   it("accepts max regardless of case", () => {
@@ -46,25 +44,20 @@ describe("parseUnshieldAmount", () => {
   });
 });
 
-describe("privacyPoolsRelayerFeeWei", () => {
-  it("returns null when the prepared op has no relay fee", () => {
-    assert.equal(privacyPoolsRelayerFeeWei({}, 10_000n), null);
-    assert.equal(privacyPoolsRelayerFeeWei(null, 10_000n), null);
+describe("privacyPoolsPreparedFee", () => {
+  it("returns null when the prepared op has no fee", () => {
+    assert.equal(privacyPoolsPreparedFee({}), null);
+    assert.equal(privacyPoolsPreparedFee({ withdrawal: {} }), null);
   });
 
-  it("computes amount * bps / 10000", () => {
-    const prepared = { rawData: { relayData: { relayFeeBps: 25 } } };
-    assert.deepEqual(privacyPoolsRelayerFeeWei(prepared, 10_000n), {
-      relayFeeBps: 25n,
-      feeWei: 25n,
-    });
+  it("reads the paymaster withdrawal fee", () => {
+    assert.equal(
+      privacyPoolsPreparedFee({ withdrawal: { fee: 25n } }),
+      25n
+    );
   });
 
-  it("accepts a string relayFeeBps from JSON-like payloads", () => {
-    const prepared = { rawData: { relayData: { relayFeeBps: "100" } } };
-    assert.deepEqual(privacyPoolsRelayerFeeWei(prepared, 10_000n), {
-      relayFeeBps: 100n,
-      feeWei: 100n,
-    });
+  it("falls back to the exact-output fee", () => {
+    assert.equal(privacyPoolsPreparedFee({ exact: { fee: "100" } }), 100n);
   });
 });

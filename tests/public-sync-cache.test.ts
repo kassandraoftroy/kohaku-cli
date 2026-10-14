@@ -133,6 +133,27 @@ describe("isPublicSyncCacheableRequest", () => {
       true
     );
     assert.equal(
+      isPublicSyncCacheableRequest(
+        "https://saga-pp-state.global.ssl.fastly.net/index.json",
+        "GET"
+      ),
+      false
+    );
+    assert.equal(
+      isPublicSyncCacheableRequest(
+        "https://saga-pp-state.global.ssl.fastly.net/privacy-pools-1-eth-[0x1,0x2).hot.jsonl.gz",
+        "GET"
+      ),
+      false
+    );
+    assert.equal(
+      isPublicSyncCacheableRequest(
+        "https://saga.gordosoluciones.xyz/tornado-cash-1-eth-0.1-[0x1,0x2).jsonl.gz",
+        "GET"
+      ),
+      true
+    );
+    assert.equal(
       isPublicSyncCacheableRequest("https://api.0xbow.io/pools", "GET"),
       false
     );

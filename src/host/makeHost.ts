@@ -45,7 +45,7 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
     externalSyncProvider: externalSyncProviderIn,
   } = options;
 
-  // Before anything (notably the Privacy Pools bundled snapshot) can seed storage.
+  // Before Sepolia Privacy Pools can seed its bundled snapshot into storage.
   noteProtocolStorageFreshness(walletDir, pluginId);
 
   const provider = withChunkedGetLogs(
