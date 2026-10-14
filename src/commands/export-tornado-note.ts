@@ -23,7 +23,7 @@ import {
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { withTor } from "../utils/tor.js";
@@ -178,7 +178,9 @@ export function registerExportTornadoNoteCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({

@@ -1,0 +1,43 @@
+[package]
+name = "kohaku-pir-rpc"
+version = "0.1.0"
+edition = "2024"
+description = "Hybrid Ethereum JSON-RPC provider: PIR for private account reads, fallback RPC for the rest"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+alloy = { workspace = true, features = [
+    "rpc",
+    "rpc-types",
+    "json-rpc",
+    "network",
+    "providers",
+    "transports",
+    "reqwest",
+] }
+async-trait = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = "0.5"
+tracing = { workspace = true }
+
+[dev-dependencies]
+alloy = { workspace = true, features = [
+    "rpc",
+    "rpc-types",
+    "json-rpc",
+    "network",
+    "providers",
+    "transports",
+    "reqwest",
+] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

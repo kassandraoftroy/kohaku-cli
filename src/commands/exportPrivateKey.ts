@@ -5,7 +5,7 @@ import { getAddress, isAddress } from "viem";
 
 import { readSeedKeystore } from "../utils/mnemonic";
 import { findPublicAccountByAddress, makePublicAccountsStorage } from "../utils/public-accounts";
-import { DEFAULT_DATA_DIR, resolveRpcUrl } from "../utils/rpc";
+import { connectCommandRpc, DEFAULT_DATA_DIR } from "../utils/rpc";
 import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
@@ -117,7 +117,10 @@ export function registerExportPrivateKeyCommand(program: Command): void {
           const raw = opts.address!;
           let normalized: string;
           try {
-            normalized = await resolveAddressOrName(raw, resolveRpcUrl(opts.rpcUrl));
+            normalized = await resolveAddressOrName(
+              raw,
+              await connectCommandRpc(opts.rpcUrl)
+            );
           } catch (e) {
             cliErrorFromCaught(e);
             return;

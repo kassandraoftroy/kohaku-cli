@@ -7,6 +7,8 @@ A command line interface wallet for moving funds between **public** Ethereum acc
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
+A localhost RPC URL is used directly. Any other URL is only the fallback: the CLI starts `local-pir-rpc` and sends PIR-eligible calls to `http://188.166.42.59:18090` (accounts; tokens are port+1, names port+2). Override that host with `PIR_URL`. The CLI looks for `bin/local-pir-rpc`, then `local-pir-rpc/target/release/local-pir-rpc` from `cargo build --release --manifest-path local-pir-rpc/Cargo.toml`. `KOHAKU_PIR_RPC_BIN` overrides both. `--without-tor` starts that process in clearnet mode.
+
 See [Kohaku CLI Wiki](https://kohaku.gwei.domains) for a practical guide to using kohaku-cli as a wallet solution "in real life"
 
 See README below for quick testnet demo and other technical details.

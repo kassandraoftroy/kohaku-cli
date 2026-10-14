@@ -11,6 +11,7 @@ import {
 import { mainnet, sepolia } from "viem/chains";
 
 import { appendNetworkTraffic, redactUrl } from "./network-traffic-log.js";
+import { ensurePirFacade, isLoopbackRpcUrl } from "./pir-facade.js";
 import { resolvePimlicoBundlerUrl } from "./tor.js";
 import { expectedChainIdStringFromWalletDir } from "./wallets-util";
 
@@ -180,6 +181,25 @@ export function resolveRpcUrl(optsRpcUrl?: string): string {
     `No --rpc-url / RPC_URL set; using default ${DEFAULT_RPC_URL}`
   );
   return DEFAULT_RPC_URL;
+}
+
+/**
+ * URL viem and name resolvers should call.
+ *
+ * A loopback URL is returned unchanged (the manual `local-pir-rpc` demo).
+ * Any other URL starts the bundled facade: that URL is only the fallback,
+ * and PIR-eligible calls go to the built-in PIR host (`PIR_URL` overrides it).
+ */
+export async function connectCommandRpc(
+  optsRpcUrl?: string,
+  opts?: { withoutTor?: boolean }
+): Promise<string> {
+  const userUrl = resolveRpcUrl(optsRpcUrl);
+  if (isLoopbackRpcUrl(userUrl)) return userUrl;
+  return ensurePirFacade({
+    fallbackRpcUrl: userUrl,
+    withoutTor: opts?.withoutTor,
+  });
 }
 
 /** Pimlico public ERC-4337 bundler (no API key). Uses Tor localhost proxy when a Tor session is active. */

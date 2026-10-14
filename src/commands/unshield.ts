@@ -95,7 +95,7 @@ import {
   makePublicClient,
   disposePublicClient,
   railgunPimlicoBundlerUrl,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import { withTor } from "../utils/tor.js";
 import {
@@ -253,7 +253,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({

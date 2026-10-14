@@ -29,7 +29,7 @@ import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import {
   resolveIncludeProtocols,
@@ -542,7 +542,9 @@ export function registerBalancesCommand(program: Command): void {
         nonInteractive: opts.nonInteractive,
       });
       if (!walletName) return;
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+      });
 
       let walletDir: string;
       try {

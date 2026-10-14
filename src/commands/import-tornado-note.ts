@@ -16,7 +16,7 @@ import { readSeedKeystore } from "../utils/mnemonic";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import { withTor } from "../utils/tor.js";
 import { runWithSyncProgress } from "../utils/sync-progress.js";
@@ -97,7 +97,9 @@ export function registerImportTornadoNoteCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({

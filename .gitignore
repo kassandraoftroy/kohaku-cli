@@ -2,5 +2,6 @@
 .DS_Store
 dist
 node_modules
+local-pir-rpc/target
 .vscode
 .cursor

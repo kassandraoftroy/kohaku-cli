@@ -1,0 +1,23 @@
+[package]
+name = "kohaku-tor-rpc"
+version = "0.1.0"
+edition = "2024"
+description = "Alloy JSON-RPC over Arti with shared or session-isolated circuits"
+
+[dependencies]
+alloy = { workspace = true, features = ["providers", "json-rpc", "transport-http", "hyper"] }
+anyhow = { workspace = true }
+# `static-sqlite` bundles SQLite. Arti's directory cache otherwise links system libsqlite3, which the CI Nix shell does not provide.
+arti-client = { version = "0.32", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite"] }
+http-body-util = "0.1"
+# `ring` + webpki roots, not the default aws-lc-rs provider.
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "tls12", "webpki-roots"] }
+# Only to install the process-wide ring provider before hyper-rustls builds a `ClientConfig`.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
+tor-rtcompat = { version = "0.32", features = ["tokio", "rustls"] }
+tower = { version = "0.5" }
+url = "2"
+
+[lints]
+workspace = true

@@ -11,7 +11,7 @@ import {
   disposePublicClient,
   getRpcChainIdMatchingWallet,
   makePublicClient,
-  resolveRpcUrl,
+  connectCommandRpc,
   type KohakuPublicClient,
 } from "../../utils/rpc.js";
 import { withTor } from "../../utils/tor.js";
@@ -58,7 +58,9 @@ export async function withNameCommandContext(
   opts: NameWalletOpts,
   run: (ctx: NameCommandContext) => Promise<void>
 ): Promise<void> {
-  const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+  const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+    withoutTor: opts.withoutTor,
+  });
 
   const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
   const walletName = await resolveWalletNameOrPrompt({

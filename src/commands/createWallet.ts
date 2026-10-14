@@ -18,7 +18,7 @@ import {
 import {
   DEFAULT_DATA_DIR,
   resolveOptionalRpcUrl,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import {
   resolvePasswordInputPreferFile,
@@ -113,7 +113,7 @@ export function registerCreateWalletCommand(program: Command): void {
     .addOption(passwordFileOption())
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
     .addOption(mnemonicFileOption())
-    .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import")
+    .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import. A non-local URL is the PIR fallback (override the PIR host with PIR_URL); localhost is used directly")
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
       "--stealth-start-block [block]",
@@ -181,7 +181,7 @@ export function registerCreateWalletCommand(program: Command): void {
           );
           return;
         }
-        importRpcUrl = resolveRpcUrl(opts.rpcUrl);
+        importRpcUrl = await connectCommandRpc(opts.rpcUrl);
         try {
           mnemonicPhrase = normalizeValidatedMnemonic(pasted ?? "");
         } catch (e) {

@@ -42,7 +42,7 @@ import {
   getRpcChainIdMatchingWallet,
   makePublicClient,
   disposePublicClient,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
@@ -245,7 +245,9 @@ export function registerTransferCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({

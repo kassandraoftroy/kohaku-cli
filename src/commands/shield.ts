@@ -55,7 +55,7 @@ import {
   getRpcChainIdMatchingWallet,
   makePublicClient,
   disposePublicClient,
-  resolveRpcUrl,
+  connectCommandRpc,
   type KohakuPublicClient,
 } from "../utils/rpc";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
@@ -350,7 +350,9 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
