@@ -16,6 +16,7 @@ import {
   interpretImportStealthStartBlockFlag,
 } from "../lib/create-wallet";
 import {
+  assertPirMainnet,
   DEFAULT_DATA_DIR,
   resolveOptionalRpcUrl,
   connectCommandRpc,
@@ -35,6 +36,7 @@ type CreateWalletOpts = {
   mnemonic?: string;
   mnemonicFile?: string;
   rpcUrl?: string;
+  usePir?: boolean;
   testnet?: boolean;
   longSeed?: boolean;
   stealthStartBlock?: string | true;
@@ -113,7 +115,8 @@ export function registerCreateWalletCommand(program: Command): void {
     .addOption(passwordFileOption())
     .option("--mnemonic <phrase>", "Mnemonic phrase (required with --non-interactive --import)")
     .addOption(mnemonicFileOption())
-    .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import. A non-local URL is the PIR fallback (override the PIR host with PIR_URL); localhost is used directly")
+    .option("--rpc-url <url>", "RPC URL (or set RPC_URL). Optional for new wallets: a public RPC is used to record the current block if unset. Required with --import. Used directly unless --use-pir is set")
+    .option("--use-pir", cliOptions.usePir)
     .option("--testnet", "Use testnet chain ID (11155111) instead of mainnet (1)")
     .option(
       "--stealth-start-block [block]",
@@ -136,6 +139,15 @@ export function registerCreateWalletCommand(program: Command): void {
       if (!opts.import && opts.mnemonicFile !== undefined) {
         cliError("--mnemonic-file only applies with --import.");
         return;
+      }
+
+      if (opts.usePir) {
+        try {
+          assertPirMainnet(opts.testnet ? 11155111n : 1n);
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
       }
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
@@ -181,7 +193,10 @@ export function registerCreateWalletCommand(program: Command): void {
           );
           return;
         }
-        importRpcUrl = await connectCommandRpc(opts.rpcUrl);
+        importRpcUrl = await connectCommandRpc(opts.rpcUrl, {
+          usePir: opts.usePir,
+          chainId: opts.testnet ? 11155111n : 1n,
+        });
         try {
           mnemonicPhrase = normalizeValidatedMnemonic(pasted ?? "");
         } catch (e) {
@@ -240,9 +255,15 @@ export function registerCreateWalletCommand(program: Command): void {
       }
 
       // New wallets: only use an RPC the user set; otherwise public endpoints (not localhost).
+      const configuredRpcUrl = resolveOptionalRpcUrl(opts.rpcUrl);
       const preferredRpcUrl = opts.import
         ? importRpcUrl
-        : resolveOptionalRpcUrl(opts.rpcUrl);
+        : opts.usePir && configuredRpcUrl
+          ? await connectCommandRpc(configuredRpcUrl, {
+              usePir: true,
+              chainId: 1n,
+            })
+          : configuredRpcUrl;
 
       try {
         const created = await createWalletOnDisk({

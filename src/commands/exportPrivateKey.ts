@@ -5,12 +5,13 @@ import { getAddress, isAddress } from "viem";
 
 import { readSeedKeystore } from "../utils/mnemonic";
 import { findPublicAccountByAddress, makePublicAccountsStorage } from "../utils/public-accounts";
-import { connectCommandRpc, DEFAULT_DATA_DIR } from "../utils/rpc";
+import { assertPirMainnet, connectCommandRpc, DEFAULT_DATA_DIR } from "../utils/rpc";
 import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
 import { addressFromPrivateKey } from "../utils/viem-tx.js";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -23,6 +24,7 @@ type ExportPrivateKeyOpts = {
   address?: string;
   index?: string;
   rpcUrl?: string;
+  usePir?: boolean;
   nonInteractive?: boolean;
   dataDir?: string;
 };
@@ -44,6 +46,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
     .option("--address <address>", "Public account address or ENS/GNS/WNS name to export")
     .option("--index <index>", "Public account index to export")
     .option("--rpc-url <url>", `${cliOptions.rpcUrl} (required when --address is a name)`)
+    .option("--use-pir", cliOptions.usePir)
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ExportPrivateKeyOpts) => {
@@ -70,6 +73,15 @@ export function registerExportPrivateKeyCommand(program: Command): void {
       } catch (e) {
         cliErrorFromCaught(e);
         return;
+      }
+
+      if (opts.usePir) {
+        try {
+          assertPirMainnet(expectedChainIdStringFromWalletDir(walletDir));
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
       }
 
       const password = await resolveWalletPassword({
@@ -119,7 +131,10 @@ export function registerExportPrivateKeyCommand(program: Command): void {
           try {
             normalized = await resolveAddressOrName(
               raw,
-              await connectCommandRpc(opts.rpcUrl)
+              await connectCommandRpc(opts.rpcUrl, {
+                usePir: opts.usePir,
+                chainId: expectedChainIdStringFromWalletDir(walletDir),
+              })
             );
           } catch (e) {
             cliErrorFromCaught(e);

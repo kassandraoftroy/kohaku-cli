@@ -22,6 +22,7 @@ import { withTor } from "../utils/tor.js";
 import { runWithSyncProgress } from "../utils/sync-progress.js";
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -34,6 +35,7 @@ type ImportTornadoNoteOpts = {
   rpcUrl?: string;
   nonInteractive?: boolean;
   withoutTor?: boolean;
+  usePir?: boolean;
   dataDir?: string;
 };
 
@@ -85,6 +87,7 @@ export function registerImportTornadoNoteCommand(program: Command): void {
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
@@ -96,10 +99,6 @@ export function registerImportTornadoNoteCommand(program: Command): void {
         cliError("Provide at least one Tornado Cash note string.");
         return;
       }
-
-      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
-        withoutTor: opts.withoutTor,
-      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
@@ -116,6 +115,12 @@ export function registerImportTornadoNoteCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,

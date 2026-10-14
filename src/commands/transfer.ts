@@ -54,6 +54,7 @@ import {
   transferMaxAmountFromBalance,
 } from "../utils/transfer-max.js";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -76,6 +77,7 @@ type TransferOpts = {
   stealth?: boolean;
   dataDir?: string;
   withoutTor?: boolean;
+  usePir?: boolean;
 };
 
 type TxPayloadJson = {
@@ -231,6 +233,7 @@ export function registerTransferCommand(program: Command): void {
       "Transfer the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
@@ -244,10 +247,6 @@ export function registerTransferCommand(program: Command): void {
         );
         return;
       }
-
-      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
-        withoutTor: opts.withoutTor,
-      });
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
@@ -264,6 +263,12 @@ export function registerTransferCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,

@@ -41,6 +41,7 @@ import { resolveAddressOrName } from "../utils/resolve-name.js";
 import { makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -60,6 +61,7 @@ type TransactRawOpts = {
   broadcast?: boolean;
   dataDir?: string;
   withoutTor?: boolean;
+  usePir?: boolean;
 };
 
 type RawTx = {
@@ -233,14 +235,11 @@ export function registerTransactRawCommand(program: Command): void {
       "Sign and submit on-chain (one EOA tx, or one EIP-7702 UserOp when 2+ calls)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransactRawOpts) => {
-      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
-        withoutTor: opts.withoutTor,
-      });
-
       let targets: string[];
       let payloads: string[];
       let values: bigint[];
@@ -274,6 +273,12 @@ export function registerTransactRawCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,

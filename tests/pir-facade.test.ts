@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { connectCommandRpc } from "../src/utils/rpc.js";
+import { connectCommandRpc, assertPirMainnet } from "../src/utils/rpc.js";
 import {
   DEFAULT_PIR_URL,
   buildPirFacadeArgs,
@@ -201,5 +201,57 @@ describe("connectCommandRpc", () => {
   it("leaves a localhost URL alone", async () => {
     const url = await connectCommandRpc("http://127.0.0.1:8545");
     assert.equal(url, "http://127.0.0.1:8545");
+  });
+
+  it("uses a remote URL directly unless --use-pir is set", async () => {
+    const url = await connectCommandRpc("https://ethereum.publicnode.com", {
+      chainId: 1n,
+    });
+    assert.equal(url, "https://ethereum.publicnode.com");
+  });
+
+  it("keeps a mainnet loopback URL direct even with --use-pir", async () => {
+    const url = await connectCommandRpc("http://127.0.0.1:8545", {
+      usePir: true,
+      chainId: 1n,
+    });
+    assert.equal(url, "http://127.0.0.1:8545");
+  });
+
+  it("rejects --use-pir for a non-mainnet wallet", async () => {
+    await assert.rejects(
+      () =>
+        connectCommandRpc("https://ethereum.publicnode.com", {
+          usePir: true,
+          chainId: 11155111n,
+        }),
+      /PIR only works on mainnet \(chain id 1\)\. This wallet is chain id 11155111\./
+    );
+    await assert.rejects(
+      () =>
+        connectCommandRpc("http://127.0.0.1:8545", {
+          usePir: true,
+          chainId: 11155111n,
+        }),
+      /chain id 11155111/
+    );
+  });
+
+  it("rejects --use-pir when the wallet chain id is missing", async () => {
+    await assert.rejects(
+      () =>
+        connectCommandRpc("https://ethereum.publicnode.com", {
+          usePir: true,
+        }),
+      /requires the wallet chain id/
+    );
+  });
+});
+
+describe("assertPirMainnet", () => {
+  it("accepts mainnet and rejects every other chain id", () => {
+    assert.doesNotThrow(() => assertPirMainnet(1n));
+    assert.doesNotThrow(() => assertPirMainnet("1"));
+    assert.throws(() => assertPirMainnet("11155111"), /chain id 11155111/);
   });
 });

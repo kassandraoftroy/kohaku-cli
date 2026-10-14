@@ -7,7 +7,7 @@ A command line interface wallet for moving funds between **public** Ethereum acc
 
 **Requirements:** Node.js 22+, an Ethereum RPC URL (`RPC_URL` or `--rpc-url`).
 
-A localhost RPC URL is used directly. Any other URL is only the fallback: the CLI starts `local-pir-rpc` and sends PIR-eligible calls to `http://188.166.42.59:18090` (accounts; tokens are port+1, names port+2). Override that host with `PIR_URL`. The CLI looks for `bin/local-pir-rpc`, then `local-pir-rpc/target/release/local-pir-rpc` from `cargo build --release --manifest-path local-pir-rpc/Cargo.toml`. `KOHAKU_PIR_RPC_BIN` overrides both. `--without-tor` starts that process in clearnet mode.
+RPC URLs are used directly. Pass `--use-pir` to start `local-pir-rpc` and send PIR-eligible calls to `http://188.166.42.59:18090` (accounts; tokens are port+1, names port+2); the given URL is then only the fallback. PIR is mainnet-only (wallet chain id 1) and errors on any other wallet. A localhost URL stays direct even with `--use-pir`. Override the PIR host with `PIR_URL`. The CLI looks for `bin/local-pir-rpc`, then `local-pir-rpc/target/release/local-pir-rpc` from `cargo build --release --manifest-path local-pir-rpc/Cargo.toml`. `KOHAKU_PIR_RPC_BIN` overrides both. `--without-tor` starts that process in clearnet mode.
 
 See [Kohaku CLI Wiki](https://kohaku.gwei.domains) for a practical guide to using kohaku-cli as a wallet solution "in real life"
 
@@ -152,7 +152,8 @@ Global behavior:
 
 | Topic | Detail |
 |--------|--------|
-| **RPC** | `--rpc-url <url>` or env `RPC_URL` (required for most commands except `create-wallet` without `--import`, and `list-wallets`). |
+| **RPC** | `--rpc-url <url>` or env `RPC_URL` (required for most commands except `create-wallet` without `--import`, and `list-wallets`). Used directly unless `--use-pir` is set. |
+| **`--use-pir`** | Opt in to the local PIR facade for a non-local RPC. Mainnet wallets only (chain id 1); any other wallet errors. Omit the flag to call the RPC URL directly. |
 | **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` / `private-transfer` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
 | **Data directory** | `--dataDir <path>` (default `~/.kohaku-cli`). |
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
@@ -530,7 +531,8 @@ Unshield through a **fresh public account** and forward an **exact** amount to s
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Exact amount the recipient receives, in base units. |
 | `--amount-formatted <decimal>` | Exact amount the recipient receives. |
-| `--rpc-url <url>` | RPC endpoint. |
+| `--rpc-url <url>` | RPC endpoint. Used directly unless `--use-pir` is set. |
+| `--use-pir` | Opt in to the local PIR facade. Mainnet wallets only. |
 | `--broadcast` | Submit via the protocol bundler or paymaster. **Omit** to print the prepared private operation. |
 | `--without-tor` | Disable Tor for non-RPC HTTP. |
 | `--non-interactive` | JSON; requires `--wallet`, `--password` or `--password-file`, `--to`, and `--amount-wei` or `--amount-formatted`. |
