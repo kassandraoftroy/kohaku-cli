@@ -151,7 +151,7 @@ Global behavior:
 | Topic | Detail |
 |--------|--------|
 | **RPC** | `--rpc-url <url>` or env `RPC_URL` (required for most commands except `create-wallet` without `--import`, and `list-wallets`). |
-| **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
+| **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` / `private-transfer` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
 | **Data directory** | `--dataDir <path>` (default `~/.kohaku-cli`). |
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
 | **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password-file` or `--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
@@ -511,6 +511,42 @@ kohaku unshield --protocol tornado --wallet testWallet --next --token DAI --amou
 kohaku unshield --protocol railgun --wallet testWallet --to 0xStoredWalletAddress --token USDC --amount-formatted 25 --broadcast
 kohaku unshield --protocol railgun --wallet testWallet --next --token USDC --amount-formatted 3 --tail-calls 0x1111111111111111111111111111111111111111:0x1234 --broadcast
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --without-tor
+```
+
+---
+
+### `private-transfer`
+
+Unshield through a **fresh public account** and forward an **exact** amount to someone else. This is `unshield --next` plus one tail call. `--to` is only the final recipient. The fresh account is the EIP-7702 delegator, runs the tail call, and keeps anything that is not the exact transfer.
+
+| Option | Description |
+|--------|-------------|
+| `--protocol <railgun\|privacy-pools\|tornado>` | Required unless `DEFAULT_PRIVACY_PROTOCOL` is set. |
+| `--wallet <name>` | Wallet. |
+| `--password <password>` / `--password-file <path>` | Unlock password. |
+| `--to <address>` | Final recipient: public address, stealth selector (`s0`), or name (`.eth` / `.gwei` / `.wei`). A stealth selector is paid by the tail call; its key is not the delegator. |
+| `--token <address\|eth>` | Token (default: `eth`). |
+| `--amount-wei <n>` | Exact amount the recipient receives, in base units. |
+| `--amount-formatted <decimal>` | Exact amount the recipient receives. |
+| `--rpc-url <url>` | RPC endpoint. |
+| `--broadcast` | Submit via the protocol bundler or paymaster. **Omit** to print the prepared private operation. |
+| `--without-tor` | Disable Tor for non-RPC HTTP. |
+| `--non-interactive` | JSON; requires `--wallet`, `--password` or `--password-file`, `--to`, and `--amount-wei` or `--amount-formatted`. |
+| `--dataDir <path>` | Data root. |
+
+There is no `--next`, `--tail-calls`, or `--amount-max`. The fresh account is persisted only after a successful `--broadcast`.
+
+**Tornado:** the paymaster fee is taken from the unshielded notes, so the command unshields the smallest note sum that covers the transfer plus that fee. Sending exactly 0.1 ETH from 0.1 notes unshields 0.2. The tail pays 0.1 and the remainder stays on the fresh account. The same rule applies to tokens (`--token DAI` and the other paymaster fee-adapter tokens).
+
+**Railgun and Privacy Pools:** the unshield net equals the transfer amount, so the tail can drain the fresh account to zero. Railgun's treasury fee is added on top of that amount. Railgun bundler gas is paid from shielded WETH. The Privacy Pools paymaster fee is paid from the private balance on top of the net. On Privacy Pools the fresh account is the delegate and the refund recipient — `--to` is not. Unused-gas change stays on the fresh account and is not forwarded.
+
+**Examples:**
+
+```bash
+kohaku private-transfer --protocol tornado --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol railgun --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol privacy-pools --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol tornado --wallet testWallet --to 0xFriend --token DAI --amount-formatted 50 --broadcast
 ```
 
 ---

@@ -249,6 +249,8 @@ export async function prepareProtocolUnshield(opts: {
   tornadoWithdrawalCount?: number;
   tornadoTailCallsGasEstimate?: bigint;
   tornadoErc20Tail?: TornadoErc20TailForward;
+  /** Tornado only. Default true. Private transfer passes false. */
+  tornadoForwardLeftover?: boolean;
 }): Promise<unknown> {
   if (opts.protocol === "privacy-pools") {
     return preparePrivacyPoolsUnshield(opts);
@@ -275,7 +277,8 @@ export async function prepareProtocolUnshield(opts: {
         opts.tornadoWithdrawalCount!,
         opts.tailCalls,
         opts.tornadoTailCallsGasEstimate,
-        opts.tornadoErc20Tail
+        opts.tornadoErc20Tail,
+        opts.tornadoForwardLeftover
       )
     );
   }
