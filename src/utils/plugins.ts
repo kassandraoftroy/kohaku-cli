@@ -444,7 +444,14 @@ export function tornadoUnshieldOptions(
   /** Measured execution-tail gas for user `tailCalls` (SDK `tailCallsGasEstimate`). */
   tailCallsGasEstimate?: bigint,
   /** When set, unshield asset is an ERC-20 (fee already quoted in token units). */
-  erc20?: TornadoErc20TailForward
+  erc20?: TornadoErc20TailForward,
+  /**
+   * Prepend a leftover transfer to `recipient` (ETH value, or ERC-20 when
+   * `erc20.bakeForward`). Default true. Private transfer sets this false so
+   * the only outgoing call is the exact payment and the remainder stays on
+   * the 7702 account.
+   */
+  forwardLeftover = true
 ): TCPaymasterUnshieldOptions {
   const delegation = tornadoDelegationConfig({
     delegationPath,
@@ -478,11 +485,12 @@ export function tornadoUnshieldOptions(
         `Withdrawal amount is too small to cover the Tornado paymaster fee (estimated ${erc20.feeReserveToken.toString()} token base units).`
       );
     }
+    const bakeForward = forwardLeftover && erc20.bakeForward && afterFee > 0n;
     return {
       ...base,
       ...(tailCallsGasEstimate !== undefined ? { tailCallsGasEstimate } : {}),
       tailCalls: async () => [
-        ...(erc20.bakeForward && afterFee > 0n
+        ...(bakeForward
           ? [
               encodeTornadoErc20TransferTailCall(
                 erc20.token,
@@ -519,7 +527,7 @@ export function tornadoUnshieldOptions(
       `--tail-calls msg.value total (${userTailValue.toString()} wei) exceeds the amount remaining after the Tornado paymaster fee (${afterFee.toString()} wei).`
     );
   }
-  const forwardValue = afterFee - userTailValue;
+  const forwardValue = forwardLeftover ? afterFee - userTailValue : 0n;
 
   return {
     ...base,
@@ -559,18 +567,33 @@ export async function totalTornadoUnspentBalance(
   return sum;
 }
 
+/** Notes cannot sum to a Tornado unshield that covers `target`. */
+export class TornadoCoverError extends Error {
+  readonly target: bigint;
+  readonly covered: bigint;
+
+  constructor(target: bigint, covered: bigint) {
+    super(
+      `Insufficient Tornado balance to cover ${target.toString()} (notes cover ${covered.toString()}).`
+    );
+    this.name = "TornadoCoverError";
+    this.target = target;
+    this.covered = covered;
+  }
+}
+
 /**
- * Number of Tornado notes consumed for this unshield amount (one paymaster UserOp).
+ * How many notes the Tornado SDK's largest-first packer spends to withdraw
+ * `amount` exactly. Throws when the notes cannot compose that amount.
  */
-export async function countTornadoWithdrawals(
-  plugin: AnyPlugin,
-  asset: AssetAmount,
+export function tornadoWithdrawalCountForAmount(
+  noteAmounts: readonly bigint[],
   amount: bigint
-): Promise<number> {
-  const notes = await listTornadoUnspentNotes(plugin, asset.asset);
+): number {
   const notesByDenom = new Map<bigint, number>();
-  for (const n of notes) {
-    notesByDenom.set(n.amount, (notesByDenom.get(n.amount) ?? 0) + 1);
+  for (const noteAmount of noteAmounts) {
+    if (noteAmount <= 0n) continue;
+    notesByDenom.set(noteAmount, (notesByDenom.get(noteAmount) ?? 0) + 1);
   }
   const denominations = [...notesByDenom.keys()].sort((a, b) =>
     a > b ? -1 : a < b ? 1 : 0
@@ -593,6 +616,73 @@ export async function countTornadoWithdrawals(
     );
   }
   return count;
+}
+
+/**
+ * Smallest note sum `>= target` that `tornadoWithdrawalCountForAmount` can
+ * withdraw exactly. Ties on sum keep the combination the largest-first packer
+ * will actually spend (fewer large notes).
+ */
+export function minimumTornadoNoteSumCovering(
+  noteAmounts: readonly bigint[],
+  target: bigint
+): bigint {
+  if (target <= 0n) {
+    throw new Error("Tornado cover target must be greater than zero.");
+  }
+  const counts = new Map<bigint, number>();
+  let total = 0n;
+  for (const noteAmount of noteAmounts) {
+    if (noteAmount <= 0n) continue;
+    counts.set(noteAmount, (counts.get(noteAmount) ?? 0) + 1);
+    total += noteAmount;
+  }
+  if (total < target) {
+    throw new TornadoCoverError(target, total);
+  }
+
+  let reachable = new Map<bigint, number>([[0n, 0]]);
+  for (const denom of counts.keys()) {
+    const count = counts.get(denom)!;
+    const next = new Map(reachable);
+    for (const [sum, notes] of reachable) {
+      for (let k = 1; k <= count; k++) {
+        const added = sum + denom * BigInt(k);
+        const used = notes + k;
+        const prev = next.get(added);
+        if (prev === undefined || used < prev) next.set(added, used);
+      }
+    }
+    reachable = next;
+  }
+
+  const candidates = [...reachable.keys()]
+    .filter((sum) => sum >= target)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const sum of candidates) {
+    try {
+      tornadoWithdrawalCountForAmount(noteAmounts, sum);
+      return sum;
+    } catch {
+      continue;
+    }
+  }
+  throw new TornadoCoverError(target, total);
+}
+
+/**
+ * Number of Tornado notes consumed for this unshield amount (one paymaster UserOp).
+ */
+export async function countTornadoWithdrawals(
+  plugin: AnyPlugin,
+  asset: AssetAmount,
+  amount: bigint
+): Promise<number> {
+  const notes = await listTornadoUnspentNotes(plugin, asset.asset);
+  return tornadoWithdrawalCountForAmount(
+    notes.map((note) => note.amount),
+    amount
+  );
 }
 
 export async function prepareProtocolShield(

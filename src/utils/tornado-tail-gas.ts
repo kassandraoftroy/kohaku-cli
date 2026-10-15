@@ -343,6 +343,12 @@ function buildSimulationPlan(opts: {
   asset: TornadoTailFundAsset;
   /** Prepend leftover `token.transfer(recipient)` (external / stealth `--to`). */
   bakeErc20Forward?: boolean;
+  /**
+   * Prepend leftover forwarding (ETH value, or ERC-20 when `bakeErc20Forward`).
+   * Default true. Private transfer sets this false so the simulation matches
+   * a tail list that only pays the exact amount.
+   */
+  forwardLeftover?: boolean;
 }): {
   calls: TornadoTailCall[];
   nativeBalanceWei: bigint;
@@ -365,13 +371,14 @@ function buildSimulationPlan(opts: {
         "Tornado --tail-calls cannot include msg.value when unshielding an ERC-20: the 7702 account does not receive native ETH."
       );
     }
-    const leftover = opts.bakeErc20Forward
-      ? encodeTornadoErc20TransferTailCall(
-          opts.asset.token,
-          opts.recipient,
-          afterFee
-        )
-      : undefined;
+    const leftover =
+      opts.forwardLeftover !== false && opts.bakeErc20Forward
+        ? encodeTornadoErc20TransferTailCall(
+            opts.asset.token,
+            opts.recipient,
+            afterFee
+          )
+        : undefined;
     return {
       calls: leftover ? [leftover, ...opts.userTailCalls] : [...opts.userTailCalls],
       nativeBalanceWei: TORNADO_TAIL_SIM_GAS_STIPEND_WEI,
@@ -388,7 +395,8 @@ function buildSimulationPlan(opts: {
       `--tail-calls msg.value total (${userTailValue.toString()} wei) exceeds the amount remaining after the Tornado paymaster fee (${afterFee.toString()} wei).`
     );
   }
-  const forwardValue = afterFee - userTailValue;
+  const forwardValue =
+    opts.forwardLeftover !== false ? afterFee - userTailValue : 0n;
   const calls: TornadoTailCall[] = [
     ...(forwardValue > 0n
       ? [{ to: opts.recipient, data: "0x" as const, value: forwardValue }]
@@ -427,6 +435,8 @@ export async function resolveTornadoTailCallsGasEstimate(opts: {
   bakeErc20Forward?: boolean;
   /** Recipient of leftover ERC-20 transfer; defaults to `account`. */
   leftoverRecipient?: `0x${string}`;
+  /** See `buildSimulationPlan`. Default true (bake leftover forward). */
+  forwardLeftover?: boolean;
 }): Promise<bigint | undefined> {
   if (opts.userTailCalls.length === 0) return undefined;
 
@@ -462,6 +472,7 @@ export async function resolveTornadoTailCallsGasEstimate(opts: {
       userTailCalls: opts.userTailCalls,
       asset,
       bakeErc20Forward: isERC20 && !!opts.bakeErc20Forward,
+      forwardLeftover: opts.forwardLeftover,
     });
     measured = await estimateTornadoTailCallsGas({
       rpcUrl: opts.rpcUrl,

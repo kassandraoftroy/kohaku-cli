@@ -14,6 +14,7 @@ import { registerSeeDecryptedStorageCommand } from "./commands/seeDecryptedStora
 import { registerSeeStealthMetaAddressCommand } from "./commands/see-stealth-meta-address";
 import { registerShieldCommand } from "./commands/shield";
 import { registerUnshieldCommand } from "./commands/unshield";
+import { registerPrivateTransferCommand } from "./commands/private-transfer";
 import { registerImportTornadoNoteCommand } from "./commands/import-tornado-note";
 import { registerExportTornadoNoteCommand } from "./commands/export-tornado-note";
 import { registerTransferCommand } from "./commands/transfer";
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   registerInitProfileCommand(program);
   registerShieldCommand(program);
   registerUnshieldCommand(program);
+  registerPrivateTransferCommand(program);
   registerImportTornadoNoteCommand(program);
   registerExportTornadoNoteCommand(program);
   registerBalancesCommand(program);

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.8] — 2026-10-15
+
+### Added
+
+- `private-transfer` unshields through a fresh public account and tail-calls an exact ETH or token transfer to `--to` on Tornado, Railgun, and Privacy Pools. Tornado unshields the smallest set of notes that covers the transfer plus the paymaster fee (a 0.1 ETH transfer from 0.1 notes unshields 0.2) and leaves the remainder on the fresh account. Railgun and Privacy Pools unshield the exact transfer amount, with fees taken from the private balance. Privacy Pools uses the fresh account as the EIP-7702 delegate and refund recipient, so unused-gas change does not go to `--to`.
+- Privacy Pools circuit downloads (`raw.githubusercontent.com/.../packages/circuits/...`) are rewritten to `<KOHAKU_ARTIFACTS_BASE_URL>/privacy-pools/` and cached under `proving-artifacts`, same as Railgun and Tornado. Pre-warm with `fetch-artifacts --privacy-pools`.
+
 ## [0.0.7] — 2026-10-14
 
 ### Changed

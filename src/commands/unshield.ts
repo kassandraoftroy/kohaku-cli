@@ -7,6 +7,11 @@ import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import { makeHost } from "../host/makeHost";
 import {
+  exactTransferTailCall,
+  planNonTornadoPrivateTransfer,
+  resolveTornadoPrivateTransferCover,
+} from "../lib/private-transfer.js";
+import {
   prepareProtocolUnshield,
   privacyPoolsPreparedFee,
   privacyPoolsPreparedSender,
@@ -49,6 +54,8 @@ import { assertPrivacyPoolsUnshieldSupported } from "../utils/privacy-pools-paym
 import {
   assertTornadoPaymasterConfigured,
   countTornadoWithdrawals,
+  listTornadoUnspentNotes,
+  TornadoCoverError,
   assertRailgunExternalRecipientAllowed,
   configureRailgunForUnshield,
   createProtocolPlugin,
@@ -114,7 +121,7 @@ import {
   resolveWalletPassword,
 } from "../utils/wallets-util";
 
-type UnshieldOpts = {
+export type UnshieldOpts = {
   protocol?: string;
   wallet?: string;
   password?: string;
@@ -131,6 +138,11 @@ type UnshieldOpts = {
   withoutTor?: boolean;
   tailCalls?: string;
   dataDir?: string;
+  /**
+   * Unshield to a fresh account and tail-call an exact transfer of the typed
+   * amount to `to`. `to` is the final recipient, not the EIP-7702 delegator.
+   */
+  privateTransfer?: boolean;
 };
 
 function etherscanTxUrl(chainId: bigint, txHash: string): string {
@@ -158,45 +170,8 @@ function railgunSmartAccountPrivateKey(
   return as0xPrivateKey(takeNextFreshPublicAccount(storage).priv);
 }
 
-export function registerUnshieldCommand(program: Command): void {
-  program
-    .command("unshield")
-    .description("Unshield private balance to a public address (via protocol relayer/broadcaster)")
-    .option(
-      "--protocol <protocol>",
-      `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
-    )
-    .option("--wallet <name>", cliOptions.walletPickList)
-    .option("--password <password>", cliOptions.password)
-    .addOption(passwordFileOption())
-    .option(
-      "--to <address>",
-      "Recipient: public address, HD index address, stealth selector (s0), or name (.eth/.gwei/.wei)"
-    )
-    .option(
-      "--next",
-      "Unshield to the next fresh public account (persisted only after a successful --broadcast)"
-    )
-    .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
-    .option("--amount-wei <amount>", "Raw token amount in wei/base units")
-    .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
-    .option(
-      "--amount-max",
-      "Unshield the maximum spendable amount (Railgun and Privacy Pools: after estimated fees; Tornado: full note balance)"
-    )
-    .option("--rpc-url <url>", cliOptions.rpcUrl)
-    .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
-    .option(
-      "--broadcast",
-      "Submit via protocol broadcaster (omit to print the prepared private operation only)"
-    )
-    .option(
-      "--tail-calls <target:calldata[:value],...>",
-      "Ordered calls appended to the UserOperation execution (optional value in hex or decimal wei; ERC-20 tails cannot include value). Tornado and Privacy Pools require --next, a stored public HD --to, or a stored stealth --to"
-    )
-    .option("--without-tor", cliOptions.withoutTor)
-    .option("--dataDir <path>", cliOptions.dataDir)
-    .action(async (opts: UnshieldOpts) => {
+/** Shared unshield flow. `private-transfer` calls this with `privateTransfer`. */
+export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       const resolvedProtocol = resolveProtocolOption(opts.protocol);
       if (!resolvedProtocol.ok) {
         cliError(
@@ -218,28 +193,60 @@ export function registerUnshieldCommand(program: Command): void {
         }
       }
 
+      const privateTransfer = !!opts.privateTransfer;
       const hasTo = !!opts.to?.trim();
       const hasNext = !!opts.next;
-      if (hasTo && hasNext) {
+      if (!privateTransfer && hasTo && hasNext) {
         cliError("Provide only one of --to <address> or --next, not both.");
         return;
       }
+      if (privateTransfer && hasNext) {
+        cliError("private-transfer always uses a fresh account. Do not pass --next.");
+        return;
+      }
+      if (privateTransfer && opts.tailCalls !== undefined) {
+        cliError("private-transfer builds its own transfer and does not accept --tail-calls.");
+        return;
+      }
+      if (privateTransfer && opts.amountMax) {
+        cliError("private-transfer does not support --amount-max.");
+        return;
+      }
 
-      const amountFlags = [opts.amountWei, opts.amountFormatted, opts.amountMax].filter(
-        Boolean
-      ).length;
+      const amountFlags = [
+        opts.amountWei,
+        opts.amountFormatted,
+        privateTransfer ? undefined : opts.amountMax,
+      ].filter(Boolean).length;
       if (amountFlags > 1) {
         cliError(
-          "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
+          privateTransfer
+            ? "Provide only one of --amount-wei or --amount-formatted."
+            : "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
         );
         return;
       }
 
-      if (!hasTo && !hasNext && opts.nonInteractive) {
+      if (privateTransfer) {
+        if (!hasTo && opts.nonInteractive) {
+          cliError("Missing --to in non-interactive mode.");
+          return;
+        }
+        if (!opts.amountWei && !opts.amountFormatted && opts.nonInteractive) {
+          cliError(
+            "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+          );
+          return;
+        }
+      } else if (!hasTo && !hasNext && opts.nonInteractive) {
         cliError("Missing --to or --next in non-interactive mode.");
         return;
-      }
-      if (!opts.amountWei && !opts.amountFormatted && !opts.amountMax && opts.nonInteractive) {
+      } else if (
+        !opts.amountWei &&
+        !opts.amountFormatted &&
+        !opts.amountMax &&
+        opts.nonInteractive
+      ) {
         cliError(
           "Missing amount in non-interactive mode. Provide --amount-wei, --amount-formatted, or --amount-max."
         );
@@ -332,6 +339,10 @@ export function registerUnshieldCommand(program: Command): void {
       let recipient: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
       let recipientDerivationPath: string | undefined;
+      let payee: `0x${string}` | undefined;
+      let forwardLeftover = true;
+      let transferAmountWei: bigint | undefined;
+      let estimatedLeftoverWei = 0n;
 
       const applyPublicRecipient = (address: `0x${string}`) => {
         recipient = getAddress(address) as `0x${string}`;
@@ -363,7 +374,48 @@ export function registerUnshieldCommand(program: Command): void {
         recipientDerivationPath = stealthDelegatorPath(stealthIndex);
       };
 
-      if (hasNext) {
+      const resolvePayee = async (raw: string): Promise<`0x${string}`> => {
+        const stealthIdx = parseStealthIndex(raw);
+        if (stealthIdx !== null) {
+          const stealthAcct = stealthStorage.getAccount(stealthIdx);
+          if (!stealthAcct) {
+            throw new Error(
+              `Stealth account ${formatStealthSelector(stealthIdx)} not found in this wallet.`
+            );
+          }
+          return getAddress(stealthAcct.address) as `0x${string}`;
+        }
+        return (await resolveAddressOrName(raw, rpcUrl)) as `0x${string}`;
+      };
+
+      if (privateTransfer) {
+        const fresh = takeNextFreshPublicAccount(publicStorage);
+        recipient = getAddress(fresh.address) as `0x${string}`;
+        recipientPriv = as0xPrivateKey(fresh.priv);
+        recipientDerivationPath = publicAccountDerivationPath(fresh.index);
+        persistFreshAccountAfterBroadcast = true;
+        try {
+          if (hasTo) {
+            payee = await resolvePayee(opts.to!.trim());
+          } else {
+            const addr = await input({
+              message:
+                "Recipient (address, name .eth/.gwei/.wei, or stealth selector sN). Funds are forwarded here; this account is not the delegator:",
+              validate: (value) => {
+                const v = value.trim();
+                if (!isAddress(v) && !looksLikeName(v) && parseStealthIndex(v) === null) {
+                  return "Enter an Ethereum address, a name ending in .eth, .gwei, or .wei, or a stealth selector like s0.";
+                }
+                return true;
+              },
+            });
+            payee = await resolvePayee(addr.trim());
+          }
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return;
+        }
+      } else if (hasNext) {
         const fresh = takeNextFreshPublicAccount(publicStorage);
         recipient = getAddress(fresh.address) as `0x${string}`;
         recipientPriv = as0xPrivateKey(fresh.priv);
@@ -496,7 +548,9 @@ export function registerUnshieldCommand(program: Command): void {
       if (!opts.nonInteractive) {
         console.log(
           chalk.yellow(
-            "Unshielding sends a private withdrawal through the protocol relayer/broadcaster. Review the amount and recipient carefully."
+            privateTransfer
+              ? "Private transfer unshields to a fresh account you control, then forwards the exact amount to the recipient. Leftover funds stay on the fresh account."
+              : "Unshielding sends a private withdrawal through the protocol relayer/broadcaster. Review the amount and recipient carefully."
           )
         );
       }
@@ -564,7 +618,20 @@ export function registerUnshieldCommand(program: Command): void {
         );
         if (spin.active) spin.stop("Private state synced.");
         const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
-        const maxFormatted = formatUnits(maxAmountHint, tokenMeta.decimals);
+        let amountCap = maxAmountHint;
+        let tornadoNoteAmounts: bigint[] | undefined;
+        if (privateTransfer && protocol === "tornado") {
+          try {
+            const probe = privateUnshieldAsset(protocol, chainId, tokenMeta, 1n);
+            const notes = await listTornadoUnspentNotes(plugin, probe.asset);
+            tornadoNoteAmounts = notes.map((note) => note.amount);
+            amountCap = tornadoNoteAmounts.reduce((sum, note) => sum + note, 0n);
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
+        }
+        const maxFormatted = formatUnits(amountCap, tokenMeta.decimals);
         const maxPromptLabel = protocol === "tornado" ? "max" : "max (after fees)";
         const maxCapLabel = isRailgunEth
           ? `WETH ${maxPromptLabel}`
@@ -599,11 +666,7 @@ export function registerUnshieldCommand(program: Command): void {
           amount = parseUnits(opts.amountFormatted, tokenMeta.decimals);
         }
 
-        if (
-          amount !== null &&
-          maxAmountHint > 0n &&
-          amount > maxAmountHint
-        ) {
+        if (amount !== null && amountCap > 0n && amount > amountCap) {
           const scope =
             protocol === "tornado"
               ? "shielded balance for this token"
@@ -615,6 +678,34 @@ export function registerUnshieldCommand(program: Command): void {
         }
 
         if (amount === null) {
+          if (privateTransfer) {
+            const amountInput = await input({
+              message: `Amount the recipient will receive (${tokenMeta.symbol}, spendable ${maxFormatted}):`,
+              validate: (value) => {
+                const trimmed = value.trim();
+                if (!trimmed) return "Amount is required.";
+                if (trimmed.toLowerCase() === "max") {
+                  return "private-transfer sends an exact amount.";
+                }
+                try {
+                  const parsed = parseUnits(trimmed, tokenMeta.decimals);
+                  if (parsed <= 0n) return "Amount must be greater than zero.";
+                  if (amountCap > 0n && parsed > amountCap) {
+                    return `Amount exceeds spendable balance (${maxFormatted} ${tokenMeta.symbol}).`;
+                  }
+                } catch (e) {
+                  return e instanceof Error ? e.message : String(e);
+                }
+                return true;
+              },
+            });
+            try {
+              amount = parseUnits(amountInput.trim(), tokenMeta.decimals);
+            } catch (e) {
+              cliErrorFromCaught(e);
+              return;
+            }
+          } else {
           const amountInput = await input({
             message: `Amount to unshield (${tokenMeta.symbol}, ${maxCapLabel}: ${maxFormatted}, or "max"):`,
             validate: (value) => {
@@ -659,6 +750,7 @@ export function registerUnshieldCommand(program: Command): void {
             cliErrorFromCaught(e);
             return;
           }
+          }
         }
 
         if (amount === null || amount <= 0n) {
@@ -667,7 +759,53 @@ export function registerUnshieldCommand(program: Command): void {
         }
         // Separate binding so later --amount-max refine does not poison narrowing.
         let amountWei = amount;
-        if (protocol === "tornado") {
+        let tornadoFeeInAsset: bigint | undefined;
+        if (privateTransfer) {
+          if (!payee) {
+            cliError("Missing private-transfer recipient.");
+            return;
+          }
+          transferAmountWei = amountWei;
+          try {
+            tailCalls = [
+              exactTransferTailCall(
+                {
+                  isEth: tokenMeta.isEth,
+                  tokenAddress: tokenMeta.tokenAddress as `0x${string}`,
+                },
+                payee,
+                transferAmountWei
+              ),
+            ];
+            if (protocol !== "tornado") {
+              const planned = planNonTornadoPrivateTransfer(transferAmountWei);
+              amountWei = planned.unshieldAmountWei;
+              estimatedLeftoverWei = planned.estimatedLeftoverWei;
+            } else {
+              forwardLeftover = false;
+            }
+            if (protocol === "tornado") {
+              assertTornadoTailCallsHaveHdDelegator(
+                recipientDerivationPath,
+                tailCalls.length
+              );
+            } else if (protocol === "privacy-pools") {
+              assertPrivacyPoolsTailCallsHaveHdDelegator(
+                recipientDerivationPath,
+                tailCalls.length
+              );
+            } else if (!recipientPriv) {
+              assertRailgunExternalRecipientAllowed({
+                isEth: tokenMeta.isEth,
+                hasTailCalls: true,
+              });
+            }
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
+        }
+        if (protocol === "tornado" && !privateTransfer) {
           try {
             assertTornadoUnshieldAmountForToken(chainId, amountWei, {
               isEth: tokenMeta.isEth,
@@ -688,16 +826,18 @@ export function registerUnshieldCommand(program: Command): void {
           cliErrorFromCaught(e);
           return;
         }
-        const tornadoWithdrawalCount =
-          protocol === "tornado"
-            ? await countTornadoWithdrawals(plugin, asset, amountWei)
-            : undefined;
-        if (protocol === "tornado") {
+        let tornadoWithdrawalCount: number | undefined;
+        if (protocol === "tornado" && !privateTransfer) {
+          tornadoWithdrawalCount = await countTornadoWithdrawals(
+            plugin,
+            asset,
+            amountWei
+          );
           try {
             tornadoDelegationConfig({
               delegationPath: recipientDerivationPath,
               tailCallsCount: tailCalls.length,
-              withdrawalCount: tornadoWithdrawalCount!,
+              withdrawalCount: tornadoWithdrawalCount,
             });
           } catch (e) {
             cliErrorFromCaught(e);
@@ -705,8 +845,13 @@ export function registerUnshieldCommand(program: Command): void {
           }
         }
 
-        const prepareLabel =
-          protocol === "railgun"
+        const prepareLabel = privateTransfer
+          ? protocol === "railgun"
+            ? "Building Railgun private transfer (proof + broadcaster selection)"
+            : protocol === "tornado"
+              ? "Building Tornado Cash private transfer (proof + paymaster)"
+              : "Building Privacy Pools private transfer (proof + paymaster)"
+          : protocol === "railgun"
             ? "Building Railgun unshield (proof + broadcaster selection)"
             : protocol === "tornado"
               ? "Building Tornado Cash unshield (proof + paymaster)"
@@ -723,8 +868,98 @@ export function registerUnshieldCommand(program: Command): void {
           tornadoMaxFeePerGas = await resolveTornadoPrepareMaxFeePerGas(chainId);
           const tornadoIsErc20 = !tokenMeta.isEth;
           const bakeErc20Forward =
-            tornadoIsErc20 && !recipientDerivationPath;
-          if (tailCalls.length > 0) {
+            tornadoIsErc20 && !recipientDerivationPath && forwardLeftover;
+          const quoteTornadoFee = tornadoIsErc20
+            ? (feeWei: bigint) =>
+                quoteTornadoPaymasterFeeInToken({
+                  rpcUrl,
+                  chainId,
+                  feeToken: tokenMeta.tokenAddress as `0x${string}`,
+                  feeWei,
+                })
+            : undefined;
+          if (privateTransfer) {
+            try {
+              const cover = await runQuietSpinner(
+                quiet,
+                spin,
+                {
+                  start: "Choosing Tornado notes that cover the transfer and paymaster fee",
+                  failure: "Could not cover this transfer with Tornado notes.",
+                },
+                () =>
+                  resolveTornadoPrivateTransferCover({
+                    noteAmounts: tornadoNoteAmounts ?? [],
+                    transferAmount: transferAmountWei!,
+                    isErc20: tornadoIsErc20,
+                    maxFeePerGas: tornadoMaxFeePerGas!,
+                    quoteFeeWei: quoteTornadoFee,
+                    estimateTailGas: ({ unshieldAmount, extraWithdrawals }) =>
+                      resolveTornadoTailCallsGasEstimate({
+                        rpcUrl,
+                        account: recipient,
+                        amountWei: unshieldAmount,
+                        maxFeePerGas: tornadoMaxFeePerGas!,
+                        extraWithdrawals,
+                        userTailCalls: tailCalls,
+                        asset: tokenMeta.isEth
+                          ? { kind: "native" }
+                          : {
+                              kind: "erc20",
+                              token: tokenMeta.tokenAddress as `0x${string}`,
+                            },
+                        feeWeiToAsset: quoteTornadoFee,
+                        bakeErc20Forward: false,
+                        leftoverRecipient: recipient,
+                        forwardLeftover: false,
+                      }),
+                  }),
+                (planned) =>
+                  `Unshield ${formatUnits(planned.unshieldAmountWei, tokenMeta.decimals)} ${tokenMeta.symbol} to cover the transfer.`
+              );
+              amountWei = cover.unshieldAmountWei;
+              tornadoWithdrawalCount = cover.withdrawalCount;
+              tornadoTailCallsGasEstimate = cover.tailGas;
+              tornadoFeeInAsset = cover.estimatedFee;
+              asset = privateUnshieldAsset(protocol, chainId, tokenMeta, amountWei);
+              assertTornadoUnshieldAmountForToken(chainId, amountWei, {
+                isEth: tokenMeta.isEth,
+                tokenAddress: tokenMeta.tokenAddress,
+                symbol: tokenMeta.symbol,
+                decimals: tokenMeta.decimals,
+              });
+              tornadoDelegationConfig({
+                delegationPath: recipientDerivationPath,
+                tailCallsCount: tailCalls.length,
+                withdrawalCount: tornadoWithdrawalCount,
+              });
+              if (tornadoIsErc20) {
+                tornadoErc20Tail = {
+                  token: tokenMeta.tokenAddress as `0x${string}`,
+                  feeReserveToken: cover.paddedFee,
+                  bakeForward: false,
+                };
+              }
+            } catch (e) {
+              if (e instanceof TornadoCoverError) {
+                const transferLabel = formatUnits(
+                  transferAmountWei!,
+                  tokenMeta.decimals
+                );
+                const feeLabel = formatUnits(
+                  e.target > transferAmountWei! ? e.target - transferAmountWei! : 0n,
+                  tokenMeta.decimals
+                );
+                const coveredLabel = formatUnits(e.covered, tokenMeta.decimals);
+                cliError(
+                  `Insufficient Tornado ${tokenMeta.symbol} to cover ${transferLabel} plus the paymaster fee (about ${feeLabel} ${tokenMeta.symbol}). Unspent notes cover ${coveredLabel} ${tokenMeta.symbol}.`
+                );
+                return;
+              }
+              cliErrorFromCaught(e);
+              return;
+            }
+          } else if (tailCalls.length > 0) {
             tornadoTailCallsGasEstimate = await runQuietSpinner(
               quiet,
               spin,
@@ -757,6 +992,7 @@ export function registerUnshieldCommand(program: Command): void {
                     : undefined,
                   bakeErc20Forward,
                   leftoverRecipient: recipient,
+                  forwardLeftover,
                 }),
               (gas) =>
                 gas !== undefined
@@ -764,7 +1000,7 @@ export function registerUnshieldCommand(program: Command): void {
                   : "No tail-call gas estimate needed."
             );
           }
-          if (tornadoIsErc20 && tailCalls.length > 0) {
+          if (!privateTransfer && tornadoIsErc20 && tailCalls.length > 0) {
             try {
               const callGasLimit = tornadoWithdrawalCallGasLimit(
                 Math.max(0, (tornadoWithdrawalCount ?? 1) - 1),
@@ -882,8 +1118,12 @@ export function registerUnshieldCommand(program: Command): void {
               tornadoWithdrawalCount,
               tornadoTailCallsGasEstimate,
               tornadoErc20Tail,
+              tornadoForwardLeftover: forwardLeftover,
             }),
-          () => "Unshield operation prepared."
+          () =>
+            privateTransfer
+              ? "Private transfer prepared."
+              : "Unshield operation prepared."
         );
 
         const amountLabel = `${formatUnits(amountWei, tokenMeta.decimals)} ${tokenMeta.symbol}`;
@@ -902,7 +1142,9 @@ export function registerUnshieldCommand(program: Command): void {
             amount: fee,
             decimals: tokenMeta.decimals,
             asset: tokenMeta.symbol,
-            note: "paymaster fee paid from private balance so the recipient receives the requested amount (unused gas may refund to the recipient)",
+            note: privateTransfer
+              ? "paymaster fee paid from private balance; the fresh account receives the transfer amount and any unused-gas refund (not the final recipient)"
+              : "paymaster fee paid from private balance so the recipient receives the requested amount (unused gas may refund to the recipient)",
           });
         } else if (protocol === "tornado") {
           const tornadoIsErc20 = !tokenMeta.isEth;
@@ -923,8 +1165,11 @@ export function registerUnshieldCommand(program: Command): void {
               asset: "ETH",
               maxFeePerGasWei: tornadoMaxFeePerGas,
               gasLimit: callGasLimit,
-              note: "paymaster fee taken from unshielded ETH (gas×price estimate; SDK quotes exact)",
+              note: privateTransfer
+                ? "paymaster fee taken from unshielded ETH; leftover stays on the fresh account (gas×price estimate; SDK quotes exact)"
+                : "paymaster fee taken from unshielded ETH (gas×price estimate; SDK quotes exact)",
             });
+            if (privateTransfer) tornadoFeeInAsset = feeWei;
           } else {
             const feeForQuote =
               tailCalls.length > 0 ? padTornadoTailForwardFee(feeWei) : feeWei;
@@ -962,6 +1207,7 @@ export function registerUnshieldCommand(program: Command): void {
                   ? `paymaster fee paid in ${tokenMeta.symbol} via on-chain quoteWeiInToken (15% tail leftover pad included)`
                   : `paymaster fee paid in ${tokenMeta.symbol} via on-chain quoteWeiInToken (same TWAP as UserOp)`,
             });
+            if (privateTransfer) tornadoFeeInAsset = feeToken;
           }
         } else {
           // railgun
@@ -1027,26 +1273,81 @@ export function registerUnshieldCommand(program: Command): void {
           });
         }
 
+        if (
+          privateTransfer &&
+          protocol === "tornado" &&
+          transferAmountWei !== undefined &&
+          tornadoFeeInAsset !== undefined
+        ) {
+          const leftover = amountWei - tornadoFeeInAsset - transferAmountWei;
+          estimatedLeftoverWei = leftover > 0n ? leftover : 0n;
+        }
+
+        const transferLabel =
+          privateTransfer && transferAmountWei !== undefined
+            ? `${formatUnits(transferAmountWei, tokenMeta.decimals)} ${tokenMeta.symbol}`
+            : undefined;
+        const leftoverLabel = privateTransfer
+          ? `${formatUnits(estimatedLeftoverWei, tokenMeta.decimals)} ${tokenMeta.symbol}`
+          : undefined;
+        const privateTransferFields = () =>
+          privateTransfer && transferAmountWei !== undefined && payee
+            ? {
+                to: payee,
+                next: recipient,
+                transferAmountWei: transferAmountWei.toString(),
+                transferAmountFormatted: formatUnits(
+                  transferAmountWei,
+                  tokenMeta.decimals
+                ),
+                unshieldAmountWei: amountWei.toString(),
+                unshieldAmountFormatted: formatUnits(amountWei, tokenMeta.decimals),
+                estimatedLeftoverWei: estimatedLeftoverWei.toString(),
+              }
+            : {};
+
         if (!opts.broadcast) {
           const amountRaw = amountWei.toString();
           const amountFormatted = formatUnits(amountWei, tokenMeta.decimals);
           const payload = opts.nonInteractive
-            ? {
-                mode: "prepare" as const,
-                protocol,
-                recipient,
-                token: tokenMeta.symbol,
-                amountWei: amountRaw,
-                amountFormatted,
-                fees,
-                privateOperation: privateOp,
-              }
+            ? privateTransfer
+              ? {
+                  mode: "prepare" as const,
+                  protocol,
+                  token: tokenMeta.symbol,
+                  ...privateTransferFields(),
+                  fees,
+                  privateOperation: privateOp,
+                }
+              : {
+                  mode: "prepare" as const,
+                  protocol,
+                  recipient,
+                  token: tokenMeta.symbol,
+                  amountWei: amountRaw,
+                  amountFormatted,
+                  fees,
+                  privateOperation: privateOp,
+                }
             : { privateOperation: privateOp, fees };
           if (opts.nonInteractive) {
             logCliJson(payload);
           } else {
             console.log();
-            console.log(chalk.bold("Prepared private operation (not broadcast)"));
+            console.log(
+              chalk.bold(
+                privateTransfer
+                  ? "Prepared private transfer (not broadcast)"
+                  : "Prepared private operation (not broadcast)"
+              )
+            );
+            if (privateTransfer && transferLabel && payee && leftoverLabel) {
+              console.log(`  Transfer: ${transferLabel}`);
+              console.log(`  To: ${payee}`);
+              console.log(`  Unshield: ${amountLabel}`);
+              console.log(`  Fresh account: ${recipient}`);
+              console.log(`  Estimated leftover on fresh account: ${leftoverLabel}`);
+            }
             console.log(
               chalk.dim(
                 `This object is not a normal EIP-1559 transaction — submit it with the SDK ${chalk.bold("broadcast()")} method, the ${via}, or compatible tooling.`
@@ -1061,8 +1362,19 @@ export function registerUnshieldCommand(program: Command): void {
             printFeePreview(fees);
             console.log();
             console.log(chalk.bold("JSON (pipe or save for tooling):"));
-            logCliJson({ privateOperation: privateOp }, 2);
-            console.log(chalk.green("✔ Unshield dry run complete."));
+            logCliJson(
+              privateTransfer
+                ? { ...privateTransferFields(), privateOperation: privateOp }
+                : { privateOperation: privateOp },
+              2
+            );
+            console.log(
+              chalk.green(
+                privateTransfer
+                  ? "✔ Private transfer dry run complete."
+                  : "✔ Unshield dry run complete."
+              )
+            );
           }
           return;
         }
@@ -1089,14 +1401,28 @@ export function registerUnshieldCommand(program: Command): void {
                 })
               : [];
           const confirmExtra = [...tornadoConfirmExtra, ...privacyPoolsConfirmExtra];
+          const refundLine =
+            privateTransfer && protocol === "privacy-pools"
+              ? "  Unused-gas refund, if any, stays on the fresh account.\n"
+              : "";
           const ok = await confirm({
-            message:
-              `Broadcast this unshield via ${via}?\n` +
-              `  Amount: ${amountLabel}\n` +
-              `  To: ${recipient}\n` +
-              (confirmExtra.length > 0 ? `${confirmExtra.join("\n")}\n` : "") +
-              `  ${feeConfirmLine(fees)}\n` +
-              `This submits the operation to the network and may be irreversible.`,
+            message: privateTransfer
+              ? `Broadcast this private transfer via ${via}?\n` +
+                `  Transfer: ${transferLabel}\n` +
+                `  To: ${payee}\n` +
+                `  Unshield: ${amountLabel}\n` +
+                `  Fresh account: ${recipient}\n` +
+                `  Estimated leftover on fresh account: ${leftoverLabel}\n` +
+                refundLine +
+                (confirmExtra.length > 0 ? `${confirmExtra.join("\n")}\n` : "") +
+                `  ${feeConfirmLine(fees)}\n` +
+                `This submits the operation to the network and may be irreversible.`
+              : `Broadcast this unshield via ${via}?\n` +
+                `  Amount: ${amountLabel}\n` +
+                `  To: ${recipient}\n` +
+                (confirmExtra.length > 0 ? `${confirmExtra.join("\n")}\n` : "") +
+                `  ${feeConfirmLine(fees)}\n` +
+                `This submits the operation to the network and may be irreversible.`,
             default: false,
           });
           if (!ok) {
@@ -1109,9 +1435,15 @@ export function registerUnshieldCommand(program: Command): void {
         const relayResult = await runQuietSpinner(
           quiet,
           spin,
-          { start: "Broadcasting unshield", failure: "Broadcast failed." },
+          {
+            start: privateTransfer ? "Broadcasting private transfer" : "Broadcasting unshield",
+            failure: "Broadcast failed.",
+          },
           () => broadcastPreparedPrivateOp(protocol, host, plugin, privateOp, chainId),
-          () => "Unshield broadcast complete."
+          () =>
+            privateTransfer
+              ? "Private transfer broadcast complete."
+              : "Unshield broadcast complete."
         );
 
         if (persistFreshAccountAfterBroadcast) {
@@ -1122,20 +1454,35 @@ export function registerUnshieldCommand(program: Command): void {
           const amountRaw = amountWei.toString();
           const amountFormatted = formatUnits(amountWei, tokenMeta.decimals);
           const explorerHash = extractUnshieldExplorerHash(relayResult);
-          logCliJson({
-            mode: "broadcast" as const,
-            protocol,
-            recipient,
-            token: tokenMeta.symbol,
-            amountWei: amountRaw,
-            amountFormatted,
-            fees,
-            relay: relayResult ?? null,
-            explorerHash,
-            explorerUrl: explorerHash
-              ? etherscanTxUrl(chainId, explorerHash)
-              : null,
-          });
+          logCliJson(
+            privateTransfer
+              ? {
+                  mode: "broadcast" as const,
+                  protocol,
+                  token: tokenMeta.symbol,
+                  ...privateTransferFields(),
+                  fees,
+                  relay: relayResult ?? null,
+                  explorerHash,
+                  explorerUrl: explorerHash
+                    ? etherscanTxUrl(chainId, explorerHash)
+                    : null,
+                }
+              : {
+                  mode: "broadcast" as const,
+                  protocol,
+                  recipient,
+                  token: tokenMeta.symbol,
+                  amountWei: amountRaw,
+                  amountFormatted,
+                  fees,
+                  relay: relayResult ?? null,
+                  explorerHash,
+                  explorerUrl: explorerHash
+                    ? etherscanTxUrl(chainId, explorerHash)
+                    : null,
+                }
+          );
           return;
         }
         const explorerHash = extractUnshieldExplorerHash(relayResult);
@@ -1158,7 +1505,53 @@ export function registerUnshieldCommand(program: Command): void {
       }
 
       if (!opts.nonInteractive) {
-        console.log(chalk.green("✔ Unshield flow completed."));
+        console.log(
+          chalk.green(
+            opts.privateTransfer
+              ? "✔ Private transfer flow completed."
+              : "✔ Unshield flow completed."
+          )
+        );
       }
-    });
+}
+
+export function registerUnshieldCommand(program: Command): void {
+  program
+    .command("unshield")
+    .description("Unshield private balance to a public address (via protocol relayer/broadcaster)")
+    .option(
+      "--protocol <protocol>",
+      `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
+    )
+    .option("--wallet <name>", cliOptions.walletPickList)
+    .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
+    .option(
+      "--to <address>",
+      "Recipient: public address, HD index address, stealth selector (s0), or name (.eth/.gwei/.wei)"
+    )
+    .option(
+      "--next",
+      "Unshield to the next fresh public account (persisted only after a successful --broadcast)"
+    )
+    .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
+    .option("--amount-wei <amount>", "Raw token amount in wei/base units")
+    .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
+    .option(
+      "--amount-max",
+      "Unshield the maximum spendable amount (Railgun and Privacy Pools: after estimated fees; Tornado: full note balance)"
+    )
+    .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option(
+      "--broadcast",
+      "Submit via protocol broadcaster (omit to print the prepared private operation only)"
+    )
+    .option(
+      "--tail-calls <target:calldata[:value],...>",
+      "Ordered calls appended to the UserOperation execution (optional value in hex or decimal wei; ERC-20 tails cannot include value). Tornado and Privacy Pools require --next, a stored public HD --to, or a stored stealth --to"
+    )
+    .option("--without-tor", cliOptions.withoutTor)
+    .option("--dataDir <path>", cliOptions.dataDir)
+    .action((opts: UnshieldOpts) => runUnshield(opts));
 }

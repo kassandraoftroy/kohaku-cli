@@ -94,7 +94,9 @@ export async function preparePrivacyPoolsUnshield(opts: {
   recipientPrivateKey?: `0x${string}`;
 }): Promise<unknown> {
   assertPrivacyPoolsPaymasterConfigured(opts.chainId);
-  const prepare = opts.plugin.prepareUnshield as PrepareUnshield | undefined;
+  const prepare = opts.plugin.prepareUnshield?.bind(
+    opts.plugin
+  ) as PrepareUnshield | undefined;
   if (!prepare) {
     throw new Error("Privacy Pools plugin does not expose prepareUnshield.");
   }
@@ -249,6 +251,8 @@ export async function prepareProtocolUnshield(opts: {
   tornadoWithdrawalCount?: number;
   tornadoTailCallsGasEstimate?: bigint;
   tornadoErc20Tail?: TornadoErc20TailForward;
+  /** Tornado only. Default true. Private transfer passes false. */
+  tornadoForwardLeftover?: boolean;
 }): Promise<unknown> {
   if (opts.protocol === "privacy-pools") {
     return preparePrivacyPoolsUnshield(opts);
@@ -275,7 +279,8 @@ export async function prepareProtocolUnshield(opts: {
         opts.tornadoWithdrawalCount!,
         opts.tailCalls,
         opts.tornadoTailCallsGasEstimate,
-        opts.tornadoErc20Tail
+        opts.tornadoErc20Tail,
+        opts.tornadoForwardLeftover
       )
     );
   }

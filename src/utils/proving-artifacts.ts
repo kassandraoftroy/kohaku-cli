@@ -1,8 +1,10 @@
 /**
- * On-disk proving-artifact cache for Railgun (MacWha path layout) and Tornado.
+ * On-disk proving-artifact cache for Railgun (MacWha path layout), Tornado,
+ * and Privacy Pools circuits.
  *
  * WASM / plugins still request GitHub URLs; {@link kohakuFetch} maps those to
  * this cache and, on miss, fetches from {@link resolveArtifactsBaseUrl}.
+ * Privacy Pools lands at `<base>/privacy-pools/<path after packages/circuits/>`.
  */
 import {
   existsSync,
@@ -30,6 +32,29 @@ const TORNADO_CIRCUIT_URL =
   "https://raw.githubusercontent.com/tornadocash/tornado-cli/refs/heads/master/build/circuits/tornado.json";
 const TORNADO_PROVING_KEY_URL =
   "https://raw.githubusercontent.com/tornadocash/tornado-cli/refs/heads/master/build/circuits/tornadoProvingKey.bin";
+
+/**
+ * Pinned circuits base the Privacy Pools SDK fetches today
+ * (`@fatsolutions/privacy-pools-core-circuits` `DEFAULT_ARTIFACTS_BASE_URL`).
+ * Any commit under this repo's `packages/circuits/` tree maps to the same
+ * mirror path; the host layout is `/privacy-pools/<path after packages/circuits/>`.
+ */
+const PRIVACY_POOLS_GITHUB_CIRCUITS_BASE =
+  "https://raw.githubusercontent.com/0xbow-io/privacy-pools-core/7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f/packages/circuits";
+
+/** Paths relative to `packages/circuits/` for the two circuits the SDK loads. */
+export const PRIVACY_POOLS_CIRCUIT_PATHS = [
+  "build/commitment/commitment_js/commitment.wasm",
+  "build/withdraw/withdraw_js/withdraw.wasm",
+  "trusted-setup/final-keys/commitment.vkey",
+  "trusted-setup/final-keys/commitment.zkey",
+  "trusted-setup/final-keys/withdraw.vkey",
+  "trusted-setup/final-keys/withdraw.zkey",
+] as const;
+
+export const PRIVACY_POOLS_ARTIFACT_KEYS = PRIVACY_POOLS_CIRCUIT_PATHS.map(
+  (path) => `privacy-pools/${path}`
+);
 
 const RAILGUN_FILE_NAMES = [
   "proving_key.bin.br",
@@ -87,6 +112,7 @@ export function listAllArtifactRelativeKeys(): string[] {
     }
   }
   keys.push("tornado/tornado.json", "tornado/tornadoProvingKey.bin");
+  keys.push(...PRIVACY_POOLS_ARTIFACT_KEYS);
   return keys;
 }
 
@@ -128,17 +154,20 @@ export function parseFetchArtifactSelection(opts: {
   variants?: string[];
   poi?: string[];
   tornado?: boolean;
+  privacyPools?: boolean;
 }): string[] {
   const keys = (opts.keys ?? []).map((k) => k.trim()).filter(Boolean);
   const variants = opts.variants ?? [];
   const poi = opts.poi ?? [];
   const wantsTornado = !!opts.tornado;
+  const wantsPrivacyPools = !!opts.privacyPools;
 
   if (
     keys.length === 0 &&
     variants.length === 0 &&
     poi.length === 0 &&
-    !wantsTornado
+    !wantsTornado &&
+    !wantsPrivacyPools
   ) {
     return listAllArtifactRelativeKeys();
   }
@@ -167,8 +196,44 @@ export function parseFetchArtifactSelection(opts: {
     out.add("tornado/tornado.json");
     out.add("tornado/tornadoProvingKey.bin");
   }
+  if (wantsPrivacyPools) {
+    for (const key of PRIVACY_POOLS_ARTIFACT_KEYS) out.add(key);
+  }
 
   return [...out].sort();
+}
+
+/**
+ * `raw.githubusercontent.com/0xbow-io/privacy-pools-core/<rev>/packages/circuits/<rel>`
+ * → `privacy-pools/<rel>`. Commit is ignored so an SDK pin bump still hits the mirror.
+ */
+export function privacyPoolsArtifactKeyFromUrl(urlStr: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(urlStr);
+  } catch {
+    return null;
+  }
+  if (url.hostname.toLowerCase() !== "raw.githubusercontent.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length < 6) return null;
+  if (parts[0] !== "0xbow-io" || parts[1] !== "privacy-pools-core") return null;
+  if (parts[3] !== "packages" || parts[4] !== "circuits") return null;
+  const relParts = parts.slice(5).map((part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  });
+  if (
+    relParts.some(
+      (part) => !part || part === "." || part === ".." || part.includes("\\")
+    )
+  ) {
+    return null;
+  }
+  return `privacy-pools/${relParts.join("/")}`;
 }
 
 /**
@@ -217,6 +282,9 @@ export function artifactRelativeKeyFromUrl(urlStr: string): string | null {
       return "tornado/tornadoProvingKey.bin";
     }
 
+    const privacyPoolsKey = privacyPoolsArtifactKeyFromUrl(href);
+    if (privacyPoolsKey) return privacyPoolsKey;
+
     return null;
   } catch {
     return null;
@@ -224,9 +292,11 @@ export function artifactRelativeKeyFromUrl(urlStr: string): string | null {
 }
 
 /**
- * Remote URL to fetch for a cache key. Default mirror hosts Railgun + Tornado
- * under the same base. If someone points `KOHAKU_ARTIFACTS_BASE_URL` at MacWha
- * GitHub, Tornado still comes from tornadocash (MacWha has no `tornado/` tree).
+ * Remote URL to fetch for a cache key. Default mirror hosts Railgun, Tornado,
+ * and Privacy Pools under the same base. If someone points
+ * `KOHAKU_ARTIFACTS_BASE_URL` at MacWha GitHub, Tornado still comes from
+ * tornadocash and Privacy Pools from the pinned circuits tree (MacWha has
+ * neither).
  */
 export function remoteUrlForArtifactKey(relativeKey: string): string {
   const base = resolveArtifactsBaseUrl();
@@ -238,6 +308,11 @@ export function remoteUrlForArtifactKey(relativeKey: string): string {
     isMacWhaArtifactsBase(base)
   ) {
     return TORNADO_PROVING_KEY_URL;
+  }
+  if (relativeKey.startsWith("privacy-pools/") && isMacWhaArtifactsBase(base)) {
+    return `${PRIVACY_POOLS_GITHUB_CIRCUITS_BASE}/${relativeKey.slice(
+      "privacy-pools/".length
+    )}`;
   }
   return `${base}/${relativeKey}`;
 }

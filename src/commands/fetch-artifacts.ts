@@ -20,6 +20,7 @@ type Opts = {
   variant?: string[];
   poi?: string[];
   tornado?: boolean;
+  privacyPools?: boolean;
   withoutTor?: boolean;
   dataDir?: string;
   nonInteractive?: boolean;
@@ -48,6 +49,10 @@ export function registerFetchArtifactsCommand(program: Command): void {
       [] as string[]
     )
     .option("--tornado", "Fetch Tornado circuit JSON + proving key only")
+    .option(
+      "--privacy-pools",
+      "Fetch Privacy Pools commitment + withdraw wasm/vkey/zkey only"
+    )
     .option("--without-tor", cliOptions.withoutTorArtifactsFetch)
     .option("--dataDir <path>", cliOptions.dataDir)
     .option("--non-interactive", cliOptions.nonInteractiveListWallets)
@@ -62,6 +67,7 @@ export function registerFetchArtifactsCommand(program: Command): void {
           variants: opts.variant,
           poi: opts.poi,
           tornado: opts.tornado,
+          privacyPools: opts.privacyPools,
         });
         const cacheDir = provingArtifactsDir(dataDir);
         const baseUrl = resolveArtifactsBaseUrl();

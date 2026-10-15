@@ -151,14 +151,14 @@ Global behavior:
 | Topic | Detail |
 |--------|--------|
 | **RPC** | `--rpc-url <url>` or env `RPC_URL` (required for most commands except `create-wallet` without `--import`, and `list-wallets`). |
-| **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
+| **Default privacy protocol** | Env `DEFAULT_PRIVACY_PROTOCOL` (`tornado` \| `railgun` \| `privacy-pools`). When set, `shield` / `unshield` / `private-transfer` may omit `--protocol`, and `balances` includes that protocol by default. Examples below still pass `--protocol` / `--include` explicitly. |
 | **Data directory** | `--dataDir <path>` (default `~/.kohaku-cli`). |
 | **Networks** | Wallets created with `--testnet` expect Sepolia (`11155111`); otherwise mainnet (`1`). RPC chain ID must match the wallet. |
 | **`--non-interactive`** | Available on every command below. Skips prompts and spinners; prints **JSON** where applicable. Requires flags documented per command (`--password-file` or `--password`, `--wallet`, amounts, `--from`, `--to` / `--next`, etc.). Use for CI, agents, and piping output. |
 | **`--password-file <path>`** | Preferred for automation on POSIX. Reads the wallet password from a regular, non-symlink file, so the password is not exposed in process arguments. The file must be owned by the current user with mode `0400` or `0600`. Secure file inputs fail closed on Windows because ACLs are not validated. Mutually exclusive with `--password`. |
 | **`--password <password>`** | Legacy wallet unlock input. A literal string or existing file path is accepted for compatibility; prefer the unambiguous `--password-file` form in scripts. |
 | **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands, including `transfer` / `transact-raw` / names). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
-| **Proving artifacts** | Railgun/Tornado keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
+| **Proving artifacts** | Railgun, Tornado, and Privacy Pools keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Privacy Pools circuits are fetched from `<base>/privacy-pools/` (same relative paths as `packages/circuits/` in privacy-pools-core). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
 | **Public-sync cache** | Shared **Railgun Subsquid** and saga HTTP pages live under `<dataDir>/public-sync-cache` and speed up those syncs (`balances`, `shield`, `unshield`). Prefetch with `fetch-sync-cache`. Snapshot base: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v1`). Snapshot is historical; live HTTP still fills anything newer. Sealed saga chunks are cached; `index.json` and hot heads are always fetched live. Never evicts — at `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new pages stop being stored instead. Privacy Pools **mainnet** history comes from the saga CDN (`saga-pp-state.global.ssl.fastly.net`) with only the tip from `eth_getLogs`. Sepolia Privacy Pools has no saga stream, so it stays on bundled state plus `eth_getLogs`. Wipe with `kohaku clear-tor-cache --public-sync`. |
 
 `--password-file` removes one trailing line ending and otherwise preserves password whitespace. When unlocking an existing wallet, it also retries the fully trimmed value for compatibility with the legacy `--password <existing-file>` behavior. New wallets created with `--password-file` use the preserved value exactly.
@@ -515,6 +515,42 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted
 
 ---
 
+### `private-transfer`
+
+Unshield through a **fresh public account** and forward an **exact** amount to someone else. This is `unshield --next` plus one tail call. `--to` is only the final recipient. The fresh account is the EIP-7702 delegator, runs the tail call, and keeps anything that is not the exact transfer.
+
+| Option | Description |
+|--------|-------------|
+| `--protocol <railgun\|privacy-pools\|tornado>` | Required unless `DEFAULT_PRIVACY_PROTOCOL` is set. |
+| `--wallet <name>` | Wallet. |
+| `--password <password>` / `--password-file <path>` | Unlock password. |
+| `--to <address>` | Final recipient: public address, stealth selector (`s0`), or name (`.eth` / `.gwei` / `.wei`). A stealth selector is paid by the tail call; its key is not the delegator. |
+| `--token <address\|eth>` | Token (default: `eth`). |
+| `--amount-wei <n>` | Exact amount the recipient receives, in base units. |
+| `--amount-formatted <decimal>` | Exact amount the recipient receives. |
+| `--rpc-url <url>` | RPC endpoint. |
+| `--broadcast` | Submit via the protocol bundler or paymaster. **Omit** to print the prepared private operation. |
+| `--without-tor` | Disable Tor for non-RPC HTTP. |
+| `--non-interactive` | JSON; requires `--wallet`, `--password` or `--password-file`, `--to`, and `--amount-wei` or `--amount-formatted`. |
+| `--dataDir <path>` | Data root. |
+
+There is no `--next`, `--tail-calls`, or `--amount-max`. The fresh account is persisted only after a successful `--broadcast`.
+
+**Tornado:** the paymaster fee is taken from the unshielded notes, so the command unshields the smallest note sum that covers the transfer plus that fee. Sending exactly 0.1 ETH from 0.1 notes unshields 0.2. The tail pays 0.1 and the remainder stays on the fresh account. The same rule applies to tokens (`--token DAI` and the other paymaster fee-adapter tokens).
+
+**Railgun and Privacy Pools:** the unshield net equals the transfer amount, so the tail can drain the fresh account to zero. Railgun's treasury fee is added on top of that amount. Railgun bundler gas is paid from shielded WETH. The Privacy Pools paymaster fee is paid from the private balance on top of the net. On Privacy Pools the fresh account is the delegate and the refund recipient — `--to` is not. Unused-gas change stays on the fresh account and is not forwarded.
+
+**Examples:**
+
+```bash
+kohaku private-transfer --protocol tornado --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol railgun --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol privacy-pools --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol tornado --wallet testWallet --to 0xFriend --token DAI --amount-formatted 50 --broadcast
+```
+
+---
+
 ### `import-tornado-note`
 
 Import legacy Tornado Cash note string(s) into this wallet (deposits that were not made from this mnemonic). Notes are synced against chain state and stored for later `unshield` / `export-tornado-note`.
@@ -706,22 +742,32 @@ kohaku set-name-reverse-record --wallet testWallet --name alice.eth --broadcast
 
 ### `fetch-artifacts`
 
-Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado and Privacy Pools mainnet cold sync is saga CDN + a chain tip, Railgun is Subsquid. Sepolia Privacy Pools is bundled state JSON + `eth_getLogs` + ASP.
+Download Railgun, Tornado, and Privacy Pools proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado and Privacy Pools mainnet cold sync is saga CDN + a chain tip, Railgun is Subsquid. Sepolia Privacy Pools is bundled state JSON + `eth_getLogs` + ASP.
 
-With no selectors, downloads the **full proving set** (~260 MB). Narrow with `--variant` / `--poi` / `--tornado` / keys. The public-sync snapshot is a separate concern — see [`fetch-sync-cache`](#fetch-sync-cache).
+With no selectors, downloads the **full proving set** (Railgun ~260 MB, plus Tornado and the six Privacy Pools circuit files). Narrow with `--variant` / `--poi` / `--tornado` / `--privacy-pools` / keys. The public-sync snapshot is a separate concern — see [`fetch-sync-cache`](#fetch-sync-cache).
 
 | Option / args | Description |
 |---------------|-------------|
-| *(none)* | Full Railgun modern `.br` set (transact + POI) + Tornado circuit/key. |
+| *(none)* | Full Railgun modern `.br` set (transact + POI) + Tornado circuit/key + Privacy Pools commitment and withdraw circuits. |
 | `--variant <NNxMM>` | Railgun transact variant(s), e.g. `01x03` (repeatable; 3 files each). |
 | `--poi <NNxMM>` | POI variant(s): `03x03` or `13x13` (repeatable). |
 | `--tornado` | Tornado circuit JSON + proving key only. |
-| `[keys...]` | Explicit relative paths, e.g. `railgun/01x03/proving_key.bin.br`. |
+| `--privacy-pools` | Privacy Pools commitment + withdraw `wasm` / `vkey` / `zkey` only. |
+| `[keys...]` | Explicit relative paths, e.g. `railgun/01x03/proving_key.bin.br` or `privacy-pools/trusted-setup/final-keys/commitment.zkey`. |
 | `--without-tor` | Download over clearnet. Reveals that this IP fetched kohaku proving artifacts; subsequent private ops stay Tor-only from the local cache (except RPC). Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--dataDir <path>` | Data root (cache lives at `<dataDir>/proving-artifacts`). |
 | `--non-interactive` | JSON summary only. |
 
-Remote proving-artifact base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`, same path layout as MacWha `artifacts/`).
+Remote proving-artifact base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`, same path layout as MacWha `artifacts/` for Railgun). Privacy Pools circuits belong at `<base>/privacy-pools/`, preserving the path after `packages/circuits/` in privacy-pools-core. The SDK still requests `raw.githubusercontent.com`; the CLI rewrites those GETs onto this mirror and then the local cache.
+
+```
+privacy-pools/build/commitment/commitment_js/commitment.wasm
+privacy-pools/build/withdraw/withdraw_js/withdraw.wasm
+privacy-pools/trusted-setup/final-keys/commitment.vkey
+privacy-pools/trusted-setup/final-keys/commitment.zkey
+privacy-pools/trusted-setup/final-keys/withdraw.vkey
+privacy-pools/trusted-setup/final-keys/withdraw.zkey
+```
 
 **Examples:**
 
@@ -729,6 +775,7 @@ Remote proving-artifact base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `htt
 kohaku fetch-artifacts
 kohaku fetch-artifacts --without-tor
 kohaku fetch-artifacts --variant 01x03 --poi 03x03 --tornado
+kohaku fetch-artifacts --privacy-pools
 kohaku fetch-artifacts railgun/01x03/proving_key.bin.br
 ```
 
