@@ -7,6 +7,7 @@ import {
   listAllArtifactRelativeKeys,
   parseFetchArtifactSelection,
   railgunTransactVariants,
+  remoteUrlForArtifactKey,
 } from "../src/utils/proving-artifacts.js";
 
 const ORIG_BASE = process.env.KOHAKU_ARTIFACTS_BASE_URL;
@@ -42,6 +43,12 @@ describe("parseFetchArtifactSelection", () => {
     assert.ok(all.includes("tornado/tornado.json"));
     assert.ok(all.includes("railgun/01x01/proving_key.bin.br"));
     assert.ok(all.includes("railgun/poi/03x03/wasm.br"));
+    assert.ok(
+      all.includes("privacy-pools/trusted-setup/final-keys/commitment.zkey")
+    );
+    assert.ok(
+      all.includes("privacy-pools/build/withdraw/withdraw_js/withdraw.wasm")
+    );
   });
 
   it("unions explicit keys, variants, and tornado", () => {
@@ -54,6 +61,18 @@ describe("parseFetchArtifactSelection", () => {
     assert.ok(keys.includes("railgun/01x02/proving_key.bin.br"));
     assert.ok(keys.includes("tornado/tornado.json"));
     assert.ok(keys.includes("tornado/tornadoProvingKey.bin"));
+  });
+
+  it("selects only the Privacy Pools circuit set", () => {
+    const keys = parseFetchArtifactSelection({ privacyPools: true });
+    assert.deepEqual(keys, [
+      "privacy-pools/build/commitment/commitment_js/commitment.wasm",
+      "privacy-pools/build/withdraw/withdraw_js/withdraw.wasm",
+      "privacy-pools/trusted-setup/final-keys/commitment.vkey",
+      "privacy-pools/trusted-setup/final-keys/commitment.zkey",
+      "privacy-pools/trusted-setup/final-keys/withdraw.vkey",
+      "privacy-pools/trusted-setup/final-keys/withdraw.zkey",
+    ]);
   });
 
   it("rejects an unknown key or variant", () => {
@@ -77,6 +96,55 @@ describe("artifactRelativeKeyFromUrl", () => {
     assert.equal(
       artifactRelativeKeyFromUrl(`${MACWHA}/01x01/proving_key.bin.br`),
       "01x01/proving_key.bin.br"
+    );
+  });
+
+  it("maps Privacy Pools GitHub circuit URLs onto /privacy-pools", () => {
+    const commitmentZkey =
+      "https://raw.githubusercontent.com/0xbow-io/privacy-pools-core/7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f/packages/circuits/trusted-setup/final-keys/commitment.zkey";
+    assert.equal(
+      artifactRelativeKeyFromUrl(commitmentZkey),
+      "privacy-pools/trusted-setup/final-keys/commitment.zkey"
+    );
+    const otherCommit = commitmentZkey.replace(
+      "7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert.equal(
+      artifactRelativeKeyFromUrl(otherCommit),
+      "privacy-pools/trusted-setup/final-keys/commitment.zkey"
+    );
+    assert.equal(
+      artifactRelativeKeyFromUrl(
+        "https://raw.githubusercontent.com/0xbow-io/privacy-pools-core/7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f/packages/circuits/build/commitment/commitment_js/commitment.wasm"
+      ),
+      "privacy-pools/build/commitment/commitment_js/commitment.wasm"
+    );
+    assert.equal(
+      artifactRelativeKeyFromUrl(
+        "https://raw.githubusercontent.com/someone/else/main/packages/circuits/commitment.zkey"
+      ),
+      null
+    );
+  });
+
+  it("fetches privacy-pools keys from the artifacts mirror", () => {
+    delete process.env.KOHAKU_ARTIFACTS_BASE_URL;
+    assert.equal(
+      remoteUrlForArtifactKey(
+        "privacy-pools/trusted-setup/final-keys/commitment.zkey"
+      ),
+      `${DEFAULT_ARTIFACTS_BASE_URL}/privacy-pools/trusted-setup/final-keys/commitment.zkey`
+    );
+  });
+
+  it("keeps privacy-pools on GitHub when the artifacts base is MacWha", () => {
+    process.env.KOHAKU_ARTIFACTS_BASE_URL = MACWHA;
+    assert.equal(
+      remoteUrlForArtifactKey(
+        "privacy-pools/trusted-setup/final-keys/commitment.zkey"
+      ),
+      "https://raw.githubusercontent.com/0xbow-io/privacy-pools-core/7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f/packages/circuits/trusted-setup/final-keys/commitment.zkey"
     );
   });
 

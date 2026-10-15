@@ -158,7 +158,7 @@ Global behavior:
 | **`--password-file <path>`** | Preferred for automation on POSIX. Reads the wallet password from a regular, non-symlink file, so the password is not exposed in process arguments. The file must be owned by the current user with mode `0400` or `0600`. Secure file inputs fail closed on Windows because ACLs are not validated. Mutually exclusive with `--password`. |
 | **`--password <password>`** | Legacy wallet unlock input. A literal string or existing file path is accepted for compatibility; prefer the unambiguous `--password-file` form in scripts. |
 | **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands, including `transfer` / `transact-raw` / names). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
-| **Proving artifacts** | Railgun/Tornado keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
+| **Proving artifacts** | Railgun, Tornado, and Privacy Pools keys live under `<dataDir>/proving-artifacts`. Pre-warm with `fetch-artifacts`. Remote base: `KOHAKU_ARTIFACTS_BASE_URL` (default `https://artifacts.0000000000.org`). Privacy Pools circuits are fetched from `<base>/privacy-pools/` (same relative paths as `packages/circuits/` in privacy-pools-core). Large Tor GETs: `KOHAKU_TOR_CDN_TIMEOUT_MS` (default `45000`). Debug: `KOHAKU_TOR_DEBUG=1`. |
 | **Public-sync cache** | Shared **Railgun Subsquid** and saga HTTP pages live under `<dataDir>/public-sync-cache` and speed up those syncs (`balances`, `shield`, `unshield`). Prefetch with `fetch-sync-cache`. Snapshot base: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v1`). Snapshot is historical; live HTTP still fills anything newer. Sealed saga chunks are cached; `index.json` and hot heads are always fetched live. Never evicts — at `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new pages stop being stored instead. Privacy Pools **mainnet** history comes from the saga CDN (`saga-pp-state.global.ssl.fastly.net`) with only the tip from `eth_getLogs`. Sepolia Privacy Pools has no saga stream, so it stays on bundled state plus `eth_getLogs`. Wipe with `kohaku clear-tor-cache --public-sync`. |
 
 `--password-file` removes one trailing line ending and otherwise preserves password whitespace. When unlocking an existing wallet, it also retries the fully trimmed value for compatibility with the legacy `--password <existing-file>` behavior. New wallets created with `--password-file` use the preserved value exactly.
@@ -742,22 +742,32 @@ kohaku set-name-reverse-record --wallet testWallet --name alice.eth --broadcast
 
 ### `fetch-artifacts`
 
-Download Railgun + Tornado proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado and Privacy Pools mainnet cold sync is saga CDN + a chain tip, Railgun is Subsquid. Sepolia Privacy Pools is bundled state JSON + `eth_getLogs` + ASP.
+Download Railgun, Tornado, and Privacy Pools proving artifacts into `<dataDir>/proving-artifacts` so later **prove / unshield** can load circuits from disk without re-fetching (and without Tor→clearnet fallback). Event sync (`balances`, first shield) does **not** need these files — Tornado and Privacy Pools mainnet cold sync is saga CDN + a chain tip, Railgun is Subsquid. Sepolia Privacy Pools is bundled state JSON + `eth_getLogs` + ASP.
 
-With no selectors, downloads the **full proving set** (~260 MB). Narrow with `--variant` / `--poi` / `--tornado` / keys. The public-sync snapshot is a separate concern — see [`fetch-sync-cache`](#fetch-sync-cache).
+With no selectors, downloads the **full proving set** (Railgun ~260 MB, plus Tornado and the six Privacy Pools circuit files). Narrow with `--variant` / `--poi` / `--tornado` / `--privacy-pools` / keys. The public-sync snapshot is a separate concern — see [`fetch-sync-cache`](#fetch-sync-cache).
 
 | Option / args | Description |
 |---------------|-------------|
-| *(none)* | Full Railgun modern `.br` set (transact + POI) + Tornado circuit/key. |
+| *(none)* | Full Railgun modern `.br` set (transact + POI) + Tornado circuit/key + Privacy Pools commitment and withdraw circuits. |
 | `--variant <NNxMM>` | Railgun transact variant(s), e.g. `01x03` (repeatable; 3 files each). |
 | `--poi <NNxMM>` | POI variant(s): `03x03` or `13x13` (repeatable). |
 | `--tornado` | Tornado circuit JSON + proving key only. |
-| `[keys...]` | Explicit relative paths, e.g. `railgun/01x03/proving_key.bin.br`. |
+| `--privacy-pools` | Privacy Pools commitment + withdraw `wasm` / `vkey` / `zkey` only. |
+| `[keys...]` | Explicit relative paths, e.g. `railgun/01x03/proving_key.bin.br` or `privacy-pools/trusted-setup/final-keys/commitment.zkey`. |
 | `--without-tor` | Download over clearnet. Reveals that this IP fetched kohaku proving artifacts; subsequent private ops stay Tor-only from the local cache (except RPC). Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--dataDir <path>` | Data root (cache lives at `<dataDir>/proving-artifacts`). |
 | `--non-interactive` | JSON summary only. |
 
-Remote proving-artifact base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`, same path layout as MacWha `artifacts/`).
+Remote proving-artifact base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `https://artifacts.0000000000.org`, same path layout as MacWha `artifacts/` for Railgun). Privacy Pools circuits belong at `<base>/privacy-pools/`, preserving the path after `packages/circuits/` in privacy-pools-core. The SDK still requests `raw.githubusercontent.com`; the CLI rewrites those GETs onto this mirror and then the local cache.
+
+```
+privacy-pools/build/commitment/commitment_js/commitment.wasm
+privacy-pools/build/withdraw/withdraw_js/withdraw.wasm
+privacy-pools/trusted-setup/final-keys/commitment.vkey
+privacy-pools/trusted-setup/final-keys/commitment.zkey
+privacy-pools/trusted-setup/final-keys/withdraw.vkey
+privacy-pools/trusted-setup/final-keys/withdraw.zkey
+```
 
 **Examples:**
 
@@ -765,6 +775,7 @@ Remote proving-artifact base URL: env `KOHAKU_ARTIFACTS_BASE_URL` (default: `htt
 kohaku fetch-artifacts
 kohaku fetch-artifacts --without-tor
 kohaku fetch-artifacts --variant 01x03 --poi 03x03 --tornado
+kohaku fetch-artifacts --privacy-pools
 kohaku fetch-artifacts railgun/01x03/proving_key.bin.br
 ```
 

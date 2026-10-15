@@ -94,7 +94,9 @@ export async function preparePrivacyPoolsUnshield(opts: {
   recipientPrivateKey?: `0x${string}`;
 }): Promise<unknown> {
   assertPrivacyPoolsPaymasterConfigured(opts.chainId);
-  const prepare = opts.plugin.prepareUnshield as PrepareUnshield | undefined;
+  const prepare = opts.plugin.prepareUnshield?.bind(
+    opts.plugin
+  ) as PrepareUnshield | undefined;
   if (!prepare) {
     throw new Error("Privacy Pools plugin does not expose prepareUnshield.");
   }
