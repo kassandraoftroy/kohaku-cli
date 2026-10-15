@@ -95,7 +95,7 @@ import {
   makePublicClient,
   disposePublicClient,
   railgunPimlicoBundlerUrl,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import { withTor } from "../utils/tor.js";
 import {
@@ -116,6 +116,7 @@ import {
 } from "../utils/tornado-unshield-delegation.js";
 import { parseTailCalls } from "../utils/unshield-tail-calls.js";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -136,6 +137,7 @@ export type UnshieldOpts = {
   nonInteractive?: boolean;
   broadcast?: boolean;
   withoutTor?: boolean;
+  usePir?: boolean;
   tailCalls?: string;
   dataDir?: string;
   /**
@@ -253,8 +255,6 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
         dataDir,
@@ -270,6 +270,12 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,
@@ -1542,6 +1548,7 @@ export function registerUnshieldCommand(program: Command): void {
       "Unshield the maximum spendable amount (Railgun and Privacy Pools: after estimated fees; Tornado: full note balance)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option(
       "--broadcast",

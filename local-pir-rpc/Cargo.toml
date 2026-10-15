@@ -1,0 +1,63 @@
+[workspace]
+members = [
+    "crates/privacy-rpc",
+    "crates/pir-rpc",
+    "crates/tor-rpc",
+    "crates/client",
+    "crates/backend-ffi",
+    "crates/keyword",
+]
+resolver = "3"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+result_large_err = { level = "allow" }
+cast_possible_truncation = { level = "allow" }
+
+[workspace.dependencies]
+alloy = "2.4.1"
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+futures = "0.3"
+hex = "0.4.3"
+kohaku-pir-rpc = { path = "crates/pir-rpc" }
+kohaku-privacy-rpc = { path = "crates/privacy-rpc" }
+kohaku-tor-rpc = { path = "crates/tor-rpc" }
+reqwest = "0.13.4"
+serde = "1.0.229"
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = "1.53.1"
+tracing = "0.1.44"
+
+[package]
+name = "local-pir-rpc"
+version = "0.1.0"
+edition = "2021"
+description = "localhost JSON-RPC facade over kohaku-privacy-rpc (Tor + PIR), built inside kohaku-cli"
+publish = false
+
+[[bin]]
+name = "local-pir-rpc"
+path = "src/main.rs"
+
+[dependencies]
+alloy = { version = "2.4.1", default-features = false, features = ["json-rpc"] }
+async-trait = "0.1"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+futures = "0.3"
+hex = "0.4"
+kohaku-privacy-rpc = { path = "crates/privacy-rpc" }
+kohaku-tor-rpc = { path = "crates/tor-rpc" }
+kohaku-pir-rpc = { path = "crates/pir-rpc" }
+pir-client = { path = "crates/client" }
+pir-backend-ffi = { path = "crates/backend-ffi" }
+pir-keyword = { path = "crates/keyword" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"

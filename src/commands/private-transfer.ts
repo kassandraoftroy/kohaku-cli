@@ -28,6 +28,7 @@ export function registerPrivateTransferCommand(program: Command): void {
       "Exact amount the recipient receives (converted using token decimals)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option(
       "--broadcast",
