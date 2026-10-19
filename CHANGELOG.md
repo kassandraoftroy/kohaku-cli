@@ -4,7 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.0.9] - 2026-10-19
+
+### Added
+
+- `KOHAKU_RAILGUN_FORCE_VALID_POI=1` rewrites PPOI `Missing` statuses to `Valid` in the fetch layer so a Railgun note whose POI submit never landed can still be spent. Off by default. The contract does not consult PPOI; this only lifts the client-side filter.
+
+### Changed
+
+- `@kohaku-eth/privacy-pools` `0.1.0-alpha.26` (faster proving). The plugin keeps the legacy BIP-32 `SecretManager`. The SDK's signature-derived secrets are not used, so existing notes stay spendable.
 
 ## [0.0.8] — 2026-10-15
 

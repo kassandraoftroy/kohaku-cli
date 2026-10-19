@@ -19,8 +19,13 @@
  * Artifacts are for prove/unshield, not pool-event sync; pre-warm with
  * `kohaku fetch-artifacts` (optionally `--without-tor`).
  *
- * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr.
+ * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr. POST bodies are
+ * logged as `post-body` lines, truncated to 4KB.
  * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps large Tor GETs.
+ * Optional `KOHAKU_RAILGUN_FORCE_VALID_POI=1` (also `true` / `yes`) rewrites
+ * PPOI `"Missing"` statuses to `"Valid"` so a note whose proof never reached
+ * the PPOI node can still be spent. Off by default. The contract does not
+ * consult PPOI; this only lifts the client-side filter.
  *
  * Ethereum RPC stays clearnet: viem http transport uses fetch (not Tor by default). Hosts
  * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
@@ -36,6 +41,7 @@ import {
   appendNetworkTraffic,
   categorizeUrl,
   runWithTrafficLogWallet,
+  type TrafficCategory,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
 import { formatCaughtError, withTorBootstrapHint } from "./cli-errors.js";
@@ -282,10 +288,11 @@ async function loggedFetch(
     countSyncRequest(category);
   }
   try {
-    const res = await doFetch();
+    const fetched = await doFetch();
     let responseBytes: number | undefined;
-    const cl = res.headers.get("content-length");
+    const cl = fetched.headers.get("content-length");
     if (cl && /^\d+$/.test(cl)) responseBytes = Number(cl);
+    const res = await maybeForceValidPoiResponse(fetched, meta.url, category);
     appendNetworkTraffic({
       kind: meta.category === "pimlico" ? "pimlico" : "http",
       method: method.toUpperCase(),
@@ -336,6 +343,86 @@ function withRequestUrl(res: Response, requestUrl: string): Response {
     // Non-configurable in some environments; caller still gets the body.
   }
   return res;
+}
+
+const POST_BODY_LOG_MAX = 4096;
+
+function forceValidPoiEnabled(): boolean {
+  const v = process.env.KOHAKU_RAILGUN_FORCE_VALID_POI?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/** Replace PPOI JSON string statuses. Leaves longer tokens such as `"MissingSomething"`. */
+function rewritePoiMissingStatuses(text: string): string {
+  return text.replace(/"Missing"/g, '"Valid"');
+}
+
+/**
+ * When `KOHAKU_RAILGUN_FORCE_VALID_POI` is set, rebuild an OK PPOI response so
+ * `"Missing"` statuses read as `"Valid"`. The body is left unread otherwise.
+ * A rebuilt response is stamped with `requestUrl` (reqwest-wasm rejects an empty URL).
+ */
+export async function maybeForceValidPoiResponse(
+  res: Response,
+  requestUrl: string,
+  category: TrafficCategory
+): Promise<Response> {
+  if (!forceValidPoiEnabled() || category !== "ppoi" || !res.ok) return res;
+  const text = await res.text();
+  const headers = new Headers(res.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  return withRequestUrl(
+    new Response(rewritePoiMissingStatuses(text), {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    }),
+    requestUrl
+  );
+}
+
+function bodyInitToUtf8(body: BodyInit): string | undefined {
+  if (typeof body === "string") return body;
+  if (body instanceof Uint8Array) return Buffer.from(body).toString("utf8");
+  if (body instanceof ArrayBuffer) return Buffer.from(body).toString("utf8");
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString(
+      "utf8"
+    );
+  }
+  return undefined;
+}
+
+/**
+ * JSON-RPC method from a POST body, without consuming a `Request` body.
+ * `KOHAKU_TOR_DEBUG=1` also prints the body (truncated) as a `post-body` line.
+ */
+async function peekPostRpcMethod(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  method: string
+): Promise<string | undefined> {
+  if (method !== "POST") return undefined;
+  let text: string | undefined;
+  if (init?.body != null) {
+    text = bodyInitToUtf8(init.body);
+  } else if (typeof Request !== "undefined" && input instanceof Request) {
+    try {
+      text = await input.clone().text();
+    } catch {
+      text = undefined;
+    }
+  }
+  if (text == null) return undefined;
+  if (process.env.KOHAKU_TOR_DEBUG?.trim()) {
+    const shown =
+      text.length > POST_BODY_LOG_MAX
+        ? `${text.slice(0, POST_BODY_LOG_MAX)}…`
+        : text;
+    torDebug("post-body", shown);
+  }
+  return peekJsonRpcMethod(Buffer.from(text));
 }
 
 /** GitHub-hosted proving artifacts (Railgun / Tornado keys). */
@@ -478,6 +565,7 @@ export async function kohakuFetch(
 ): Promise<Response> {
   const url = resolveRequestUrl(input);
   const method = resolveRequestMethod(input, init);
+  const rpcMethod = await peekPostRpcMethod(input, init, method);
 
   // Hits to the local Pimlico proxy are logged in the proxy (upstream Tor URL).
   if (isActivePimlicoProxyUrl(url)) {
@@ -500,6 +588,7 @@ export async function kohakuFetch(
           via: "clearnet",
           clearnetReason: "local-artifact",
           url,
+          rpcMethod,
         },
         async () => buildLocalArtifactResponse(url, cached)
       );
@@ -516,6 +605,7 @@ export async function kohakuFetch(
           via: "clearnet",
           clearnetReason: decision.reason,
           url: remoteUrl,
+          rpcMethod,
         },
         async () => {
           const res = await clearnetFetch(remoteUrl, init);
@@ -546,6 +636,7 @@ export async function kohakuFetch(
               via: "tor",
               url: remoteUrl,
               requestBytes,
+              rpcMethod,
             },
             async () => {
               const res = withRequestUrl(
@@ -587,6 +678,7 @@ export async function kohakuFetch(
           via: "clearnet",
           clearnetReason: "public-sync-cache",
           url,
+          rpcMethod,
         },
         async () =>
           buildCachedPublicSyncResponse(url, cached.body, cached.contentType)
@@ -606,6 +698,7 @@ export async function kohakuFetch(
         via: "clearnet",
         clearnetReason: decision.reason,
         url,
+        rpcMethod,
       },
       wrapStore(() => clearnetFetch(input, init))
     );
@@ -624,6 +717,7 @@ export async function kohakuFetch(
         via: "tor",
         url,
         requestBytes,
+        rpcMethod,
       },
       wrapStore(async () =>
         withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
@@ -644,6 +738,7 @@ export async function kohakuFetch(
             via: "tor",
             url,
             requestBytes,
+            rpcMethod,
           },
           wrapStore(async () =>
             withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
