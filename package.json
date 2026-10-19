@@ -21,7 +21,7 @@
         "@clack/prompts": "0.7.0",
         "@inquirer/prompts": "8.3.2",
         "@kohaku-eth/plugins": "0.0.1-alpha.17",
-        "@kohaku-eth/privacy-pools": "0.0.2-alpha.24",
+        "@kohaku-eth/privacy-pools": "0.1.0-alpha.26",
         "@kohaku-eth/railgun": "0.0.1-alpha.30",
         "@kohaku-eth/tornado-cash": "0.0.2-alpha.25",
         "@noble/secp256k1": "2.3.0",

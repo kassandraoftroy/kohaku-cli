@@ -1,6 +1,7 @@
 import {
   OxBowAspService,
   PrivacyPoolsV1_0xBow,
+  SecretManager,
   createPPv1Plugin,
 } from "@kohaku-eth/privacy-pools";
 import {
@@ -812,8 +813,11 @@ export async function createProtocolPlugin(
       })
     : undefined;
 
+  // Legacy BIP-32 note secrets. 0.1.0-alpha.26 defaults to signature-derived
+  // secrets, which do not match deposits this wallet already created.
   return createPPv1Plugin(host, {
     ...ppv1Params,
+    secretManager: SecretManager,
     ...(dataService ? { dataService } : {}),
   } as never) as AnyPlugin;
 }
