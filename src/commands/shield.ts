@@ -55,7 +55,7 @@ import {
   getRpcChainIdMatchingWallet,
   makePublicClient,
   disposePublicClient,
-  resolveRpcUrl,
+  connectCommandRpc,
   type KohakuPublicClient,
 } from "../utils/rpc";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
@@ -68,6 +68,7 @@ import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import type { ResolvedTokenMeta } from "../utils/tokens-util";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -123,6 +124,7 @@ type ShieldOpts = {
   broadcast?: boolean;
   skipSim?: boolean;
   withoutTor?: boolean;
+  usePir?: boolean;
   dataDir?: string;
 };
 
@@ -317,6 +319,7 @@ export function registerShieldCommand(program: Command): void {
       "Shield the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance; Tornado: floored to the smallest pool denomination)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
     .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
@@ -350,8 +353,6 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
         dataDir,
@@ -368,6 +369,12 @@ export function registerShieldCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,

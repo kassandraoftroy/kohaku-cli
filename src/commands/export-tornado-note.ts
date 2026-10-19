@@ -23,7 +23,7 @@ import {
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import { withTor } from "../utils/tor.js";
@@ -31,6 +31,7 @@ import { runWithSyncProgress } from "../utils/sync-progress.js";
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { assertTornadoExactPoolDenomination } from "../utils/tornado-pools.js";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -46,6 +47,7 @@ type ExportTornadoNoteOpts = {
   amountFormatted?: string;
   nonInteractive?: boolean;
   withoutTor?: boolean;
+  usePir?: boolean;
   dataDir?: string;
 };
 
@@ -156,6 +158,7 @@ export function registerExportTornadoNoteCommand(program: Command): void {
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Exact pool denomination in wei/base units")
     .option(
@@ -178,8 +181,6 @@ export function registerExportTornadoNoteCommand(program: Command): void {
         return;
       }
 
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
         dataDir,
@@ -195,6 +196,12 @@ export function registerExportTornadoNoteCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       const password = await resolveWalletPassword({
         flagPassword: opts.password,

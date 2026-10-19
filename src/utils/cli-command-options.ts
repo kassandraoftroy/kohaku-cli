@@ -9,7 +9,10 @@ export const cliOptions = {
     "Wallet password (legacy literal-or-file input; prefer --password-file for automation)",
   passwordFile:
     "POSIX only: read wallet password from an owner-only file (conflicts with --password)",
-  rpcUrl: "RPC URL (or set RPC_URL in env; default: http://localhost:8545)",
+  rpcUrl:
+    "RPC URL (or set RPC_URL; default: http://localhost:8545). Used directly unless --use-pir is set",
+  usePir:
+    "Route a non-local RPC through the local PIR facade (mainnet wallets only, chain id 1). Omit to call the RPC URL directly. Override the PIR host with PIR_URL",
   dataDir: "Kohaku data directory (default: ~/.kohaku-cli)",
   walletPickList: "Wallet name (omit to choose interactively from the list)",
   walletBalancesOptional:
@@ -23,7 +26,7 @@ export const cliOptions = {
   nonInteractiveListWallets:
     "Agent mode: print JSON instead of human-readable output (no prompts)",
   withoutTor:
-    "Disable Tor for non-RPC HTTP (default: Tor on). RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
+    "Disable Tor (default: Tor on). Non-RPC HTTP stays clearnet. With --use-pir, local-pir-rpc also starts in clearnet mode. Or set KOHAKU_WITHOUT_TOR=1",
   withoutTorArtifactsFetch:
     "Download proving artifacts over clearnet (default: Tor). Reveals that this IP fetched kohaku circuits; later shield/unshield stay Tor-only from the local cache. Or set KOHAKU_WITHOUT_TOR=1",
   withoutTorSyncCacheFetch:

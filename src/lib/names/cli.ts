@@ -11,11 +11,12 @@ import {
   disposePublicClient,
   getRpcChainIdMatchingWallet,
   makePublicClient,
-  resolveRpcUrl,
+  connectCommandRpc,
   type KohakuPublicClient,
 } from "../../utils/rpc.js";
 import { withTor } from "../../utils/tor.js";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -48,6 +49,7 @@ export type NameWalletOpts = {
   dataDir?: string;
   index?: string;
   withoutTor?: boolean;
+  usePir?: boolean;
 };
 
 /**
@@ -58,8 +60,6 @@ export async function withNameCommandContext(
   opts: NameWalletOpts,
   run: (ctx: NameCommandContext) => Promise<void>
 ): Promise<void> {
-  const rpcUrl = resolveRpcUrl(opts.rpcUrl);
-
   const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
   const walletName = await resolveWalletNameOrPrompt({
     dataDir,
@@ -75,6 +75,12 @@ export async function withNameCommandContext(
     cliErrorFromCaught(e);
     return;
   }
+
+  const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+    withoutTor: opts.withoutTor,
+    usePir: opts.usePir,
+    chainId: expectedChainIdStringFromWalletDir(walletDir),
+  });
 
   const password = await resolveWalletPassword({
     flagPassword: opts.password,
@@ -136,6 +142,7 @@ export function addNameWalletOptions(cmd: Command): Command {
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option(
       "--broadcast",
       "Sign and submit on-chain (omit to simulate / print transaction payload only)"

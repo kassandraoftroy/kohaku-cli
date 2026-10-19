@@ -29,7 +29,7 @@ import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
-  resolveRpcUrl,
+  connectCommandRpc,
 } from "../utils/rpc";
 import {
   resolveIncludeProtocols,
@@ -38,6 +38,7 @@ import {
   type SupportedProtocol,
 } from "../utils/plugins";
 import {
+  expectedChainIdStringFromWalletDir,
   resolveWalletDir,
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
@@ -55,6 +56,7 @@ type BalancesOpts = {
   tokensList?: string;
   dataDir?: string;
   withoutTor?: boolean;
+  usePir?: boolean;
   stealthStartBlock?: string;
   skipStealthScan?: boolean;
   resyncProfile?: boolean;
@@ -505,6 +507,7 @@ export function registerBalancesCommand(program: Command): void {
       `Comma-separated private protocols to sync (default: DEFAULT_PRIVACY_PROTOCOL, or none). e.g. ${SUPPORTED_PROTOCOLS_HELP.replace(/ \| /g, ",")}`
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--use-pir", cliOptions.usePir)
     .option(
       "--tokensList <addrs>",
       "Extra ERC20 addresses (comma/space); merged with chain defaults, deduped"
@@ -542,7 +545,6 @@ export function registerBalancesCommand(program: Command): void {
         nonInteractive: opts.nonInteractive,
       });
       if (!walletName) return;
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
 
       let walletDir: string;
       try {
@@ -551,6 +553,12 @@ export function registerBalancesCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+      const rpcUrl = await connectCommandRpc(opts.rpcUrl, {
+        withoutTor: opts.withoutTor,
+        usePir: opts.usePir,
+        chainId: expectedChainIdStringFromWalletDir(walletDir),
+      });
 
       let stealthStartBlock = stealthStartBlockFlag;
       if (stealthStartBlock === undefined) {

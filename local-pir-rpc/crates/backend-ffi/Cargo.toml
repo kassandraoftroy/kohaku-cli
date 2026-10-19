@@ -1,0 +1,22 @@
+[package]
+name = "pir-backend-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings over the inspire-gpu ipir_* C ABI: client half (query build / extract, CPU-only) always; server half behind the `gpu` feature"
+
+[features]
+# Without `gpu`: the client half only — build.rs compiles inspire-gpu's CPU
+# sources directly (no CMake, no CUDA), so this builds on any machine.
+# With `gpu`: links the static libraries + CUDA runtime, running the CMake
+# build itself if no prebuilt build/ exists. The checkout comes from the
+# third_party/inspire-gpu submodule by default (INSPIRE_GPU_DIR overrides).
+gpu = []
+
+[dependencies]
+pir-keyword = { path = "../keyword" }
+hex = "0.4"
+
+[build-dependencies]
+cc = "1.0"
+cmake = "0.1"
+pkg-config = "0.3"
