@@ -50,7 +50,15 @@ import {
   makeStealthAccountsStorage,
   parseStealthIndex,
 } from "../lib/stealth/storage.js";
-import { assertPrivacyPoolsUnshieldSupported } from "../utils/privacy-pools-paymaster.js";
+import {
+  assertPrivacyPoolsUnshieldSupported,
+  privacyPoolsApprovedNotes,
+  privacyPoolsAssetAddress,
+  privacyPoolsFeeWei,
+  privacyPoolsRequiredGas,
+  privacyPoolsSchemeCovers,
+  quotePrivacyPoolsPaymasterFeeInToken,
+} from "../utils/privacy-pools-paymaster.js";
 import {
   assertTornadoPaymasterConfigured,
   countTornadoWithdrawals,
@@ -58,8 +66,9 @@ import {
   TornadoCoverError,
   assertRailgunExternalRecipientAllowed,
   configureRailgunForUnshield,
-  createProtocolPlugin,
+  createSchemedPlugins,
   pluginIdForProtocol,
+  tornadoSchemeCanCover,
   privateUnshieldAsset,
   resolveProtocolOption,
   SUPPORTED_PROTOCOLS_HELP,
@@ -115,6 +124,13 @@ import {
   tornadoUnshieldConfirmExtraLines,
 } from "../utils/tornado-unshield-delegation.js";
 import { parseTailCalls } from "../utils/unshield-tail-calls.js";
+import {
+  chooseDerivationScheme,
+  largerSchemeCap,
+  schemeCoverError,
+  schemeSpendLine,
+  type NoteDerivation,
+} from "../utils/derivation-scheme.js";
 import {
   resolveWalletDir,
   resolveWalletNameOrPrompt,
@@ -581,7 +597,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
-        const plugin = await createProtocolPlugin(protocol, host, chainId);
+        const plugins = await createSchemedPlugins(protocol, host, chainId);
+        let plugin = plugins.signature;
 
         if (protocol === "railgun") {
           configureRailgunForUnshield(
@@ -599,6 +616,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           estimatedGasFeeWei,
           railgunGasEstimateFailed,
           railgunBalance,
+          legacyCap,
+          signatureCap,
+          legacyTornadoNotes,
+          signatureTornadoNotes,
         } = await runWithSyncProgress(
           {
             source: protocol,
@@ -606,31 +627,78 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             onUpdate: quiet ? undefined : (message) => spin.start(message),
           },
           async () => {
-            await syncPluginWithProgress(plugin, protocol);
-            return maxUnshieldAmountHint(
+            await syncPluginWithProgress(plugins.legacy, protocol);
+            if (plugins.signature !== plugins.legacy) {
+              await syncPluginWithProgress(plugins.signature, protocol);
+            }
+            if (protocol === "railgun") {
+              const hint = await maxUnshieldAmountHint(
+                protocol,
+                plugins.signature,
+                tokenMeta,
+                chainId,
+                rpcUrl
+              );
+              return {
+                ...hint,
+                legacyCap: hint.cap,
+                signatureCap: hint.cap,
+                legacyTornadoNotes: [] as bigint[],
+                signatureTornadoNotes: [] as bigint[],
+              };
+            }
+            if (protocol === "tornado") {
+              const probe = privateUnshieldAsset(protocol, chainId, tokenMeta, 1n);
+              const legacyNotes = (
+                await listTornadoUnspentNotes(plugins.legacy, probe.asset)
+              ).map((note) => note.amount);
+              const signatureNotes = (
+                await listTornadoUnspentNotes(plugins.signature, probe.asset)
+              ).map((note) => note.amount);
+              const legacySum = legacyNotes.reduce((sum, note) => sum + note, 0n);
+              const signatureSum = signatureNotes.reduce((sum, note) => sum + note, 0n);
+              return {
+                cap: largerSchemeCap(legacySum, signatureSum),
+                legacyCap: legacySum,
+                signatureCap: signatureSum,
+                legacyTornadoNotes: legacyNotes,
+                signatureTornadoNotes: signatureNotes,
+              };
+            }
+            const legacyHint = await maxUnshieldAmountHint(
               protocol,
-              plugin,
+              plugins.legacy,
               tokenMeta,
               chainId,
               rpcUrl
             );
+            const signatureHint = await maxUnshieldAmountHint(
+              protocol,
+              plugins.signature,
+              tokenMeta,
+              chainId,
+              rpcUrl
+            );
+            const cap = largerSchemeCap(legacyHint.cap, signatureHint.cap);
+            const winner = signatureHint.cap > legacyHint.cap ? signatureHint : legacyHint;
+            return {
+              cap,
+              estimatedGasFeeWei: winner.estimatedGasFeeWei,
+              railgunGasEstimateFailed:
+                cap === 0n
+                  ? legacyHint.railgunGasEstimateFailed &&
+                    signatureHint.railgunGasEstimateFailed
+                  : winner.railgunGasEstimateFailed,
+              legacyCap: legacyHint.cap,
+              signatureCap: signatureHint.cap,
+              legacyTornadoNotes: [] as bigint[],
+              signatureTornadoNotes: [] as bigint[],
+            };
           }
         );
         if (spin.active) spin.stop("Private state synced.");
         const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
-        let amountCap = maxAmountHint;
-        let tornadoNoteAmounts: bigint[] | undefined;
-        if (privateTransfer && protocol === "tornado") {
-          try {
-            const probe = privateUnshieldAsset(protocol, chainId, tokenMeta, 1n);
-            const notes = await listTornadoUnspentNotes(plugin, probe.asset);
-            tornadoNoteAmounts = notes.map((note) => note.amount);
-            amountCap = tornadoNoteAmounts.reduce((sum, note) => sum + note, 0n);
-          } catch (e) {
-            cliErrorFromCaught(e);
-            return;
-          }
-        }
+        const amountCap = maxAmountHint;
         const maxFormatted = formatUnits(amountCap, tokenMeta.decimals);
         const maxPromptLabel = protocol === "tornado" ? "max" : "max (after fees)";
         const maxCapLabel = isRailgunEth
@@ -667,13 +735,18 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         }
 
         if (amount !== null && amountCap > 0n && amount > amountCap) {
-          const scope =
-            protocol === "tornado"
-              ? "shielded balance for this token"
-              : "max unshield after estimated fees for this token";
-          cliError(
-            `Amount exceeds ${scope} (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`
-          );
+          if (protocol === "tornado" || protocol === "privacy-pools") {
+            cliError(
+              schemeCoverError({
+                legacyLabel: `${formatUnits(legacyCap, tokenMeta.decimals)} ${tokenMeta.symbol}`,
+                signatureLabel: `${formatUnits(signatureCap, tokenMeta.decimals)} ${tokenMeta.symbol}`,
+              })
+            );
+          } else {
+            cliError(
+              `Amount exceeds max unshield after estimated fees for this token (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`
+            );
+          }
           return;
         }
 
@@ -819,6 +892,100 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           }
         }
 
+        const spendableLabel = (value: bigint) =>
+          `${formatUnits(value, tokenMeta.decimals)} ${tokenMeta.symbol}`;
+        const announceScheme = (scheme: NoteDerivation) => {
+          const line = schemeSpendLine(scheme);
+          if (quiet) console.error(line);
+          else log.info(line);
+        };
+        if (protocol === "privacy-pools" || (protocol === "tornado" && !privateTransfer)) {
+          try {
+            const legacyCanCover =
+              protocol === "tornado"
+                ? tornadoSchemeCanCover(legacyTornadoNotes, amountWei)
+                : await privacyPoolsPluginCovers(plugins.legacy);
+            const signatureCanCover =
+              protocol === "tornado"
+                ? tornadoSchemeCanCover(signatureTornadoNotes, amountWei)
+                : await privacyPoolsPluginCovers(plugins.signature);
+            const scheme = chooseDerivationScheme({
+              legacyCanCover,
+              signatureCanCover,
+            });
+            if (!scheme) {
+              throw new Error(
+                schemeCoverError({
+                  legacyLabel: spendableLabel(legacyCap),
+                  signatureLabel: spendableLabel(signatureCap),
+                })
+              );
+            }
+            plugin = plugins[scheme];
+            announceScheme(scheme);
+          } catch (e) {
+            cliErrorFromCaught(e);
+            return;
+          }
+        }
+
+        async function privacyPoolsPluginCovers(candidate: typeof plugins.legacy): Promise<boolean> {
+          const pool = privacyPoolsAssetAddress(
+            tokenMeta.isEth,
+            tokenMeta.tokenAddress
+          );
+          const listed = await (
+            candidate as {
+              notes?: (assets?: unknown, includeSpent?: boolean) => Promise<unknown[]>;
+            }
+          ).notes?.(undefined, false);
+          const notes = privacyPoolsApprovedNotes(
+            (listed ?? []).map((item) => {
+              const note = item as {
+                balance?: bigint | number | string;
+                approved?: boolean;
+                assetAddress?: bigint | string;
+              };
+              return {
+                balance: note.balance == null ? 0n : BigInt(note.balance),
+                approved: note.approved,
+                assetAddress: note.assetAddress ?? 0n,
+              };
+            }),
+            pool
+          );
+          let maxFeePerGas: bigint;
+          try {
+            maxFeePerGas = await fetchPimlicoMaxFeePerGas(
+              railgunPimlicoBundlerUrl(chainId)
+            );
+          } catch {
+            return false;
+          }
+          const hasTails = tailCalls.length > 0;
+          return privacyPoolsSchemeCovers({
+            notes,
+            net: amountWei,
+            feeFor: async (extraWithdrawals) => {
+              const feeWei = privacyPoolsFeeWei(
+                privacyPoolsRequiredGas({
+                  isErc20: !tokenMeta.isEth,
+                  extraWithdrawals,
+                  hasUserTailCalls: hasTails,
+                }),
+                maxFeePerGas
+              );
+              if (tokenMeta.isEth) return feeWei;
+              return quotePrivacyPoolsPaymasterFeeInToken({
+                rpcUrl,
+                chainId,
+                feeToken: tokenMeta.tokenAddress as `0x${string}`,
+                feeWei,
+              });
+            },
+          });
+        }
+
         let asset: AssetAmount;
         try {
           asset = privateUnshieldAsset(protocol, chainId, tokenMeta, amountWei);
@@ -880,43 +1047,77 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             : undefined;
           if (privateTransfer) {
             try {
-              const cover = await runQuietSpinner(
+              const planned = await runQuietSpinner(
                 quiet,
                 spin,
                 {
                   start: "Choosing Tornado notes that cover the transfer and paymaster fee",
                   failure: "Could not cover this transfer with Tornado notes.",
                 },
-                () =>
-                  resolveTornadoPrivateTransferCover({
-                    noteAmounts: tornadoNoteAmounts ?? [],
-                    transferAmount: transferAmountWei!,
-                    isErc20: tornadoIsErc20,
-                    maxFeePerGas: tornadoMaxFeePerGas!,
-                    quoteFeeWei: quoteTornadoFee,
-                    estimateTailGas: ({ unshieldAmount, extraWithdrawals }) =>
-                      resolveTornadoTailCallsGasEstimate({
-                        rpcUrl,
-                        account: recipient,
-                        amountWei: unshieldAmount,
-                        maxFeePerGas: tornadoMaxFeePerGas!,
-                        extraWithdrawals,
-                        userTailCalls: tailCalls,
-                        asset: tokenMeta.isEth
-                          ? { kind: "native" }
-                          : {
-                              kind: "erc20",
-                              token: tokenMeta.tokenAddress as `0x${string}`,
-                            },
-                        feeWeiToAsset: quoteTornadoFee,
-                        bakeErc20Forward: false,
-                        leftoverRecipient: recipient,
-                        forwardLeftover: false,
-                      }),
-                  }),
-                (planned) =>
-                  `Unshield ${formatUnits(planned.unshieldAmountWei, tokenMeta.decimals)} ${tokenMeta.symbol} to cover the transfer.`
+                async () => {
+                  const estimateTailGas = ({
+                    unshieldAmount,
+                    extraWithdrawals,
+                  }: {
+                    unshieldAmount: bigint;
+                    extraWithdrawals: number;
+                  }) =>
+                    resolveTornadoTailCallsGasEstimate({
+                      rpcUrl,
+                      account: recipient,
+                      amountWei: unshieldAmount,
+                      maxFeePerGas: tornadoMaxFeePerGas!,
+                      extraWithdrawals,
+                      userTailCalls: tailCalls,
+                      asset: tokenMeta.isEth
+                        ? { kind: "native" }
+                        : {
+                            kind: "erc20",
+                            token: tokenMeta.tokenAddress as `0x${string}`,
+                          },
+                      feeWeiToAsset: quoteTornadoFee,
+                      bakeErc20Forward: false,
+                      leftoverRecipient: recipient,
+                      forwardLeftover: false,
+                    });
+                  const coverScheme = (noteAmounts: readonly bigint[]) =>
+                    resolveTornadoPrivateTransferCover({
+                      noteAmounts,
+                      transferAmount: transferAmountWei!,
+                      isErc20: tornadoIsErc20,
+                      maxFeePerGas: tornadoMaxFeePerGas!,
+                      quoteFeeWei: quoteTornadoFee,
+                      estimateTailGas,
+                    });
+                  try {
+                    return {
+                      scheme: "legacy" as const,
+                      cover: await coverScheme(legacyTornadoNotes),
+                    };
+                  } catch (err) {
+                    if (!(err instanceof TornadoCoverError)) throw err;
+                    try {
+                      return {
+                        scheme: "signature" as const,
+                        cover: await coverScheme(signatureTornadoNotes),
+                      };
+                    } catch (next) {
+                      if (!(next instanceof TornadoCoverError)) throw next;
+                      throw new Error(
+                        schemeCoverError({
+                          legacyLabel: spendableLabel(legacyCap),
+                          signatureLabel: spendableLabel(signatureCap),
+                        })
+                      );
+                    }
+                  }
+                },
+                (chosen) =>
+                  `Unshield ${formatUnits(chosen.cover.unshieldAmountWei, tokenMeta.decimals)} ${tokenMeta.symbol} to cover the transfer.`
               );
+              plugin = plugins[planned.scheme];
+              announceScheme(planned.scheme);
+              const cover = planned.cover;
               amountWei = cover.unshieldAmountWei;
               tornadoWithdrawalCount = cover.withdrawalCount;
               tornadoTailCallsGasEstimate = cover.tailGas;
@@ -941,21 +1142,6 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                 };
               }
             } catch (e) {
-              if (e instanceof TornadoCoverError) {
-                const transferLabel = formatUnits(
-                  transferAmountWei!,
-                  tokenMeta.decimals
-                );
-                const feeLabel = formatUnits(
-                  e.target > transferAmountWei! ? e.target - transferAmountWei! : 0n,
-                  tokenMeta.decimals
-                );
-                const coveredLabel = formatUnits(e.covered, tokenMeta.decimals);
-                cliError(
-                  `Insufficient Tornado ${tokenMeta.symbol} to cover ${transferLabel} plus the paymaster fee (about ${feeLabel} ${tokenMeta.symbol}). Unspent notes cover ${coveredLabel} ${tokenMeta.symbol}.`
-                );
-                return;
-              }
               cliErrorFromCaught(e);
               return;
             }
@@ -1113,7 +1299,6 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               recipient,
               tailCalls,
               recipientDerivationPath,
-              recipientPrivateKey: recipientPriv,
               tornadoMaxFeePerGas,
               tornadoWithdrawalCount,
               tornadoTailCallsGasEstimate,
@@ -1539,7 +1724,7 @@ export function registerUnshieldCommand(program: Command): void {
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option(
       "--amount-max",
-      "Unshield the maximum spendable amount (Railgun and Privacy Pools: after estimated fees; Tornado: full note balance)"
+      "Unshield the larger single-scheme amount (Railgun: after estimated fees; Privacy Pools: one scheme after its own estimated fees; Tornado: one scheme's full note balance)"
     )
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)

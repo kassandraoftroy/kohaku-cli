@@ -293,6 +293,50 @@ export function sumPrivacyPoolsNoteBalances(
 }
 
 /**
+ * True when these notes can pay `net` plus the paymaster fee `feeFor` quotes
+ * for the resulting extra withdrawals. Does not mix in notes from another list.
+ */
+export async function privacyPoolsSchemeCovers(opts: {
+  notes: readonly PpNoteBalance[];
+  net: bigint;
+  feeFor: (extraWithdrawals: number) => Promise<bigint>;
+}): Promise<boolean> {
+  if (opts.net <= 0n) return false;
+  if (sumPrivacyPoolsNoteBalances(opts.notes) < opts.net) return false;
+  let extra = 0;
+  let fee: bigint;
+  try {
+    fee = await opts.feeFor(0);
+  } catch {
+    return false;
+  }
+  for (let i = 0; i < 4; i++) {
+    let count: number;
+    try {
+      count = countPrivacyPoolsNotesForAmount(opts.notes, opts.net + fee);
+    } catch {
+      return false;
+    }
+    const nextExtra = Math.max(0, count - 1);
+    let nextFee: bigint;
+    try {
+      nextFee = await opts.feeFor(nextExtra);
+    } catch {
+      return false;
+    }
+    if (nextFee === fee && nextExtra === extra) return true;
+    extra = nextExtra;
+    fee = nextFee;
+  }
+  try {
+    countPrivacyPoolsNotesForAmount(opts.notes, opts.net + fee);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Gas units the paymaster fee is priced against.
  * Single-note withdrawals with no user tails have `callGasLimit` 0 (payout
  * happens in validation). Extra notes and user tails add an execution phase.

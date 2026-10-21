@@ -527,7 +527,8 @@ export async function prepareShieldPlan(opts: {
   return withTor(!withoutTor, { rpcUrl, walletDir }, () =>
     withProtocolRuntime(
       { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-      async (_host, plugin) => {
+      async (_host, plugins) => {
+      const plugin = plugins.signature;
       const { rpc, dispose } = await rpcForWalletOps({
         protocol,
         rpcUrl,

@@ -23,10 +23,7 @@ import {
   type SupportedProtocol,
   type TornadoErc20TailForward,
 } from "../utils/plugins.js";
-import {
-  assertPrivacyPoolsWalletDelegator,
-  bindPrivacyPoolsWalletDelegator,
-} from "../utils/privacy-pools-unshield-delegation.js";
+import { privacyPoolsDelegationConfig } from "../utils/privacy-pools-unshield-delegation.js";
 import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 
@@ -91,7 +88,6 @@ export async function preparePrivacyPoolsUnshield(opts: {
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
   recipientDerivationPath?: string;
-  recipientPrivateKey?: `0x${string}`;
 }): Promise<unknown> {
   assertPrivacyPoolsPaymasterConfigured(opts.chainId);
   const prepare = opts.plugin.prepareUnshield?.bind(
@@ -154,7 +150,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
   const assetFor = (amount: bigint) =>
     privateUnshieldAsset("privacy-pools", opts.chainId, opts.tokenMeta, amount);
 
-  assertPrivacyPoolsWalletDelegator({
+  const delegation = privacyPoolsDelegationConfig({
     delegationPath: opts.recipientDerivationPath,
     tailCallsCount: opts.tailCalls.length,
     withdrawalCount: extra + 1,
@@ -166,6 +162,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
         mode: "paymaster",
         batch: true,
         refundRecipient: opts.recipient,
+        ...(delegation ? { delegation } : {}),
         exact: {},
       });
     } catch (err) {
@@ -186,6 +183,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
     mode: "paymaster" as const,
     batch: true as const,
     refundRecipient: opts.recipient,
+    ...(delegation ? { delegation } : {}),
     ...(userTailCalls
       ? {
           tailCalls: async () => userTailCalls,
@@ -194,45 +192,28 @@ export async function preparePrivacyPoolsUnshield(opts: {
       : {}),
   };
 
-  const needsWalletDelegator = hasTails || extra > 0;
-  let restoreDelegator: (() => void) | undefined;
-  if (needsWalletDelegator) {
-    const privateKey = opts.recipientPrivateKey;
-    if (!privateKey) {
-      throw new Error("Privacy Pools unshield is missing the wallet key for --to.");
+  let reserved = fee;
+  let operation: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    operation = await prepare(
+      assetFor(opts.amountWei + reserved),
+      opts.recipient,
+      options
+    );
+    const built = privacyPoolsPreparedFee(operation);
+    if (built == null) {
+      throw new Error("Privacy Pools paymaster withdrawal did not include a fee.");
     }
-    restoreDelegator = bindPrivacyPoolsWalletDelegator(
-      opts.plugin,
-      privateKey,
-      opts.recipient
+    if (reserved >= built) return operation;
+    if (attempt === 0) {
+      reserved = built;
+      continue;
+    }
+    throw new Error(
+      "Privacy Pools paymaster fee rose above the reserved private balance. Retry the unshield."
     );
   }
-  try {
-    let reserved = fee;
-    let operation: unknown;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      operation = await prepare(
-        assetFor(opts.amountWei + reserved),
-        opts.recipient,
-        options
-      );
-      const built = privacyPoolsPreparedFee(operation);
-      if (built == null) {
-        throw new Error("Privacy Pools paymaster withdrawal did not include a fee.");
-      }
-      if (reserved >= built) return operation;
-      if (attempt === 0) {
-        reserved = built;
-        continue;
-      }
-      throw new Error(
-        "Privacy Pools paymaster fee rose above the reserved private balance. Retry the unshield."
-      );
-    }
-    return operation;
-  } finally {
-    restoreDelegator?.();
-  }
+  return operation;
 }
 
 /** One prepare entry for every protocol. Protocol-specific options stay inside. */
@@ -246,7 +227,6 @@ export async function prepareProtocolUnshield(opts: {
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
   recipientDerivationPath?: string;
-  recipientPrivateKey?: `0x${string}`;
   tornadoMaxFeePerGas?: bigint;
   tornadoWithdrawalCount?: number;
   tornadoTailCallsGasEstimate?: bigint;

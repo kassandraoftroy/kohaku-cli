@@ -1,7 +1,8 @@
 import {
   OxBowAspService,
   PrivacyPoolsV1_0xBow,
-  SecretManager,
+  SecretManager as PrivacyPoolsSecretManager,
+  SignatureSecretManager as PrivacyPoolsSignatureSecretManager,
   createPPv1Plugin,
 } from "@kohaku-eth/privacy-pools";
 import {
@@ -15,13 +16,22 @@ import {
 import type { AssetAmount, Host, UnshieldOptions } from "@kohaku-eth/plugins";
 import {
   DepositStrategy,
+  SecretManager as TornadoSecretManager,
+  SignatureSecretManager as TornadoSignatureSecretManager,
   TornadoCashConfigs,
   TornadoPaymasterConfigs,
   createTCBroadcaster,
   createTCPlugin,
+  type ISecretManager as TornadoISecretManager,
+  type SecretManagerParams as TornadoSecretManagerParams,
   type TCPaymasterUnshieldOptions,
   type TCNote,
 } from "@kohaku-eth/tornado-cash";
+import {
+  prefixStorage,
+  SIGNATURE_STORAGE_PREFIX,
+  type NoteDerivation,
+} from "./derivation-scheme.js";
 import {
   estimateTornadoPaymasterFee,
   padTornadoTailForwardFee,
@@ -619,6 +629,20 @@ export function tornadoWithdrawalCountForAmount(
   return count;
 }
 
+/** True when this scheme's notes can compose `amount` exactly. */
+export function tornadoSchemeCanCover(
+  noteAmounts: readonly bigint[],
+  amount: bigint
+): boolean {
+  if (amount <= 0n) return false;
+  try {
+    tornadoWithdrawalCountForAmount(noteAmounts, amount);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Smallest note sum `>= target` that `tornadoWithdrawalCountForAmount` can
  * withdraw exactly. Ties on sum keep the combination the largest-first packer
@@ -746,10 +770,85 @@ async function ensurePpv1BundledStateSeeded(
   }
 }
 
-export async function createProtocolPlugin(
+/**
+ * Commitment that is not a real pool leaf. A scheme-scoped Tornado scan treats
+ * it as a miss and does not record the other scheme's notes.
+ */
+const UNMATCHED_TORNADO_SECRET = {
+  nullifier: 1n,
+  salt: 1n,
+  commitment: 1n,
+  nullifierHash: 1n,
+} as Awaited<ReturnType<TornadoISecretManager["getLegacyDepositSecrets"]>>;
+
+/**
+ * Tornado's default manager discovers both schemes in one state. This CLI keeps
+ * them in separate stores: each factory keeps `deriveDelegatorSigner` (keystore
+ * path, including the stealth sentinel) and stubs only the other scheme's scan.
+ */
+async function tornadoSchemeSecretManager(
+  scheme: NoteDerivation,
+  params: TornadoSecretManagerParams
+): Promise<TornadoISecretManager> {
+  const legacy = await TornadoSecretManager(params);
+  const signature = await TornadoSignatureSecretManager(params);
+  const combined: TornadoISecretManager = { ...legacy, ...signature };
+  if (scheme === "legacy") {
+    return {
+      ...combined,
+      getSignatureSecrets: async () => UNMATCHED_TORNADO_SECRET,
+    };
+  }
+  return {
+    ...combined,
+    getLegacyDepositSecrets: async () => UNMATCHED_TORNADO_SECRET,
+  };
+}
+
+function hostForScheme(host: Host, scheme: NoteDerivation): Host {
+  if (scheme === "legacy") return host;
+  return {
+    ...host,
+    storage: prefixStorage(host.storage, SIGNATURE_STORAGE_PREFIX),
+  };
+}
+
+export type SchemedPlugins = {
+  /** BIP-32 notes and imported Tornado note strings. Existing storage keys. */
+  legacy: AnyPlugin;
+  /** Signature-derived notes. New shields use this plugin. */
+  signature: AnyPlugin;
+};
+
+/**
+ * One plugin per derivation. Railgun has no scheme split, so both fields are
+ * the same instance. Tornado and Privacy Pools use separate storage keys and
+ * secret managers; sync them one after the other.
+ */
+export async function createSchemedPlugins(
   protocol: SupportedProtocol,
   host: Host,
   chainId: bigint
+): Promise<SchemedPlugins> {
+  if (protocol === "railgun") {
+    const plugin = await createProtocolPlugin(protocol, host, chainId, "legacy");
+    return { legacy: plugin, signature: plugin };
+  }
+  const legacy = await createProtocolPlugin(protocol, host, chainId, "legacy");
+  const signature = await createProtocolPlugin(
+    protocol,
+    hostForScheme(host, "signature"),
+    chainId,
+    "signature"
+  );
+  return { legacy, signature };
+}
+
+export async function createProtocolPlugin(
+  protocol: SupportedProtocol,
+  host: Host,
+  chainId: bigint,
+  scheme: NoteDerivation = "legacy"
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
     return (await createRailgunPlugin(
@@ -771,6 +870,7 @@ export async function createProtocolPlugin(
       protocolConfig: config,
       minExternalSyncBlocksAmount: TORNADO_MIN_EXTERNAL_SYNC_BLOCKS,
       artifactsLoader: makeTornadoArtifactsLoader(),
+      secretManagerFactory: (params) => tornadoSchemeSecretManager(scheme, params),
       ...(paymasterConfig ? { paymasterConfig: paymasterConfig as never } : {}),
     }) as AnyPlugin;
   }
@@ -813,11 +913,14 @@ export async function createProtocolPlugin(
       })
     : undefined;
 
-  // Legacy BIP-32 note secrets. 0.1.0-alpha.26 defaults to signature-derived
-  // secrets, which do not match deposits this wallet already created.
+  // Each plugin scans only its own scheme. The SDK default is signature
+  // secrets; legacy deposits stay spendable on the BIP-32 manager.
   return createPPv1Plugin(host, {
     ...ppv1Params,
-    secretManager: SecretManager,
+    secretManager:
+      scheme === "legacy"
+        ? PrivacyPoolsSecretManager
+        : PrivacyPoolsSignatureSecretManager,
     ...(dataService ? { dataService } : {}),
   } as never) as AnyPlugin;
 }

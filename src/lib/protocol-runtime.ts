@@ -4,9 +4,9 @@ import { makeHost } from "../host/makeHost.js";
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc.js";
 import { runWithWalletTrafficLog } from "../utils/tor.js";
 import {
-  createProtocolPlugin,
+  createSchemedPlugins,
   pluginIdForProtocol,
-  type AnyPlugin,
+  type SchemedPlugins,
   type SupportedProtocol,
 } from "../utils/plugins.js";
 import { acquireRailgunSession } from "./railgun-session.js";
@@ -21,12 +21,14 @@ export type ProtocolRuntimeContext = {
 };
 
 /**
- * Runs `fn` with a protocol host + plugin. Railgun reuses one session per wallet/chain;
- * other protocols create a short-lived host and destroy the RPC afterward.
+ * Runs `fn` with a protocol host and both derivation plugins. Railgun reuses
+ * one session per wallet/chain (both fields are that plugin). Tornado and
+ * Privacy Pools open a legacy plugin on the existing storage keys and a
+ * signature plugin on prefixed keys.
  */
 export async function withProtocolRuntime<T>(
   ctx: ProtocolRuntimeContext,
-  fn: (host: Host, plugin: AnyPlugin) => Promise<T>
+  fn: (host: Host, plugins: SchemedPlugins) => Promise<T>
 ): Promise<T> {
   return runWithWalletTrafficLog(ctx.walletDir, async () => {
     if (ctx.protocol === "railgun") {
@@ -37,7 +39,7 @@ export async function withProtocolRuntime<T>(
         mnemonic: ctx.mnemonic,
         chainId: ctx.chainId,
       });
-      return fn(host, plugin);
+      return fn(host, { legacy: plugin, signature: plugin });
     }
 
     const rpc = await makePublicClient(ctx.rpcUrl);
@@ -50,8 +52,8 @@ export async function withProtocolRuntime<T>(
         pluginId: pluginIdForProtocol(ctx.protocol),
         chainId: ctx.chainId,
       });
-      const plugin = await createProtocolPlugin(ctx.protocol, host, ctx.chainId);
-      return await fn(host, plugin);
+      const plugins = await createSchemedPlugins(ctx.protocol, host, ctx.chainId);
+      return await fn(host, plugins);
     } finally {
       disposePublicClient(rpc);
     }

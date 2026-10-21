@@ -21,11 +21,12 @@ import {
 } from "../utils/tokens-util.js";
 import {
   broadcastTornadoPrivateOp,
-  ETH_AS_ERC20,
+  privateUnshieldAsset,
   totalTornadoUnspentBalance,
   type AnyPlugin,
   type SupportedProtocol,
 } from "../utils/plugins.js";
+import { largerSchemeCap } from "../utils/derivation-scheme.js";
 import { createTorAwarePaymasterBroadcaster } from "../utils/tornado-paymaster-broadcaster.js";
 import {
   computeRailgunMaxUnshieldAmount,
@@ -131,14 +132,11 @@ export async function maxUnshieldAmountHint(
     return { cap: 0n };
   }
 
-  // Tornado: max is the sum of all unspent notes for this asset.
+  // Tornado: max is the sum of this scheme's unspent notes for the token.
   if (protocol === "tornado") {
-    const asset = {
-      __type: "erc20" as const,
-      contract: ETH_AS_ERC20 as `0x${string}`,
-    };
     try {
-      const cap = await totalTornadoUnspentBalance(plugin as AnyPlugin, asset);
+      const asset = privateUnshieldAsset(protocol, chainId, tokenMeta, 1n);
+      const cap = await totalTornadoUnspentBalance(plugin as AnyPlugin, asset.asset);
       return { cap };
     } catch {
       return { cap: 0n };
@@ -344,14 +342,42 @@ export async function maxUnshieldAmountHintForWallet(opts: {
         mnemonic: opts.mnemonic,
         chainId: opts.chainId,
       },
-      async (_host, plugin) =>
-        maxUnshieldAmountHint(
+      async (_host, plugins) => {
+        if (opts.protocol === "railgun") {
+          return maxUnshieldAmountHint(
+            opts.protocol,
+            plugins.signature,
+            opts.tokenMeta,
+            opts.chainId,
+            opts.rpcUrl
+          );
+        }
+        const legacy = await maxUnshieldAmountHint(
           opts.protocol,
-          plugin,
+          plugins.legacy,
           opts.tokenMeta,
           opts.chainId,
           opts.rpcUrl
-        )
+        );
+        const signature = await maxUnshieldAmountHint(
+          opts.protocol,
+          plugins.signature,
+          opts.tokenMeta,
+          opts.chainId,
+          opts.rpcUrl
+        );
+        const cap = largerSchemeCap(legacy.cap, signature.cap);
+        const winner = signature.cap > legacy.cap ? signature : legacy;
+        return {
+          cap,
+          estimatedGasFeeWei: winner.estimatedGasFeeWei,
+          railgunGasEstimateFailed:
+            cap === 0n
+              ? legacy.railgunGasEstimateFailed && signature.railgunGasEstimateFailed
+              : winner.railgunGasEstimateFailed,
+          railgunBalance: winner.railgunBalance,
+        };
+      }
     )
   );
 }

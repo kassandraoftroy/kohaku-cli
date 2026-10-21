@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { stealthDelegatorPath } from "../src/lib/stealth/constants.js";
 import {
@@ -8,7 +7,7 @@ import {
   PRIVACY_POOLS_TAILS_REQUIRE_WALLET_CONTROLLED,
   assertPrivacyPoolsTailCallsHaveHdDelegator,
   assertPrivacyPoolsWalletDelegator,
-  bindPrivacyPoolsWalletDelegator,
+  privacyPoolsDelegationConfig,
   privacyPoolsUnshieldConfirmExtraLines,
 } from "../src/utils/privacy-pools-unshield-delegation.js";
 
@@ -102,54 +101,37 @@ describe("assertPrivacyPoolsTailCallsHaveHdDelegator", () => {
   });
 });
 
-describe("bindPrivacyPoolsWalletDelegator", () => {
-  it("returns the stored --to key instead of the note-derived signer", async () => {
-    const noteKey = `0x${"11".repeat(32)}` as const;
-    const secretManager = {
-      deriveEphemeralSigner: async (_args: {
-        chainId: bigint;
-        entrypointAddress: bigint;
-        depositIndex: number;
-        withdrawIndex: number;
-      }) => noteKey,
-    };
-    const privateKey = generatePrivateKey();
-    const recipient = privateKeyToAccount(privateKey).address;
-    const restore = bindPrivacyPoolsWalletDelegator(
-      { secretManager },
-      privateKey,
-      recipient
-    );
-    assert.equal(
-      await secretManager.deriveEphemeralSigner({
-        chainId: 1n,
-        entrypointAddress: 1n,
-        depositIndex: 0,
-        withdrawIndex: 0,
+describe("privacyPoolsDelegationConfig", () => {
+  it("passes a stored HD path", () => {
+    assert.deepEqual(
+      privacyPoolsDelegationConfig({
+        delegationPath: HD_PATH,
+        tailCallsCount: 1,
+        withdrawalCount: 2,
       }),
-      privateKey
-    );
-    restore();
-    assert.equal(
-      await secretManager.deriveEphemeralSigner({
-        chainId: 1n,
-        entrypointAddress: 1n,
-        depositIndex: 0,
-        withdrawIndex: 0,
-      }),
-      noteKey
+      { mode: "deterministic", path: HD_PATH }
     );
   });
 
-  it("refuses a key that does not control --to", () => {
-    assert.throws(
-      () =>
-        bindPrivacyPoolsWalletDelegator(
-          { secretManager: { deriveEphemeralSigner: async () => "0x01" } },
-          generatePrivateKey(),
-          RECIPIENT
-        ),
-      /does not control --to/
+  it("passes the stealth sentinel path", () => {
+    assert.deepEqual(
+      privacyPoolsDelegationConfig({
+        delegationPath: STEALTH_PATH,
+        tailCallsCount: 0,
+        withdrawalCount: 1,
+      }),
+      { mode: "deterministic", path: STEALTH_PATH }
+    );
+  });
+
+  it("omits delegation for a custom --to single note", () => {
+    assert.equal(
+      privacyPoolsDelegationConfig({
+        delegationPath: undefined,
+        tailCallsCount: 0,
+        withdrawalCount: 1,
+      }),
+      undefined
     );
   });
 });
