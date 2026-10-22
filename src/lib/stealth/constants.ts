@@ -9,20 +9,21 @@ export const STEALTH_VIEWING_PATH = "m/44'/60'/0'/5564'/1'/1'" as const;
 
 /**
  * Hardened BIP-32 segment under purpose 5564 that is **not** a stealth scheme
- * id. Tornado's paymaster API only accepts `{ mode: "deterministic", path }`,
- * so the CLI uses this sentinel so `Host.keystore.deriveAt` can return a stored
- * payment stealth private key instead of HD-deriving.
+ * id. Tornado and Privacy Pools paymaster APIs accept
+ * `{ mode: "deterministic", path }`, so the CLI uses this sentinel and
+ * `Host.keystore.deriveAt` returns a stored payment stealth private key
+ * instead of HD-deriving.
  *
  * Full path: `{STEALTH_ADDRESS_MAGIC_VALUE_PATH}/{stealthIndex}` (e.g. s0 →
  * `m/44'/60'/0'/5564'/9981'/0`).
  */
 export const STEALTH_ADDRESS_MAGIC_VALUE = 9981;
 
-/** Prefix (no stealth index) for Tornado 7702 injection of stored stealth keys. */
+/** Prefix (no stealth index) for Tornado and Privacy Pools 7702 of stored stealth keys. */
 export const STEALTH_ADDRESS_MAGIC_VALUE_PATH =
   `m/44'/60'/0'/5564'/${STEALTH_ADDRESS_MAGIC_VALUE}'` as const;
 
-/** BIP-32-shaped path Tornado uses as the batch 7702 for stored stealth `sN`. */
+/** BIP-32-shaped path Tornado and Privacy Pools use as the 7702 for stored stealth `sN`. */
 export function stealthDelegatorPath(stealthIndex: number): string {
   if (!Number.isSafeInteger(stealthIndex) || stealthIndex < 0) {
     throw new Error(`Invalid stealth account index: ${stealthIndex}`);

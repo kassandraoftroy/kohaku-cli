@@ -38,6 +38,12 @@ export type PublicAccountsStorage = {
   peekNextAccounts(n: number): PublicAccount[];
 };
 
+/** How many already-used HD indexes `--next` will save and skip. */
+const MAX_USED_PUBLIC_ACCOUNT_SKIPS = 32;
+
+/** How many unstored HD indexes `balances` checks past the cursor. */
+export const BALANCE_PUBLIC_ACCOUNT_LOOKAHEAD = 2;
+
 export function savePublicAccounts(walletDir: string, password: string, accounts: PublicAccountsStore, saltRef: { current: Uint8Array | null }): void {
   const storePath = accountsStorePathForWallet(walletDir);
   saveStore(storePath, JSON.stringify(accounts), password, saltRef);
@@ -122,4 +128,54 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
       return created;
     },
   };
+}
+
+/**
+ * Next HD account that is not already on-chain.
+ * A used index is stored (so its key stays in the wallet) and the cursor advances.
+ * The returned account is only peeked; the caller persists it after a successful broadcast.
+ */
+export async function selectNextUnusedPublicAccount(
+  storage: Pick<PublicAccountsStorage, "peekNextAccounts" | "addNextAccounts">,
+  isUsed: (address: string) => Promise<boolean>
+): Promise<{ account: PublicAccount; skipped: PublicAccount[] }> {
+  const skipped: PublicAccount[] = [];
+  for (let n = 0; n <= MAX_USED_PUBLIC_ACCOUNT_SKIPS; n += 1) {
+    const fresh = storage.peekNextAccounts(1)[0];
+    if (!fresh) {
+      throw new Error("Could not derive the next public account.");
+    }
+    if (!(await isUsed(fresh.address))) {
+      return { account: fresh, skipped };
+    }
+    if (n === MAX_USED_PUBLIC_ACCOUNT_SKIPS) break;
+    skipped.push(fresh);
+    storage.addNextAccounts(1);
+  }
+  throw new Error(
+    `The next ${MAX_USED_PUBLIC_ACCOUNT_SKIPS + 1} public accounts already have a nonce, balance, or code.`
+  );
+}
+
+/**
+ * Save a leading run of on-chain HD indexes, at most `lookahead` past the cursor.
+ * Stops at the first unused index so an unused account is not persisted.
+ * Returned accounts are stored; their balances are filled by the caller.
+ */
+export async function adoptUsedPublicAccounts(
+  storage: Pick<PublicAccountsStorage, "peekNextAccounts" | "addNextAccounts">,
+  isUsed: (address: string) => Promise<boolean>,
+  lookahead = BALANCE_PUBLIC_ACCOUNT_LOOKAHEAD
+): Promise<PublicAccount[]> {
+  if (!Number.isSafeInteger(lookahead) || lookahead < 0) {
+    throw new Error(`Invalid public account lookahead: ${lookahead}`);
+  }
+  const peeked = storage.peekNextAccounts(lookahead);
+  const adopted: PublicAccount[] = [];
+  for (const account of peeked) {
+    if (!(await isUsed(account.address))) break;
+    storage.addNextAccounts(1);
+    adopted.push(account);
+  }
+  return adopted;
 }

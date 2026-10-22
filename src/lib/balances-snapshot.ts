@@ -17,6 +17,7 @@ import {
   type AnyPlugin,
   type SupportedProtocol,
 } from "../utils/plugins";
+import type { NoteDerivation } from "../utils/derivation-scheme.js";
 import { mapPrivateBalanceRows } from "./private-balance-rows";
 import {
   filterNonZeroNotes,
@@ -26,7 +27,11 @@ import {
   type PrivateNoteRow,
   type PrivateNotesByProtocol,
 } from "./private-notes";
-import { makePublicAccountsStorage } from "../utils/public-accounts";
+import { isAddressUsed } from "../utils/address-used.js";
+import {
+  adoptUsedPublicAccounts,
+  makePublicAccountsStorage,
+} from "../utils/public-accounts";
 import { deriveStealthKeypair } from "./stealth/keys.js";
 import {
   formatStealthScanStartLog,
@@ -51,6 +56,9 @@ export type BalanceItem = {
   usd_value: string;
   /** Spendability status for private protocol rows (e.g. spendable, pending). */
   status?: string;
+  /** Legacy-scheme portion of this row, when the protocol splits derivations. */
+  legacy_raw_token_holdings?: string;
+  legacy_formatted_token_holdings?: string;
 };
 
 export type BalancesSnapshot = {
@@ -63,6 +71,8 @@ export type BalancesSnapshot = {
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
+  legacyPrivacyPools: BalanceItem[];
+  legacyTornado: BalanceItem[];
   privateNotes?: PrivateNotesByProtocol;
 };
 
@@ -133,9 +143,67 @@ function mapProtocolNotes(
 
 type ProtocolPrivateLoad = {
   balances: AssetAmount[];
+  /** Legacy-scheme rows only. Omitted for Railgun. */
+  legacyBalances?: AssetAmount[];
   rawNotes?: unknown[];
   notesError?: unknown;
 };
+
+function assetAmountKey(row: AssetAmount): string {
+  const asset = row.asset as { __type?: string; contract?: unknown } | undefined;
+  const tag = "tag" in row ? String((row as { tag?: string }).tag ?? "") : "";
+  let assetKey = asset?.__type ?? "unknown";
+  if (asset?.__type === "erc20") {
+    const contract = asset.contract;
+    assetKey =
+      typeof contract === "bigint" ? contract.toString() : String(contract).toLowerCase();
+  } else if (asset?.__type === "native") {
+    assetKey = "native";
+  }
+  return `${assetKey}|${tag}`;
+}
+
+function sumAssetAmountRows(rows: readonly AssetAmount[]): AssetAmount[] {
+  const merged = new Map<string, AssetAmount>();
+  for (const row of rows) {
+    const key = assetAmountKey(row);
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, { ...row, amount: row.amount });
+      continue;
+    }
+    prev.amount += row.amount;
+  }
+  return [...merged.values()];
+}
+
+function tagNotes(notes: unknown[], derivation: NoteDerivation): unknown[] {
+  return notes.map((note) =>
+    note !== null && typeof note === "object"
+      ? { ...(note as Record<string, unknown>), derivation }
+      : note
+  );
+}
+
+function balanceItemKey(row: BalanceItem): string {
+  return `${row.token_address}|${row.symbol}|${row.status ?? ""}`;
+}
+
+function annotateLegacyHoldings(
+  totals: BalanceItem[],
+  legacy: BalanceItem[]
+): BalanceItem[] {
+  const byKey = new Map(legacy.map((row) => [balanceItemKey(row), row]));
+  return totals.map((row) => {
+    const leg = byKey.get(balanceItemKey(row));
+    if (!leg || !isNonZeroRawHoldings(leg.raw_token_holdings)) return row;
+    return {
+      ...row,
+      legacy_raw_token_holdings: leg.raw_token_holdings,
+      legacy_formatted_token_holdings: leg.formatted_token_holdings,
+    };
+  });
+}
 
 async function loadPrivateProtocolData(
   protocol: SupportedProtocol,
@@ -156,21 +224,45 @@ async function loadPrivateProtocolData(
     async () =>
       withProtocolRuntime(
         { protocol, rpcUrl, walletDir, password, mnemonic, chainId },
-        async (_host, plugin) => {
-          const balances = await plugin.balance(undefined);
-          if (!includeNotes) return { balances };
-          try {
-            const notesFn = (plugin as AnyPlugin).notes;
-            if (!notesFn) {
+        async (_host, plugins) => {
+          const readNotes = async (plugin: AnyPlugin): Promise<unknown[]> => {
+            if (!plugin.notes) {
               throw new Error(`${protocol} plugin does not expose notes()`);
             }
-            const rawNotes = await (plugin as AnyPlugin).notes!(
-              undefined,
-              false
+            return plugin.notes(undefined, false);
+          };
+          if (protocol === "railgun") {
+            const balances = await plugins.signature.balance(undefined);
+            if (!includeNotes) return { balances };
+            try {
+              return { balances, rawNotes: await readNotes(plugins.signature) };
+            } catch (e) {
+              return { balances, notesError: e };
+            }
+          }
+
+          // Legacy first, then signature, so the shared wallet file is not
+          // written by two syncs at once.
+          const legacyBalances = await plugins.legacy.balance(undefined);
+          const signatureBalances = await plugins.signature.balance(undefined);
+          const balances = sumAssetAmountRows([
+            ...legacyBalances,
+            ...signatureBalances,
+          ]);
+          if (!includeNotes) return { balances, legacyBalances };
+          try {
+            const legacyNotes = tagNotes(await readNotes(plugins.legacy), "legacy");
+            const signatureNotes = tagNotes(
+              await readNotes(plugins.signature),
+              "signature"
             );
-            return { balances, rawNotes };
+            return {
+              balances,
+              legacyBalances,
+              rawNotes: [...legacyNotes, ...signatureNotes],
+            };
           } catch (e) {
-            return { balances, notesError: e };
+            return { balances, legacyBalances, notesError: e };
           }
         }
       )
@@ -252,6 +344,9 @@ export type PrivateBalancesSnapshot = {
   privateRailgun: BalanceItem[];
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
+  /** Legacy-scheme rows only. Empty for Railgun and when that portion is zero. */
+  legacyPrivacyPools: BalanceItem[];
+  legacyTornado: BalanceItem[];
 };
 
 type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
@@ -298,6 +393,8 @@ async function resolvePrivateBalanceItems(
   let rgRows: AssetAmount[] = [];
   let ppRows: AssetAmount[] = [];
   let tcRows: AssetAmount[] = [];
+  let ppLegacyRows: AssetAmount[] = [];
+  let tcLegacyRows: AssetAmount[] = [];
   const protocolAvailable: Partial<Record<SupportedProtocol, boolean>> = {};
   const rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>> = {};
   const notesErrors: Partial<Record<SupportedProtocol, unknown>> = {};
@@ -315,12 +412,12 @@ async function resolvePrivateBalanceItems(
     );
     if (loaded.rawNotes) rawNotesByProtocol[protocol] = loaded.rawNotes;
     if (loaded.notesError) notesErrors[protocol] = loaded.notesError;
-    return loaded.balances;
+    return loaded;
   };
 
   if (shouldIncludeProtocol("railgun", includeProtocols)) {
     try {
-      rgRows = await loadOne("railgun");
+      rgRows = (await loadOne("railgun")).balances;
       protocolAvailable.railgun = true;
     } catch (e) {
       onWarning?.(
@@ -332,7 +429,9 @@ async function resolvePrivateBalanceItems(
 
   if (shouldIncludeProtocol("privacy-pools", includeProtocols)) {
     try {
-      ppRows = await loadOne("privacy-pools");
+      const loaded = await loadOne("privacy-pools");
+      ppRows = loaded.balances;
+      ppLegacyRows = loaded.legacyBalances ?? [];
       protocolAvailable["privacy-pools"] = true;
     } catch (e) {
       onWarning?.(
@@ -344,7 +443,9 @@ async function resolvePrivateBalanceItems(
 
   if (shouldIncludeProtocol("tornado", includeProtocols)) {
     try {
-      tcRows = await loadOne("tornado");
+      const loaded = await loadOne("tornado");
+      tcRows = loaded.balances;
+      tcLegacyRows = loaded.legacyBalances ?? [];
       protocolAvailable.tornado = true;
     } catch (e) {
       onWarning?.(
@@ -375,16 +476,26 @@ async function resolvePrivateBalanceItems(
       }
     }
 
+    const legacyPrivacyPools = filterNonZeroBalanceItems(
+      mapPrivateBalanceRows(ppLegacyRows, tokenMeta)
+    );
+    const legacyTornado = filterNonZeroBalanceItems(
+      mapPrivateBalanceRows(tcLegacyRows, tokenMeta)
+    );
     return {
       privateRailgun: filterNonZeroBalanceItems(
         mapPrivateBalanceRows(rgRows, tokenMeta)
       ),
-      privatePrivacyPools: filterNonZeroBalanceItems(
-        mapPrivateBalanceRows(ppRows, tokenMeta)
+      privatePrivacyPools: annotateLegacyHoldings(
+        filterNonZeroBalanceItems(mapPrivateBalanceRows(ppRows, tokenMeta)),
+        legacyPrivacyPools
       ),
-      privateTornado: filterNonZeroBalanceItems(
-        mapPrivateBalanceRows(tcRows, tokenMeta)
+      privateTornado: annotateLegacyHoldings(
+        filterNonZeroBalanceItems(mapPrivateBalanceRows(tcRows, tokenMeta)),
+        legacyTornado
       ),
+      legacyPrivacyPools,
+      legacyTornado,
       erc20FromPrivate,
       protocolAvailable,
       rawNotesByProtocol,
@@ -413,20 +524,39 @@ export async function loadPrivateBalancesOnly(
   const includeProtocols = opts.includeProtocols ?? null;
   const useTor =
     !opts.withoutTor && willSyncPrivateProtocols(includeProtocols);
-  const { privateRailgun, privatePrivacyPools, privateTornado } = await withTor(
+  const {
+    privateRailgun,
+    privatePrivacyPools,
+    privateTornado,
+    legacyPrivacyPools,
+    legacyTornado,
+  } = await withTor(
     useTor,
     { rpcUrl: opts.rpcUrl, onStatus: opts.onTorStatus, walletDir: opts.walletDir },
     () => resolvePrivateBalanceItems(opts)
   );
-  const [pricedRailgun, pricedPrivacyPools, pricedTornado] =
-    await attachUsdValuesToRowsLists(
-      [privateRailgun, privatePrivacyPools, privateTornado],
-      { chainId: opts.chainId, rpcUrl: opts.rpcUrl }
-    );
+  const [
+    pricedRailgun,
+    pricedPrivacyPools,
+    pricedTornado,
+    pricedLegacyPrivacyPools,
+    pricedLegacyTornado,
+  ] = await attachUsdValuesToRowsLists(
+    [
+      privateRailgun,
+      privatePrivacyPools,
+      privateTornado,
+      legacyPrivacyPools,
+      legacyTornado,
+    ],
+    { chainId: opts.chainId, rpcUrl: opts.rpcUrl }
+  );
   return {
     privateRailgun: pricedRailgun!,
     privatePrivacyPools: pricedPrivacyPools!,
     privateTornado: pricedTornado!,
+    legacyPrivacyPools: pricedLegacyPrivacyPools!,
+    legacyTornado: pricedLegacyTornado!,
   };
 }
 
@@ -466,6 +596,8 @@ async function loadBalancesSnapshotInner(
     privateRailgun,
     privatePrivacyPools,
     privateTornado,
+    legacyPrivacyPools,
+    legacyTornado,
     erc20FromPrivate,
     protocolAvailable,
     rawNotesByProtocol,
@@ -494,13 +626,30 @@ async function loadBalancesSnapshotInner(
     ]);
 
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
-  const publicAccounts = publicStorage.getAccounts();
+  const rpcForPublic = await makePublicClient(rpcUrl);
+  let publicAccounts = publicStorage.getAccounts();
+  try {
+    const adopted = await adoptUsedPublicAccounts(publicStorage, (address) =>
+      isAddressUsed(address, rpcForPublic)
+    );
+    if (adopted.length > 0) {
+      publicAccounts = publicStorage.getAccounts();
+      onWarning?.(
+        `Saved public account${adopted.length === 1 ? "" : "s"} that already had a nonce, balance, or code: ${adopted
+          .map((account) => `[${account.index}] ${account.address}`)
+          .join(", ")}.`
+      );
+    }
+  } catch (e) {
+    onWarning?.(
+      `Could not check unstored public accounts: ${formatCaughtError(e)}`
+    );
+  }
   const publicAccountIndexByAddress: Record<string, number> = {};
   for (const acct of publicAccounts) {
     publicAccountIndexByAddress[acct.address] = acct.index;
   }
 
-  const rpcForPublic = await makePublicClient(rpcUrl);
   const stealthAccountIndexByAddress: Record<string, number> = {};
   let stealthAccounts: ReturnType<
     ReturnType<typeof makeStealthAccountsStorage>["getAccounts"]
@@ -803,12 +952,14 @@ async function loadBalancesSnapshotInner(
       privateRailgun,
       privatePrivacyPools,
       privateTornado,
+      legacyPrivacyPools,
+      legacyTornado,
     ],
     { chainId, rpcUrl }
   );
 
-  const pricedPrivate = pricedRest.slice(-3);
-  const pricedPublicByAddressLists = pricedRest.slice(0, -3);
+  const pricedPrivate = pricedRest.slice(-5);
+  const pricedPublicByAddressLists = pricedRest.slice(0, -5);
   const publicByAddressPriced: Record<string, BalanceItem[]> = {};
   for (let i = 0; i < publicByAddressEntries.length; i++) {
     publicByAddressPriced[publicByAddressEntries[i]![0]] =
@@ -824,6 +975,8 @@ async function loadBalancesSnapshotInner(
     privateRailgun: pricedPrivate[0]!,
     privatePrivacyPools: pricedPrivate[1]!,
     privateTornado: pricedPrivate[2]!,
+    legacyPrivacyPools: pricedPrivate[3]!,
+    legacyTornado: pricedPrivate[4]!,
     privateNotes,
   };
 }

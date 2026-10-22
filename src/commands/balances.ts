@@ -239,6 +239,19 @@ function shortenAddr(addr: string): string {
 const BAR = "═".repeat(62);
 const THIN = "─".repeat(62);
 
+function privateBalanceAmountLabel(row: BalanceItem): string {
+  const legacy = row.legacy_formatted_token_holdings;
+  const legacyRaw = row.legacy_raw_token_holdings;
+  if (!legacy || !legacyRaw) return row.formatted_token_holdings;
+  try {
+    if (BigInt(legacyRaw) === 0n) return row.formatted_token_holdings;
+  } catch {
+    return row.formatted_token_holdings;
+  }
+  const symbol = row.symbol.replace(/ \(pending\)$/, "");
+  return `${row.formatted_token_holdings} (${legacy} ${symbol} are legacy notes)`;
+}
+
 function columnWidths(
   rows: BalanceItem[],
   showStatus: boolean
@@ -249,7 +262,7 @@ function columnWidths(
   let statusW = showStatus ? 8 : 0;
   for (const r of rows) {
     symW = Math.max(symW, r.symbol.length);
-    amtW = Math.max(amtW, r.formatted_token_holdings.length);
+    amtW = Math.max(amtW, privateBalanceAmountLabel(r).length);
     usdW = Math.max(usdW, formatUsdDisplay(r.usd_value).length);
     if (showStatus && r.status) {
       statusW = Math.max(statusW, r.status.length);
@@ -315,7 +328,7 @@ function printBalanceItemRows(
       ? `  ${padCell(r.status ?? "—", w.statusW)}`
       : "";
     console.log(
-      `  ${padCell(r.symbol, w.symW)}  ${padCell(r.formatted_token_holdings, w.amtW)}  ${padCell(formatUsdDisplay(r.usd_value), w.usdW)}${statusCol}  ${tokenCol}`
+      `  ${padCell(r.symbol, w.symW)}  ${padCell(privateBalanceAmountLabel(r), w.amtW)}  ${padCell(formatUsdDisplay(r.usd_value), w.usdW)}${statusCol}  ${tokenCol}`
     );
   }
 }
@@ -333,17 +346,22 @@ function printPrivateProtocolSection(
 
 function printPrivateNoteRow(n: PrivateNoteRow): void {
   const asset = formatNoteAssetLabel(n);
+  const derivation = n.derivation === "legacy" ? "  legacy" : "";
   if (n.protocol === "privacy-pools") {
     const label = n.label ? chalk.cyan(`label ${n.label}`) : chalk.cyan("note");
     console.log(
-      `  ${label}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${n.approved ? "approved" : "pending"}`
+      `  ${label}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${n.approved ? "approved" : "pending"}${derivation}`
     );
     return;
   }
   if (n.protocol === "tornado") {
-    const id = n.deposit_index ? `deposit #${n.deposit_index}` : "note";
+    const id = n.nonce
+      ? `nonce #${n.nonce}`
+      : n.deposit_index
+        ? `deposit #${n.deposit_index}`
+        : "note";
     console.log(
-      `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${padCell(formatDepositTimestampIso(n.deposit_timestamp), 22)}  ${n.status ?? ""}`
+      `  ${chalk.cyan(id)}  ${padCell(n.balance_formatted, 20)}  ${padCell(asset, 12)}  ${padCell(formatDepositTimestampIso(n.deposit_timestamp), 22)}  ${n.status ?? ""}${derivation}`
     );
     return;
   }
@@ -667,6 +685,19 @@ export function registerBalancesCommand(program: Command): void {
             if (shouldIncludeProtocol("tornado", includeProtocols)) {
               privateBalances.tornado = snap.privateTornado;
             }
+            const privateBalancesLegacy: Record<string, BalanceItem[]> = {};
+            if (
+              shouldIncludeProtocol("privacy-pools", includeProtocols) &&
+              snap.legacyPrivacyPools.length > 0
+            ) {
+              privateBalancesLegacy["privacy-pools"] = snap.legacyPrivacyPools;
+            }
+            if (
+              shouldIncludeProtocol("tornado", includeProtocols) &&
+              snap.legacyTornado.length > 0
+            ) {
+              privateBalancesLegacy.tornado = snap.legacyTornado;
+            }
 
             const payload: Record<string, unknown> = {
               wallet_profile_name: profile.displayName || null,
@@ -683,6 +714,9 @@ export function registerBalancesCommand(program: Command): void {
               public_balances_aggregated: snap.publicAggregated,
               public_balances_by_address: snap.publicByAddress,
               private_balances: privateBalances,
+              ...(Object.keys(privateBalancesLegacy).length > 0
+                ? { private_balances_legacy: privateBalancesLegacy }
+                : {}),
             };
 
             if (opts.verbose) {

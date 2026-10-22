@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.10] - 2026-10-21
+
+### Changed
+
+- `@kohaku-eth/tornado-cash` and `@kohaku-eth/privacy-pools` `0.1.0-alpha.27`. New Tornado and Privacy Pools shields use signature-derived secrets. Existing BIP-32 notes and imported Tornado note strings stay in their current storage and remain spendable. Balances show the combined total and, when it is non-zero, how much of that total is legacy. Notes and JSON omit derivation labels when the wallet has no legacy notes. An unshield or private transfer spends legacy notes when that scheme covers the amount, otherwise signature notes, and warns only when legacy notes are spent. It errors when neither covers it. One withdrawal never mixes the two. `--amount-max` is the larger single-scheme amount.
+- Privacy Pools paymaster unshields pass a wallet delegation path (`--next`, a stored public HD account, or a stored stealth account), the same way Tornado does. The stealth sentinel path stays in the keystore for both protocols.
+- Railgun, Tornado, and Privacy Pools proving circuits install with the CLI via the `kohaku-artifacts` package. Prove and unshield read that package and do not download circuits. `fetch-artifacts` is removed.
+- `--next` and private-transfer skip a public HD index that already has a nonce, balance, or code. That index is saved in the wallet and the cursor advances. The unused account is still persisted only after a successful broadcast. `balances` checks the next two unstored indexes the same way and includes any it saves.
+
 ## [0.0.9] - 2026-10-19
 
 ### Added

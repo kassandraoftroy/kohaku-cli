@@ -182,7 +182,8 @@ export function registerImportTornadoNoteCommand(program: Command): void {
                         mnemonic,
                         chainId,
                       },
-                      async (_host, plugin) => {
+                      async (_host, plugins) => {
+                        const plugin = plugins.legacy;
                         if (!plugin.importNotes) {
                           throw new Error(
                             "Tornado plugin does not expose importNotes (upgrade @kohaku-eth/tornado-cash)."

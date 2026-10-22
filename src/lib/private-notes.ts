@@ -26,6 +26,10 @@ export type PrivateNoteRow = {
   railgun_address?: string;
   /** Unix seconds (Tornado deposit event timestamp only). */
   deposit_timestamp?: string;
+  /** Set only for a legacy Tornado or Privacy Pools note. */
+  derivation?: "legacy";
+  /** Signature-scheme Tornado nonce. Absent for BIP-32 and imported notes. */
+  nonce?: string;
 };
 
 export function bigIntishToString(value: unknown): string {
@@ -161,8 +165,14 @@ export function mapPrivacyPoolsNotes(
             : "pending"
           : undefined,
       deposit_index: bigIntishToString(n.deposit) || undefined,
+      derivation:
+        noteDerivation(n.derivation) === "legacy" ? "legacy" : undefined,
     };
   });
+}
+
+function noteDerivation(value: unknown): "legacy" | "signature" | undefined {
+  return value === "legacy" || value === "signature" ? value : undefined;
 }
 
 export function mapTornadoNotes(
@@ -180,6 +190,10 @@ export function mapTornadoNotes(
         ? String(n.leafIndex)
         : bigIntishToString(n.leafIndex);
     const depositTimestamp = bigIntishToString(n.timestamp);
+    const derivation = noteDerivation(n.derivation);
+    const nonce =
+      derivation === "signature" ? bigIntishToString(n.nonce) || undefined : undefined;
+    const depositIndex = bigIntishToString(n.depositIndex);
     return {
       protocol: "tornado",
       balance_raw: balanceRaw,
@@ -189,7 +203,12 @@ export function mapTornadoNotes(
       pool: addressishToHex(n.pool),
       commitment: commitment || undefined,
       leaf_index: leafIndex || undefined,
-      deposit_index: bigIntishToString(n.depositIndex) || undefined,
+      deposit_index:
+        derivation === "signature" || depositIndex === "-1"
+          ? undefined
+          : depositIndex || undefined,
+      nonce,
+      derivation: derivation === "legacy" ? "legacy" : undefined,
       deposit_timestamp: depositTimestamp || undefined,
       status: balanceRaw === "0" ? "spent" : "spendable",
     };

@@ -1,29 +1,19 @@
 /**
- * On-disk proving-artifact cache for Railgun (MacWha path layout), Tornado,
- * and Privacy Pools circuits.
+ * Proving circuits for Railgun, Tornado, and Privacy Pools.
  *
- * WASM / plugins still request GitHub URLs; {@link kohakuFetch} maps those to
- * this cache and, on miss, fetches from {@link resolveArtifactsBaseUrl}.
- * Privacy Pools lands at `<base>/privacy-pools/<path after packages/circuits/>`.
+ * The bytes live in the installed `kohaku-artifacts` package. WASM and plugins
+ * still request the old GitHub and mirror URLs; {@link kohakuFetch} maps those
+ * onto this package and does not download them.
+ * Privacy Pools paths are `<package>/artifacts/privacy-pools/<path after packages/circuits/>`.
  */
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 
-/** Keep local — avoid importing `rpc.ts` (circular with tor → proving-artifacts). */
-function defaultDataDir(): string {
-  return join(homedir(), ".kohaku-cli");
-}
-
-/** Tor-friendly static mirror (Cloudflare R2 custom domain). */
+/** Mirror host. Requests here are served from the package, not fetched. */
 export const DEFAULT_ARTIFACTS_BASE_URL = "https://artifacts.0000000000.org";
 
-/** Hardcoded in `@kohaku-eth/railgun` WASM — still intercepted for cache keys. */
+/** Hardcoded in `@kohaku-eth/railgun` WASM. Intercepted and served from the package. */
 const MACWHA_ARTIFACTS_BASE =
   "https://github.com/Robert-MacWha/privacy-protocol-artifacts/raw/refs/heads/main/artifacts";
 const MACWHA_ARTIFACTS_PREFIX = `${MACWHA_ARTIFACTS_BASE}/`;
@@ -32,15 +22,6 @@ const TORNADO_CIRCUIT_URL =
   "https://raw.githubusercontent.com/tornadocash/tornado-cli/refs/heads/master/build/circuits/tornado.json";
 const TORNADO_PROVING_KEY_URL =
   "https://raw.githubusercontent.com/tornadocash/tornado-cli/refs/heads/master/build/circuits/tornadoProvingKey.bin";
-
-/**
- * Pinned circuits base the Privacy Pools SDK fetches today
- * (`@fatsolutions/privacy-pools-core-circuits` `DEFAULT_ARTIFACTS_BASE_URL`).
- * Any commit under this repo's `packages/circuits/` tree maps to the same
- * mirror path; the host layout is `/privacy-pools/<path after packages/circuits/>`.
- */
-const PRIVACY_POOLS_GITHUB_CIRCUITS_BASE =
-  "https://raw.githubusercontent.com/0xbow-io/privacy-pools-core/7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f/packages/circuits";
 
 /** Paths relative to `packages/circuits/` for the two circuits the SDK loads. */
 export const PRIVACY_POOLS_CIRCUIT_PATHS = [
@@ -77,28 +58,6 @@ export function railgunTransactVariants(): string[] {
 
 export const RAILGUN_POI_VARIANTS = ["03x03", "13x13"] as const;
 
-export function normalizeArtifactsBaseUrl(raw: string): string {
-  return raw.trim().replace(/\/+$/, "");
-}
-
-export function resolveArtifactsBaseUrl(): string {
-  const fromEnv = process.env.KOHAKU_ARTIFACTS_BASE_URL?.trim();
-  if (fromEnv) return normalizeArtifactsBaseUrl(fromEnv);
-  return DEFAULT_ARTIFACTS_BASE_URL;
-}
-
-function isMacWhaArtifactsBase(base: string): boolean {
-  return normalizeArtifactsBaseUrl(base) === MACWHA_ARTIFACTS_BASE;
-}
-
-export function provingArtifactsDir(dataDir: string = defaultDataDir()): string {
-  return join(dataDir, "proving-artifacts");
-}
-
-export function artifactFilePath(dataDir: string, relativeKey: string): string {
-  return join(provingArtifactsDir(dataDir), relativeKey);
-}
-
 export function listAllArtifactRelativeKeys(): string[] {
   const keys: string[] = [];
   for (const variant of railgunTransactVariants()) {
@@ -116,98 +75,11 @@ export function listAllArtifactRelativeKeys(): string[] {
   return keys;
 }
 
-const VARIANT_RE = /^\d{2}x\d{2}$/;
-
-function normalizeVariantId(raw: string, kind: "variant" | "poi"): string {
-  const v = raw.trim().toLowerCase();
-  if (!VARIANT_RE.test(v)) {
-    throw new Error(
-      `Invalid --${kind} ${JSON.stringify(raw)}; expected form NNxMM (e.g. 01x03)`
-    );
-  }
-  if (kind === "variant" && !railgunTransactVariants().includes(v)) {
-    throw new Error(`Unknown Railgun transact variant ${v} (use 01x01…05x05)`);
-  }
-  if (
-    kind === "poi" &&
-    !(RAILGUN_POI_VARIANTS as readonly string[]).includes(v)
-  ) {
-    throw new Error(`Unknown Railgun POI variant ${v} (use 03x03 or 13x13)`);
-  }
-  return v;
-}
-
-function keysForRailgunVariant(variant: string): string[] {
-  return RAILGUN_FILE_NAMES.map((f) => `railgun/${variant}/${f}`);
-}
-
-function keysForPoiVariant(variant: string): string[] {
-  return RAILGUN_FILE_NAMES.map((f) => `railgun/poi/${variant}/${f}`);
-}
-
-/**
- * Resolve which artifact keys to download for `fetch-artifacts`.
- * With no filters / keys → full set. Otherwise union of selections.
- */
-export function parseFetchArtifactSelection(opts: {
-  keys?: string[];
-  variants?: string[];
-  poi?: string[];
-  tornado?: boolean;
-  privacyPools?: boolean;
-}): string[] {
-  const keys = (opts.keys ?? []).map((k) => k.trim()).filter(Boolean);
-  const variants = opts.variants ?? [];
-  const poi = opts.poi ?? [];
-  const wantsTornado = !!opts.tornado;
-  const wantsPrivacyPools = !!opts.privacyPools;
-
-  if (
-    keys.length === 0 &&
-    variants.length === 0 &&
-    poi.length === 0 &&
-    !wantsTornado &&
-    !wantsPrivacyPools
-  ) {
-    return listAllArtifactRelativeKeys();
-  }
-
-  const known = new Set(listAllArtifactRelativeKeys());
-  const out = new Set<string>();
-
-  for (const key of keys) {
-    const normalized = key.replace(/^\/+/, "");
-    if (!known.has(normalized)) {
-      throw new Error(
-        `Unknown artifact key ${JSON.stringify(normalized)}. Example: railgun/01x03/proving_key.bin.br`
-      );
-    }
-    out.add(normalized);
-  }
-  for (const raw of variants) {
-    const v = normalizeVariantId(raw, "variant");
-    for (const k of keysForRailgunVariant(v)) out.add(k);
-  }
-  for (const raw of poi) {
-    const v = normalizeVariantId(raw, "poi");
-    for (const k of keysForPoiVariant(v)) out.add(k);
-  }
-  if (wantsTornado) {
-    out.add("tornado/tornado.json");
-    out.add("tornado/tornadoProvingKey.bin");
-  }
-  if (wantsPrivacyPools) {
-    for (const key of PRIVACY_POOLS_ARTIFACT_KEYS) out.add(key);
-  }
-
-  return [...out].sort();
-}
-
 /**
  * `raw.githubusercontent.com/0xbow-io/privacy-pools-core/<rev>/packages/circuits/<rel>`
- * → `privacy-pools/<rel>`. Commit is ignored so an SDK pin bump still hits the mirror.
+ * → `privacy-pools/<rel>`. The commit is ignored so an SDK pin bump still reads the package.
  */
-export function privacyPoolsArtifactKeyFromUrl(urlStr: string): string | null {
+function privacyPoolsArtifactKeyFromUrl(urlStr: string): string | null {
   let url: URL;
   try {
     url = new URL(urlStr);
@@ -237,10 +109,8 @@ export function privacyPoolsArtifactKeyFromUrl(urlStr: string): string | null {
 }
 
 /**
- * Public-sync snapshot chunks are published under the artifacts base but are
- * not proving artifacts. Routing them through the artifact path would apply the
- * Tor CDN hard timeout, duplicate every chunk into `proving-artifacts`, and pin
- * later runs to the first snapshot ever fetched.
+ * Public-sync snapshot chunks share the artifacts host but are not circuits.
+ * Treating them as proving artifacts would reject the snapshot download.
  */
 function isSyncCacheRelativeKey(relativeKey: string): boolean {
   return (
@@ -250,37 +120,27 @@ function isSyncCacheRelativeKey(relativeKey: string): boolean {
 }
 
 /**
- * Map a plugin/WASM request URL to a cache-relative key, or null if not an
- * artifact we manage.
+ * Map an SDK request URL onto a path under `kohaku-artifacts/artifacts`.
+ * Returns null when the URL is not a proving circuit (including sync snapshots
+ * on the same host).
  */
 export function artifactRelativeKeyFromUrl(urlStr: string): string | null {
   try {
     const url = new URL(urlStr);
     const href = url.href;
 
-    if (href.startsWith(MACWHA_ARTIFACTS_PREFIX)) {
-      const rest = href.slice(MACWHA_ARTIFACTS_PREFIX.length).replace(/^\/+/, "");
+    const mirrorPrefix = `${DEFAULT_ARTIFACTS_BASE_URL}/`;
+    if (href.startsWith(MACWHA_ARTIFACTS_PREFIX) || href.startsWith(mirrorPrefix)) {
+      const prefix = href.startsWith(MACWHA_ARTIFACTS_PREFIX)
+        ? MACWHA_ARTIFACTS_PREFIX
+        : mirrorPrefix;
+      const rest = href.slice(prefix.length).replace(/^\/+/, "");
       if (!rest || isSyncCacheRelativeKey(rest)) return null;
       return rest;
     }
 
-    const base = resolveArtifactsBaseUrl();
-    const basePrefix = `${base}/`;
-    if (href.startsWith(basePrefix)) {
-      const rest = href.slice(basePrefix.length).replace(/^\/+/, "");
-      if (!rest || isSyncCacheRelativeKey(rest)) return null;
-      return rest;
-    }
-
-    if (href === TORNADO_CIRCUIT_URL || href.endsWith("/tornado.json")) {
-      return "tornado/tornado.json";
-    }
-    if (
-      href === TORNADO_PROVING_KEY_URL ||
-      href.endsWith("/tornadoProvingKey.bin")
-    ) {
-      return "tornado/tornadoProvingKey.bin";
-    }
+    if (href === TORNADO_CIRCUIT_URL) return "tornado/tornado.json";
+    if (href === TORNADO_PROVING_KEY_URL) return "tornado/tornadoProvingKey.bin";
 
     const privacyPoolsKey = privacyPoolsArtifactKeyFromUrl(href);
     if (privacyPoolsKey) return privacyPoolsKey;
@@ -291,68 +151,54 @@ export function artifactRelativeKeyFromUrl(urlStr: string): string | null {
   }
 }
 
-/**
- * Remote URL to fetch for a cache key. Default mirror hosts Railgun, Tornado,
- * and Privacy Pools under the same base. If someone points
- * `KOHAKU_ARTIFACTS_BASE_URL` at MacWha GitHub, Tornado still comes from
- * tornadocash and Privacy Pools from the pinned circuits tree (MacWha has
- * neither).
- */
-export function remoteUrlForArtifactKey(relativeKey: string): string {
-  const base = resolveArtifactsBaseUrl();
-  if (relativeKey === "tornado/tornado.json" && isMacWhaArtifactsBase(base)) {
-    return TORNADO_CIRCUIT_URL;
+const packagedRequire = createRequire(import.meta.url);
+
+function safeRelativeArtifactKey(relativeKey: string): string | null {
+  if (!relativeKey || relativeKey.includes("\0") || relativeKey.includes("..")) {
+    return null;
   }
-  if (
-    relativeKey === "tornado/tornadoProvingKey.bin" &&
-    isMacWhaArtifactsBase(base)
-  ) {
-    return TORNADO_PROVING_KEY_URL;
-  }
-  if (relativeKey.startsWith("privacy-pools/") && isMacWhaArtifactsBase(base)) {
-    return `${PRIVACY_POOLS_GITHUB_CIRCUITS_BASE}/${relativeKey.slice(
-      "privacy-pools/".length
-    )}`;
-  }
-  return `${base}/${relativeKey}`;
+  const trimmed = relativeKey.replace(/^\/+/, "");
+  if (!trimmed || trimmed.startsWith("/") || trimmed.includes("\\")) return null;
+  return trimmed;
 }
 
-export function readCachedArtifact(
-  dataDir: string,
-  relativeKey: string
-): Buffer | null {
-  const path = artifactFilePath(dataDir, relativeKey);
-  if (!existsSync(path)) return null;
-  return readFileSync(path);
+/** `node_modules/kohaku-artifacts/artifacts`, when that package is installed. */
+export function packagedArtifactsDir(): string | null {
+  try {
+    const pkgJson = packagedRequire.resolve("kohaku-artifacts/package.json");
+    return join(dirname(pkgJson), "artifacts");
+  } catch {
+    return null;
+  }
 }
 
-export function writeCachedArtifact(
-  dataDir: string,
-  relativeKey: string,
-  body: Uint8Array
-): string {
-  const path = artifactFilePath(dataDir, relativeKey);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, body);
+function packagedArtifactPath(relativeKey: string): string | null {
+  const key = safeRelativeArtifactKey(relativeKey);
+  const root = packagedArtifactsDir();
+  if (!key || !root) return null;
+  const path = join(root, key);
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  if (path !== root && !path.startsWith(rootPrefix)) return null;
   return path;
 }
 
-export function cachedArtifactExists(
-  dataDir: string,
-  relativeKey: string
-): boolean {
-  return existsSync(artifactFilePath(dataDir, relativeKey));
+/** Bytes from the installed kohaku-artifacts package. Does not touch the network. */
+export function readPackagedArtifact(relativeKey: string): Buffer | null {
+  const path = packagedArtifactPath(relativeKey);
+  if (!path || !existsSync(path)) return null;
+  return readFileSync(path);
 }
 
-/** Data dir used by the global fetch patch for artifact cache hits/misses. */
-let activeArtifactsDataDir: string = defaultDataDir();
-
-export function getArtifactsDataDir(): string {
-  return activeArtifactsDataDir;
+function missingArtifact(relativeKey: string): Error {
+  return new Error(
+    `Proving artifact ${relativeKey} is not in the kohaku-artifacts package. Reinstall kohaku-cli.`
+  );
 }
 
-export function setArtifactsDataDir(dataDir: string): void {
-  activeArtifactsDataDir = dataDir;
+export function readPackagedArtifactOrThrow(relativeKey: string): Buffer {
+  const body = readPackagedArtifact(relativeKey);
+  if (!body) throw missingArtifact(relativeKey);
+  return body;
 }
 
 export function buildLocalArtifactResponse(
@@ -377,49 +223,16 @@ export function buildLocalArtifactResponse(
   return res;
 }
 
-export const TORNADO_ARTIFACT_KEYS = [
-  "tornado/tornado.json",
-  "tornado/tornadoProvingKey.bin",
-] as const;
-
 /**
- * Tornado `artifactsLoader`: serve from disk cache (caller / fetch patch should
- * have populated files). Falls back to fetch of known URLs so first use still
- * works through {@link kohakuFetch}.
+ * Tornado `artifactsLoader`. Reads the two files from kohaku-artifacts.
  */
-export function makeTornadoArtifactsLoader(dataDir?: string): () => Promise<{
+export function makeTornadoArtifactsLoader(): () => Promise<{
   circuitText: string;
   provingKey: ArrayBuffer;
 }> {
-  const dir = dataDir ?? getArtifactsDataDir();
   return async () => {
-    const circuitKey = "tornado/tornado.json";
-    const provingKeyKey = "tornado/tornadoProvingKey.bin";
-
-    let circuitBuf = readCachedArtifact(dir, circuitKey);
-    let provingBuf = readCachedArtifact(dir, provingKeyKey);
-
-    if (!circuitBuf || !provingBuf) {
-      const [circuitRes, provingRes] = await Promise.all([
-        fetch(remoteUrlForArtifactKey(circuitKey)),
-        fetch(remoteUrlForArtifactKey(provingKeyKey)),
-      ]);
-      if (!circuitRes.ok) {
-        throw new Error(
-          `Tornado circuit download failed (${circuitRes.status}). Try: kohaku fetch-artifacts`
-        );
-      }
-      if (!provingRes.ok) {
-        throw new Error(
-          `Tornado proving key download failed (${provingRes.status}). Try: kohaku fetch-artifacts`
-        );
-      }
-      circuitBuf = Buffer.from(await circuitRes.arrayBuffer());
-      provingBuf = Buffer.from(await provingRes.arrayBuffer());
-      writeCachedArtifact(dir, circuitKey, circuitBuf);
-      writeCachedArtifact(dir, provingKeyKey, provingBuf);
-    }
-
+    const circuitBuf = readPackagedArtifactOrThrow("tornado/tornado.json");
+    const provingBuf = readPackagedArtifactOrThrow("tornado/tornadoProvingKey.bin");
     const provingCopy = Uint8Array.from(provingBuf);
     return {
       circuitText: circuitBuf.toString("utf8"),

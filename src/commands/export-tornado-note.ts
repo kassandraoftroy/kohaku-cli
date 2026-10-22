@@ -3,7 +3,12 @@ import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
 import { formatUnits, parseUnits } from "viem";
-import { SecretManager, TornadoCashConfigs, type TCNote } from "@kohaku-eth/tornado-cash";
+import {
+  SecretManager,
+  SignatureSecretManager,
+  TornadoCashConfigs,
+  type TCNote,
+} from "@kohaku-eth/tornado-cash";
 
 import { withProtocolRuntime } from "../lib/protocol-runtime.js";
 import { addressishToHex } from "../lib/private-notes.js";
@@ -60,6 +65,24 @@ function numberToBytesLE(value: bigint, length: number): Uint8Array {
 }
 
 /** Encode secrets as a classic `tornado-<currency>-<denom>-<chainId>-0x…` note string. */
+/** Where an exported Tornado note's nullifier and salt come from. */
+export type TornadoNoteSecretSource = "signature" | "legacy-hd" | "imported";
+
+/**
+ * Signature notes carry `nonce`. BIP-32 notes carry `depositIndex >= 0`.
+ * Imported note strings have neither and live in the unprefixed legacy blob.
+ */
+export function tornadoNoteSecretSource(note: {
+  nonce?: number;
+  depositIndex?: number;
+}): TornadoNoteSecretSource {
+  if (note.nonce != null) return "signature";
+  if (typeof note.depositIndex === "number" && note.depositIndex >= 0) {
+    return "legacy-hd";
+  }
+  return "imported";
+}
+
 export function formatLegacyTornadoNote(opts: {
   currency: string;
   denominationLabel: string;
@@ -308,11 +331,32 @@ export function registerExportTornadoNoteCommand(program: Command): void {
                         mnemonic,
                         chainId,
                       },
-                      async (host, plugin) => {
-                    if (typeof plugin.sync === "function") {
-                      await plugin.sync();
+                      async (host, plugins) => {
+                    if (typeof plugins.legacy.sync === "function") {
+                      await plugins.legacy.sync();
                     }
-                    const notes = await listTornadoUnspentNotes(plugin, asset);
+                    if (
+                      plugins.signature !== plugins.legacy &&
+                      typeof plugins.signature.sync === "function"
+                    ) {
+                      await plugins.signature.sync();
+                    }
+                    const legacyNotes = await listTornadoUnspentNotes(
+                      plugins.legacy,
+                      asset
+                    );
+                    const signatureNotes =
+                      plugins.signature === plugins.legacy
+                        ? []
+                        : await listTornadoUnspentNotes(plugins.signature, asset);
+                    const seen = new Set<string>();
+                    const notes = [];
+                    for (const note of [...legacyNotes, ...signatureNotes]) {
+                      const key = commitmentAsBigInt(note.commitment).toString();
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      notes.push(note);
+                    }
                     const matching = notes.filter((n) => n.amount === amountWei);
                     if (matching.length === 0) {
                       throw new Error(
@@ -320,7 +364,11 @@ export function registerExportTornadoNoteCommand(program: Command): void {
                       );
                     }
 
-                    const secretManager = await SecretManager({
+                    const legacyManager = await SecretManager({
+                      host: { keystore: host.keystore },
+                      accountIndex: 0,
+                    });
+                    const signatureManager = await SignatureSecretManager({
                       host: { keystore: host.keystore },
                       accountIndex: 0,
                     });
@@ -348,18 +396,27 @@ export function registerExportTornadoNoteCommand(program: Command): void {
                       let nullifier: bigint;
                       let salt: bigint;
 
-                      if (
-                        typeof note.depositIndex === "number" &&
-                        note.depositIndex >= 0
-                      ) {
-                        const secrets = await secretManager.getDepositSecrets({
+                      const source = tornadoNoteSecretSource(note);
+                      if (source === "signature") {
+                        const secrets = await signatureManager.getSignatureSecrets({
+                          chainId,
+                          poolAddress: pool,
+                          nonce: note.nonce!,
+                        });
+                        if (BigInt(secrets.commitment) !== commitment) {
+                          throw new Error(
+                            `Derived secrets for nonce ${note.nonce} do not match note commitment (pool ${addressishToHex(note.pool)}).`
+                          );
+                        }
+                        nullifier = secrets.nullifier;
+                        salt = secrets.salt;
+                      } else if (source === "legacy-hd") {
+                        const secrets = await legacyManager.getLegacyDepositSecrets({
                           chainId,
                           poolAddress: pool,
                           depositIndex: note.depositIndex,
                         });
-                        if (
-                          BigInt(secrets.commitment) !== commitment
-                        ) {
+                        if (BigInt(secrets.commitment) !== commitment) {
                           throw new Error(
                             `Derived secrets for depositIndex ${note.depositIndex} do not match note commitment (pool ${addressishToHex(note.pool)}).`
                           );
@@ -374,7 +431,7 @@ export function registerExportTornadoNoteCommand(program: Command): void {
                         );
                         if (!legacy) {
                           throw new Error(
-                            `Cannot export note at pool ${addressishToHex(note.pool)}: missing depositIndex and no legacy secret in storage.`
+                            `Cannot export note at pool ${addressishToHex(note.pool)}: no BIP-32 index or signature nonce, and no imported secret in storage.`
                           );
                         }
                         nullifier = legacy.nullifier;

@@ -31,7 +31,7 @@ export type TrafficClearnetReason =
   | "rpc-allowlist"
   | "tor-disabled"
   | "rpc"
-  /** Served from ~/.kohaku-cli/proving-artifacts (no network). */
+  /** Served from the kohaku-artifacts package (no network). */
   | "local-artifact"
   /** Served from <dataDir>/public-sync-cache (Subsquid / saga). */
   | "public-sync-cache"

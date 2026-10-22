@@ -749,7 +749,12 @@ export function registerShieldCommand(program: Command): void {
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
-        const plugin = await createProtocolPlugin(protocol, host, chainId);
+        const plugin = await createProtocolPlugin(
+          protocol,
+          host,
+          chainId,
+          "signature"
+        );
 
         const assetFor = (amt: bigint): AssetAmount =>
           (protocol === "railgun"
