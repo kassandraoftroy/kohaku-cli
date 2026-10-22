@@ -127,8 +127,8 @@ import { parseTailCalls } from "../utils/unshield-tail-calls.js";
 import {
   chooseDerivationScheme,
   largerSchemeCap,
-  schemeCoverError,
-  schemeSpendLine,
+  LEGACY_SPEND_WARNING,
+  unshieldSchemeFailure,
   type NoteDerivation,
 } from "../utils/derivation-scheme.js";
 import {
@@ -734,19 +734,18 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           amount = parseUnits(opts.amountFormatted, tokenMeta.decimals);
         }
 
+        const exceedsMax = `Amount exceeds max unshield after estimated fees for this token (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`;
         if (amount !== null && amountCap > 0n && amount > amountCap) {
-          if (protocol === "tornado" || protocol === "privacy-pools") {
-            cliError(
-              schemeCoverError({
-                legacyLabel: `${formatUnits(legacyCap, tokenMeta.decimals)} ${tokenMeta.symbol}`,
-                signatureLabel: `${formatUnits(signatureCap, tokenMeta.decimals)} ${tokenMeta.symbol}`,
-              })
-            );
-          } else {
-            cliError(
-              `Amount exceeds max unshield after estimated fees for this token (${maxFormatted} ${isRailgunEth ? "WETH" : tokenMeta.symbol}).`
-            );
-          }
+          cliError(
+            protocol === "tornado" || protocol === "privacy-pools"
+              ? unshieldSchemeFailure({
+                  legacyCap,
+                  legacyLabel: `${formatUnits(legacyCap, tokenMeta.decimals)} ${tokenMeta.symbol}`,
+                  signatureLabel: `${formatUnits(signatureCap, tokenMeta.decimals)} ${tokenMeta.symbol}`,
+                  fallback: exceedsMax,
+                })
+              : exceedsMax
+          );
           return;
         }
 
@@ -895,9 +894,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         const spendableLabel = (value: bigint) =>
           `${formatUnits(value, tokenMeta.decimals)} ${tokenMeta.symbol}`;
         const announceScheme = (scheme: NoteDerivation) => {
-          const line = schemeSpendLine(scheme);
-          if (quiet) console.error(line);
-          else log.info(line);
+          if (scheme !== "legacy") return;
+          if (quiet) console.error(LEGACY_SPEND_WARNING);
+          else log.warn(LEGACY_SPEND_WARNING);
         };
         if (protocol === "privacy-pools" || (protocol === "tornado" && !privateTransfer)) {
           try {
@@ -915,9 +914,11 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             });
             if (!scheme) {
               throw new Error(
-                schemeCoverError({
+                unshieldSchemeFailure({
+                  legacyCap,
                   legacyLabel: spendableLabel(legacyCap),
                   signatureLabel: spendableLabel(signatureCap),
+                  fallback: `Not enough spendable balance for this withdrawal (${spendableLabel(signatureCap)}).`,
                 })
               );
             }
@@ -1103,10 +1104,13 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                       };
                     } catch (next) {
                       if (!(next instanceof TornadoCoverError)) throw next;
+                      if (legacyCap === 0n) throw next;
                       throw new Error(
-                        schemeCoverError({
+                        unshieldSchemeFailure({
+                          legacyCap,
                           legacyLabel: spendableLabel(legacyCap),
                           signatureLabel: spendableLabel(signatureCap),
+                          fallback: next.message,
                         })
                       );
                     }

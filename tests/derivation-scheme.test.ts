@@ -5,9 +5,11 @@ import { tornadoNoteSecretSource } from "../src/commands/export-tornado-note.js"
 import {
   chooseDerivationScheme,
   largerSchemeCap,
+  LEGACY_SPEND_WARNING,
   prefixStorage,
   schemeCoverError,
   SIGNATURE_STORAGE_PREFIX,
+  unshieldSchemeFailure,
 } from "../src/utils/derivation-scheme.js";
 import { tornadoSchemeCanCover } from "../src/utils/plugins.js";
 import { privacyPoolsSchemeCovers } from "../src/utils/privacy-pools-paymaster.js";
@@ -37,6 +39,32 @@ describe("chooseDerivationScheme", () => {
     assert.match(
       schemeCoverError({ legacyLabel: "0.1 ETH", signatureLabel: "0.2 ETH" }),
       /Legacy spendable: 0.1 ETH. Signature spendable: 0.2 ETH/
+    );
+  });
+});
+
+describe("legacy wording", () => {
+  it("warns only about spending legacy notes", () => {
+    assert.equal(LEGACY_SPEND_WARNING, "Spending legacy notes.");
+    assert.doesNotMatch(LEGACY_SPEND_WARNING, /signature/);
+  });
+
+  it("uses the split error only when legacy notes exist", () => {
+    const split = unshieldSchemeFailure({
+      legacyCap: ETH,
+      legacyLabel: "0.1 ETH",
+      signatureLabel: "0.2 ETH",
+      fallback: "Not enough spendable balance (0.2 ETH).",
+    });
+    assert.match(split, /Legacy spendable: 0.1 ETH/);
+    assert.equal(
+      unshieldSchemeFailure({
+        legacyCap: 0n,
+        legacyLabel: "0 ETH",
+        signatureLabel: "0.2 ETH",
+        fallback: "Not enough spendable balance (0.2 ETH).",
+      }),
+      "Not enough spendable balance (0.2 ETH)."
     );
   });
 });

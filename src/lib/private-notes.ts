@@ -26,8 +26,8 @@ export type PrivateNoteRow = {
   railgun_address?: string;
   /** Unix seconds (Tornado deposit event timestamp only). */
   deposit_timestamp?: string;
-  /** Tornado or Privacy Pools secret derivation. Absent for Railgun. */
-  derivation?: "legacy" | "signature";
+  /** Set only for a legacy Tornado or Privacy Pools note. */
+  derivation?: "legacy";
   /** Signature-scheme Tornado nonce. Absent for BIP-32 and imported notes. */
   nonce?: string;
 };
@@ -165,7 +165,8 @@ export function mapPrivacyPoolsNotes(
             : "pending"
           : undefined,
       deposit_index: bigIntishToString(n.deposit) || undefined,
-      derivation: noteDerivation(n.derivation),
+      derivation:
+        noteDerivation(n.derivation) === "legacy" ? "legacy" : undefined,
     };
   });
 }
@@ -207,7 +208,7 @@ export function mapTornadoNotes(
           ? undefined
           : depositIndex || undefined,
       nonce,
-      derivation,
+      derivation: derivation === "legacy" ? "legacy" : undefined,
       deposit_timestamp: depositTimestamp || undefined,
       status: balanceRaw === "0" ? "spent" : "spendable",
     };

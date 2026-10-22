@@ -27,17 +27,28 @@ export function largerSchemeCap(legacyCap: bigint, signatureCap: bigint): bigint
   return legacyCap > signatureCap ? legacyCap : signatureCap;
 }
 
-export function schemeSpendLine(scheme: NoteDerivation): string {
-  return scheme === "legacy"
-    ? "Spending legacy notes."
-    : "Spending signature notes.";
-}
+/** Printed only when a withdrawal spends legacy notes. */
+export const LEGACY_SPEND_WARNING = "Spending legacy notes.";
 
 export function schemeCoverError(opts: {
   legacyLabel: string;
   signatureLabel: string;
 }): string {
   return `Neither legacy nor signature notes can cover this withdrawal in one transaction. Legacy spendable: ${opts.legacyLabel}. Signature spendable: ${opts.signatureLabel}. Unshield one scheme at a time.`;
+}
+
+/**
+ * Split-scheme error when the wallet holds legacy notes. Otherwise the
+ * caller’s single-balance message, with no scheme names.
+ */
+export function unshieldSchemeFailure(opts: {
+  legacyCap: bigint;
+  legacyLabel: string;
+  signatureLabel: string;
+  fallback: string;
+}): string {
+  if (opts.legacyCap > 0n) return schemeCoverError(opts);
+  return opts.fallback;
 }
 
 /** Same storage object, with every key prefixed. Writes stay in one file. */

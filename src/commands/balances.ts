@@ -346,10 +346,7 @@ function printPrivateProtocolSection(
 
 function printPrivateNoteRow(n: PrivateNoteRow): void {
   const asset = formatNoteAssetLabel(n);
-  const derivation =
-    n.derivation === "legacy" || n.derivation === "signature"
-      ? `  ${n.derivation}`
-      : "";
+  const derivation = n.derivation === "legacy" ? "  legacy" : "";
   if (n.protocol === "privacy-pools") {
     const label = n.label ? chalk.cyan(`label ${n.label}`) : chalk.cyan("note");
     console.log(
@@ -689,10 +686,16 @@ export function registerBalancesCommand(program: Command): void {
               privateBalances.tornado = snap.privateTornado;
             }
             const privateBalancesLegacy: Record<string, BalanceItem[]> = {};
-            if (shouldIncludeProtocol("privacy-pools", includeProtocols)) {
+            if (
+              shouldIncludeProtocol("privacy-pools", includeProtocols) &&
+              snap.legacyPrivacyPools.length > 0
+            ) {
               privateBalancesLegacy["privacy-pools"] = snap.legacyPrivacyPools;
             }
-            if (shouldIncludeProtocol("tornado", includeProtocols)) {
+            if (
+              shouldIncludeProtocol("tornado", includeProtocols) &&
+              snap.legacyTornado.length > 0
+            ) {
               privateBalancesLegacy.tornado = snap.legacyTornado;
             }
 
