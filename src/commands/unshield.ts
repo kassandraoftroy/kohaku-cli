@@ -39,10 +39,12 @@ import {
   runQuietSpinner,
 } from "../utils/cli-quiet";
 import { readSeedKeystore } from "../utils/mnemonic";
+import { isAddressUsed } from "../utils/address-used.js";
 import {
   findPublicAccountByAddress,
   makePublicAccountsStorage,
   publicAccountDerivationPath,
+  selectNextUnusedPublicAccount,
 } from "../utils/public-accounts";
 import { stealthDelegatorPath } from "../lib/stealth/constants.js";
 import {
@@ -359,6 +361,28 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       let forwardLeftover = true;
       let transferAmountWei: bigint | undefined;
       let estimatedLeftoverWei = 0n;
+      const freshnessClient = await makePublicClient(rpcUrl);
+      const assignNextFreshPublicAccount = async (): Promise<boolean> => {
+        try {
+          const { account, skipped } = await selectNextUnusedPublicAccount(
+            publicStorage,
+            (address) => isAddressUsed(address, freshnessClient)
+          );
+          for (const used of skipped) {
+            log.warn(
+              `Public account [${used.index}] ${used.address} already has a nonce, balance, or code. Saved it and advanced to the next index.`
+            );
+          }
+          recipient = getAddress(account.address) as `0x${string}`;
+          recipientPriv = as0xPrivateKey(account.priv);
+          recipientDerivationPath = publicAccountDerivationPath(account.index);
+          persistFreshAccountAfterBroadcast = true;
+          return true;
+        } catch (e) {
+          cliErrorFromCaught(e);
+          return false;
+        }
+      };
 
       const applyPublicRecipient = (address: `0x${string}`) => {
         recipient = getAddress(address) as `0x${string}`;
@@ -405,11 +429,6 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       };
 
       if (privateTransfer) {
-        const fresh = takeNextFreshPublicAccount(publicStorage);
-        recipient = getAddress(fresh.address) as `0x${string}`;
-        recipientPriv = as0xPrivateKey(fresh.priv);
-        recipientDerivationPath = publicAccountDerivationPath(fresh.index);
-        persistFreshAccountAfterBroadcast = true;
         try {
           if (hasTo) {
             payee = await resolvePayee(opts.to!.trim());
@@ -431,12 +450,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           cliErrorFromCaught(e);
           return;
         }
+        if (!(await assignNextFreshPublicAccount())) return;
       } else if (hasNext) {
-        const fresh = takeNextFreshPublicAccount(publicStorage);
-        recipient = getAddress(fresh.address) as `0x${string}`;
-        recipientPriv = as0xPrivateKey(fresh.priv);
-        recipientDerivationPath = publicAccountDerivationPath(fresh.index);
-        persistFreshAccountAfterBroadcast = true;
+        if (!(await assignNextFreshPublicAccount())) return;
       } else if (hasTo) {
         const raw = opts.to!.trim();
         try {
@@ -488,11 +504,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         });
 
         if (chosen === NEXT_FRESH) {
-          const fresh = takeNextFreshPublicAccount(publicStorage);
-          recipient = getAddress(fresh.address) as `0x${string}`;
-          recipientPriv = as0xPrivateKey(fresh.priv);
-          recipientDerivationPath = publicAccountDerivationPath(fresh.index);
-          persistFreshAccountAfterBroadcast = true;
+          if (!(await assignNextFreshPublicAccount())) return;
         } else if (chosen === CUSTOM_ADDR) {
           const addr = await input({
             message: "Enter recipient address or name (.eth/.gwei/.wei):",
@@ -1721,7 +1733,7 @@ export function registerUnshieldCommand(program: Command): void {
     )
     .option(
       "--next",
-      "Unshield to the next fresh public account (persisted only after a successful --broadcast)"
+      "Unshield to the next fresh public account (persisted only after a successful --broadcast). An index that already has a nonce, balance, or code is saved and skipped."
     )
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")

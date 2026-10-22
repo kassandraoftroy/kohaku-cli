@@ -128,7 +128,7 @@ Withdraw the private note back to the public chain. The dry run builds the priva
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1
 ```
 
-`--next` selects a fresh public account from this wallet, which can sign the EIP-7702 delegation required by Tornado. Add `--broadcast` to submit through the paymaster:
+`--next` selects a fresh public account from this wallet, which can sign the EIP-7702 delegation required by Tornado. If that index already has a nonce, balance, or code, it is saved and the next index is used. `balances` also checks the next two unstored indexes and saves any that already have activity, so a broadcast that landed without being recorded still shows up. Add `--broadcast` to submit through the paymaster:
 
 ```bash
 kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted 0.1 --broadcast
@@ -476,7 +476,7 @@ Withdraw **private** balance to a **public** address. Railgun, Tornado Cash, and
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--to <address>` | Recipient: public address, HD index address, stealth selector (`s0`), or name (`.eth` / `.gwei` / `.wei`). |
-| `--next` | Create and use the next fresh public account (mutually exclusive with `--to`). |
+| `--next` | Create and use the next fresh public account (mutually exclusive with `--to`). An index that already has a nonce, balance, or code is saved and skipped. |
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount. |

@@ -27,7 +27,11 @@ import {
   type PrivateNoteRow,
   type PrivateNotesByProtocol,
 } from "./private-notes";
-import { makePublicAccountsStorage } from "../utils/public-accounts";
+import { isAddressUsed } from "../utils/address-used.js";
+import {
+  adoptUsedPublicAccounts,
+  makePublicAccountsStorage,
+} from "../utils/public-accounts";
 import { deriveStealthKeypair } from "./stealth/keys.js";
 import {
   formatStealthScanStartLog,
@@ -622,13 +626,30 @@ async function loadBalancesSnapshotInner(
     ]);
 
   const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
-  const publicAccounts = publicStorage.getAccounts();
+  const rpcForPublic = await makePublicClient(rpcUrl);
+  let publicAccounts = publicStorage.getAccounts();
+  try {
+    const adopted = await adoptUsedPublicAccounts(publicStorage, (address) =>
+      isAddressUsed(address, rpcForPublic)
+    );
+    if (adopted.length > 0) {
+      publicAccounts = publicStorage.getAccounts();
+      onWarning?.(
+        `Saved public account${adopted.length === 1 ? "" : "s"} that already had a nonce, balance, or code: ${adopted
+          .map((account) => `[${account.index}] ${account.address}`)
+          .join(", ")}.`
+      );
+    }
+  } catch (e) {
+    onWarning?.(
+      `Could not check unstored public accounts: ${formatCaughtError(e)}`
+    );
+  }
   const publicAccountIndexByAddress: Record<string, number> = {};
   for (const acct of publicAccounts) {
     publicAccountIndexByAddress[acct.address] = acct.index;
   }
 
-  const rpcForPublic = await makePublicClient(rpcUrl);
   const stealthAccountIndexByAddress: Record<string, number> = {};
   let stealthAccounts: ReturnType<
     ReturnType<typeof makeStealthAccountsStorage>["getAccounts"]
