@@ -1,24 +1,14 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { describe, it } from "node:test";
 
 import {
   DEFAULT_ARTIFACTS_BASE_URL,
   artifactRelativeKeyFromUrl,
   listAllArtifactRelativeKeys,
-  parseFetchArtifactSelection,
+  packagedArtifactsDir,
   railgunTransactVariants,
-  remoteUrlForArtifactKey,
+  readPackagedArtifact,
 } from "../src/utils/proving-artifacts.js";
-
-const ORIG_BASE = process.env.KOHAKU_ARTIFACTS_BASE_URL;
-
-afterEach(() => {
-  if (ORIG_BASE === undefined) {
-    delete process.env.KOHAKU_ARTIFACTS_BASE_URL;
-  } else {
-    process.env.KOHAKU_ARTIFACTS_BASE_URL = ORIG_BASE;
-  }
-});
 
 const MACWHA =
   "https://github.com/Robert-MacWha/privacy-protocol-artifacts/raw/refs/heads/main/artifacts";
@@ -36,11 +26,11 @@ describe("railgunTransactVariants", () => {
   });
 });
 
-describe("parseFetchArtifactSelection", () => {
-  it("returns the full set when no filters are given", () => {
+describe("listAllArtifactRelativeKeys", () => {
+  it("includes Tornado, Railgun, and Privacy Pools keys", () => {
     const all = listAllArtifactRelativeKeys();
-    assert.deepEqual(parseFetchArtifactSelection({}), all);
     assert.ok(all.includes("tornado/tornado.json"));
+    assert.ok(all.includes("tornado/tornadoProvingKey.bin"));
     assert.ok(all.includes("railgun/01x01/proving_key.bin.br"));
     assert.ok(all.includes("railgun/poi/03x03/wasm.br"));
     assert.ok(
@@ -50,52 +40,30 @@ describe("parseFetchArtifactSelection", () => {
       all.includes("privacy-pools/build/withdraw/withdraw_js/withdraw.wasm")
     );
   });
+});
 
-  it("unions explicit keys, variants, and tornado", () => {
-    const keys = parseFetchArtifactSelection({
-      keys: ["railgun/01x01/wasm.br"],
-      variants: ["01x02"],
-      tornado: true,
-    });
-    assert.ok(keys.includes("railgun/01x01/wasm.br"));
-    assert.ok(keys.includes("railgun/01x02/proving_key.bin.br"));
-    assert.ok(keys.includes("tornado/tornado.json"));
-    assert.ok(keys.includes("tornado/tornadoProvingKey.bin"));
-  });
-
-  it("selects only the Privacy Pools circuit set", () => {
-    const keys = parseFetchArtifactSelection({ privacyPools: true });
-    assert.deepEqual(keys, [
-      "privacy-pools/build/commitment/commitment_js/commitment.wasm",
-      "privacy-pools/build/withdraw/withdraw_js/withdraw.wasm",
-      "privacy-pools/trusted-setup/final-keys/commitment.vkey",
-      "privacy-pools/trusted-setup/final-keys/commitment.zkey",
-      "privacy-pools/trusted-setup/final-keys/withdraw.vkey",
-      "privacy-pools/trusted-setup/final-keys/withdraw.zkey",
-    ]);
-  });
-
-  it("rejects an unknown key or variant", () => {
-    assert.throws(
-      () => parseFetchArtifactSelection({ keys: ["nope.bin"] }),
-      /Unknown artifact key/
-    );
-    assert.throws(
-      () => parseFetchArtifactSelection({ variants: ["99x99"] }),
-      /Unknown Railgun transact variant/
-    );
-    assert.throws(
-      () => parseFetchArtifactSelection({ poi: ["01x01"] }),
-      /Unknown Railgun POI variant/
-    );
+describe("packaged artifacts", () => {
+  it("reads a circuit from the installed package without fetching", () => {
+    const root = packagedArtifactsDir();
+    assert.ok(root, "kohaku-artifacts is not installed");
+    for (const key of listAllArtifactRelativeKeys()) {
+      const body = readPackagedArtifact(key);
+      assert.ok(body && body.length > 0, `missing packaged artifact ${key}`);
+    }
+    const circuit = readPackagedArtifact("tornado/tornado.json");
+    assert.equal(circuit!.subarray(0, 1).toString(), "{");
   });
 });
 
 describe("artifactRelativeKeyFromUrl", () => {
-  it("maps MacWha artifact URLs onto cache-relative paths", () => {
+  it("maps Railgun WASM artifact URLs onto package paths", () => {
     assert.equal(
-      artifactRelativeKeyFromUrl(`${MACWHA}/01x01/proving_key.bin.br`),
-      "01x01/proving_key.bin.br"
+      artifactRelativeKeyFromUrl(`${MACWHA}/railgun/01x01/proving_key.bin.br`),
+      "railgun/01x01/proving_key.bin.br"
+    );
+    assert.equal(
+      artifactRelativeKeyFromUrl(`${MACWHA}/railgun/poi/03x03/wasm.br`),
+      "railgun/poi/03x03/wasm.br"
     );
   });
 
@@ -128,26 +96,6 @@ describe("artifactRelativeKeyFromUrl", () => {
     );
   });
 
-  it("fetches privacy-pools keys from the artifacts mirror", () => {
-    delete process.env.KOHAKU_ARTIFACTS_BASE_URL;
-    assert.equal(
-      remoteUrlForArtifactKey(
-        "privacy-pools/trusted-setup/final-keys/commitment.zkey"
-      ),
-      `${DEFAULT_ARTIFACTS_BASE_URL}/privacy-pools/trusted-setup/final-keys/commitment.zkey`
-    );
-  });
-
-  it("keeps privacy-pools on GitHub when the artifacts base is MacWha", () => {
-    process.env.KOHAKU_ARTIFACTS_BASE_URL = MACWHA;
-    assert.equal(
-      remoteUrlForArtifactKey(
-        "privacy-pools/trusted-setup/final-keys/commitment.zkey"
-      ),
-      "https://raw.githubusercontent.com/0xbow-io/privacy-pools-core/7bc392dad5fa483f53cf74e25d7ad19f0fc6d85f/packages/circuits/trusted-setup/final-keys/commitment.zkey"
-    );
-  });
-
   it("maps Tornado GitHub circuit URLs", () => {
     assert.equal(artifactRelativeKeyFromUrl(TORNADO_JSON), "tornado/tornado.json");
     assert.equal(
@@ -156,8 +104,7 @@ describe("artifactRelativeKeyFromUrl", () => {
     );
   });
 
-  it("maps the default artifacts mirror when the env is unset", () => {
-    delete process.env.KOHAKU_ARTIFACTS_BASE_URL;
+  it("maps the artifacts mirror onto package paths", () => {
     assert.equal(
       artifactRelativeKeyFromUrl(
         `${DEFAULT_ARTIFACTS_BASE_URL}/railgun/01x01/wasm.br`
@@ -172,9 +119,6 @@ describe("artifactRelativeKeyFromUrl", () => {
   });
 
   it("excludes sync-cache snapshot URLs sharing the artifacts base", () => {
-    delete process.env.KOHAKU_ARTIFACTS_BASE_URL;
-    // Otherwise these would inherit the artifact Tor timeout, get duplicated
-    // into proving-artifacts, and pin later runs to the first snapshot fetched.
     for (const key of [
       "sync-cache/v1/manifest.json",
       "sync-cache/v1/chunk-000.tar.gz",

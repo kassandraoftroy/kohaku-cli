@@ -10,14 +10,13 @@
  *    fetches the configured bundler URL. Pointing that URL at 127.0.0.1 covers
  *    both. Loopback requests stay on clearnet (they hit this proxy).
  *
- * Proving artifacts: served from the on-disk cache when present; otherwise
- * fetched via Tor from `KOHAKU_ARTIFACTS_BASE_URL` (default:
- * https://artifacts.0000000000.org). No clearnet fallback.
+ * Proving artifacts are read from the installed `kohaku-artifacts` package.
+ * SDK requests for the old GitHub and mirror URLs are answered from that
+ * package and are not downloaded.
  * Saga CDN (Tornado event sync): Tor-or-fail (no clearnet fallback).
  * Subsquid GraphQL and saga CDN responses are also stored under
  * `<dataDir>/public-sync-cache` so later wallets reuse public Railgun/Tornado pages.
- * Artifacts are for prove/unshield, not pool-event sync; pre-warm with
- * `kohaku fetch-artifacts` (optionally `--without-tor`).
+ * Artifacts are for prove/unshield, not pool-event sync.
  *
  * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr. POST bodies are
  * logged as `post-body` lines, truncated to 4KB.
@@ -49,11 +48,7 @@ import { countSyncRequest } from "./sync-progress.js";
 import {
   artifactRelativeKeyFromUrl,
   buildLocalArtifactResponse,
-  getArtifactsDataDir,
-  readCachedArtifact,
-  remoteUrlForArtifactKey,
-  setArtifactsDataDir,
-  writeCachedArtifact,
+  readPackagedArtifactOrThrow,
 } from "./proving-artifacts.js";
 import {
   buildCachedPublicSyncResponse,
@@ -425,20 +420,6 @@ async function peekPostRpcMethod(
   return peekJsonRpcMethod(Buffer.from(text));
 }
 
-/** GitHub-hosted proving artifacts (Railgun / Tornado keys). */
-function isGithubArtifactUrl(urlStr: string): boolean {
-  try {
-    const host = new URL(urlStr).hostname.toLowerCase();
-    const isGithub =
-      host === "github.com" ||
-      host === "raw.githubusercontent.com" ||
-      host.endsWith(".githubusercontent.com");
-    return isGithub && categorizeUrl(urlStr) === "artifacts";
-  } catch {
-    return false;
-  }
-}
-
 /** Saga CDN (gordosoluciones host; legacy Fastly / fatsolutions still detected). */
 function isSagaCdnUrl(urlStr: string): boolean {
   try {
@@ -456,10 +437,7 @@ function isSagaCdnUrl(urlStr: string): boolean {
 /** Large GETs that use a hard Tor timeout (no clearnet fallback). */
 function needsTorHardTimeout(urlStr: string, method: string): boolean {
   if (method !== "GET" && method !== "HEAD") return false;
-  if (isSagaCdnUrl(urlStr)) return true;
-  if (artifactRelativeKeyFromUrl(urlStr)) return true;
-  if (isGithubArtifactUrl(urlStr)) return true;
-  return false;
+  return isSagaCdnUrl(urlStr);
 }
 
 async function raceTorFetch(
@@ -473,7 +451,7 @@ async function raceTorFetch(
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           reject(
-            new Error(`Tor CDN/artifact fetch timed out after ${timeoutMs}ms`)
+            new Error(`Tor CDN fetch timed out after ${timeoutMs}ms`)
           );
         }, timeoutMs);
       }),
@@ -494,20 +472,6 @@ function resolveRequestMethod(
       : "GET");
   return method.toUpperCase();
 }
-
-function artifactFailHint(): string {
-  return "Try: kohaku fetch-artifacts   (or --without-tor if Tor cannot carry the download)";
-}
-
-/**
- * Fetch that uses Tor when a session is active (except loopback / allowlisted
- * RPC hosts). Safe to bind as `Host.network.fetch` — always checks live session.
- * Always records traffic when a wallet log context is active.
- *
- * Proving artifacts: local disk cache first; else Tor (or clearnet only when
- * no Tor session) from KOHAKU_ARTIFACTS_BASE_URL — never a Tor→clearnet retry.
- * Saga CDN: Tor-or-fail with hard timeout.
- */
 
 async function requestBodyBytesForCache(
   input: RequestInfo | URL,
@@ -559,6 +523,14 @@ async function storePublicSyncResponseIfOk(
   );
 }
 
+/**
+ * Fetch that uses Tor when a session is active (except loopback / allowlisted
+ * RPC hosts). Safe to bind as `Host.network.fetch` — always checks live session.
+ * Always records traffic when a wallet log context is active.
+ *
+ * Proving artifacts: the kohaku-artifacts package. A missing file throws.
+ * Saga CDN: Tor-or-fail with hard timeout.
+ */
 export async function kohakuFetch(
   input: RequestInfo | URL,
   init?: RequestInit
@@ -578,90 +550,19 @@ export async function kohakuFetch(
       : null;
 
   if (artifactKey) {
-    const cached = readCachedArtifact(getArtifactsDataDir(), artifactKey);
-    if (cached) {
-      torDebug("local-artifact", method, artifactKey);
-      return loggedFetch(
-        input,
-        init,
-        {
-          via: "clearnet",
-          clearnetReason: "local-artifact",
-          url,
-          rpcMethod,
-        },
-        async () => buildLocalArtifactResponse(url, cached)
-      );
-    }
-
-    const remoteUrl = remoteUrlForArtifactKey(artifactKey);
-    const decision = shouldUseClearnet(remoteUrl);
-    if (decision.clearnet) {
-      torDebug("artifact clearnet (no tor session)", method, remoteUrl);
-      return loggedFetch(
-        input,
-        init,
-        {
-          via: "clearnet",
-          clearnetReason: decision.reason,
-          url: remoteUrl,
-          rpcMethod,
-        },
-        async () => {
-          const res = await clearnetFetch(remoteUrl, init);
-          if (!res.ok) {
-            throw new Error(
-              `Proving artifact fetch failed (HTTP ${res.status}) for ${artifactKey}. ${artifactFailHint()}`
-            );
-          }
-          const buf = Buffer.from(await res.arrayBuffer());
-          writeCachedArtifact(getArtifactsDataDir(), artifactKey, buf);
-          return buildLocalArtifactResponse(url, buf);
-        }
-      );
-    }
-
-    const torInit = await toTorInit(input, init);
-    const requestBytes = estimateBodyBytes(torInit.body);
-    const timeoutMs = resolveTorCdnTimeoutMs();
-    torDebug(`tor artifact (${timeoutMs}ms)`, method, remoteUrl);
-
-    try {
-      return await raceTorFetch(
-        () =>
-          loggedFetch(
-            input,
-            init,
-            {
-              via: "tor",
-              url: remoteUrl,
-              requestBytes,
-              rpcMethod,
-            },
-            async () => {
-              const res = withRequestUrl(
-                await activeSession!.client.fetch(remoteUrl, torInit),
-                url
-              );
-              if (!res.ok) {
-                throw new Error(
-                  `Proving artifact Tor fetch returned HTTP ${res.status} for ${artifactKey}. ${artifactFailHint()}`
-                );
-              }
-              const buf = Buffer.from(await res.arrayBuffer());
-              writeCachedArtifact(getArtifactsDataDir(), artifactKey, buf);
-              return buildLocalArtifactResponse(url, buf);
-            }
-          ),
-        timeoutMs
-      );
-    } catch (e) {
-      const msg = formatCaughtError(e);
-      if (/fetch-artifacts/i.test(msg)) throw e;
-      throw new Error(
-        `Proving artifact Tor fetch failed for ${artifactKey}: ${msg}. ${artifactFailHint()}`
-      );
-    }
+    const body = readPackagedArtifactOrThrow(artifactKey);
+    torDebug("local-artifact", method, artifactKey);
+    return loggedFetch(
+      input,
+      init,
+      {
+        via: "clearnet",
+        clearnetReason: "local-artifact",
+        url,
+        rpcMethod,
+      },
+      async () => buildLocalArtifactResponse(url, body)
+    );
   }
 
   const cacheable = isPublicSyncCacheableRequest(url, method);
@@ -909,8 +810,6 @@ export function runWithWalletTrafficLog<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   ensureKohakuFetchPatch();
-  // `<dataDir>/<wallet>` — keep proving-artifact and public-sync caches under the same dataDir.
-  setArtifactsDataDir(dirname(walletDir));
   setPublicSyncCacheDataDir(dirname(walletDir));
   return runWithTrafficLogWallet(walletDir, fn);
 }

@@ -31,6 +31,7 @@
         "derive-railgun-keys": "0.1.0",
         "eth-prices": "1.1.0",
         "eth-stealth-address-resolver": "0.2.0",
+        "kohaku-artifacts": "git+https://github.com/kassandraoftroy/kohaku-artifacts.git#15c3c82989cca9f3f1562cce5111563060e2de2d",
         "ox": "0.12.0",
         "tor-js": "0.4.0",
         "viem": "2.55.19"
