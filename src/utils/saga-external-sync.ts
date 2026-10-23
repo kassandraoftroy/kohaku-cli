@@ -9,6 +9,8 @@ import type {
   Network,
 } from "@kohaku-eth/plugins";
 
+import { addSyncUnits } from "./sync-progress.js";
+
 type Hex = `0x${string}`;
 
 type SagaChunk = {
@@ -19,7 +21,8 @@ type SagaChunk = {
 
 type SagaProtocolEntry = {
   chainId: Hex;
-  trackedAddresses: string[];
+  // Derived streams (e.g. Railgun ops) have no contract address list.
+  trackedAddresses?: string[];
   chunks: SagaChunk[];
   hotHead?: SagaChunk;
 };
@@ -79,7 +82,7 @@ function findProtocolEntry(
   return Object.values(index.availableProtocols).find(
     (entry) =>
       entry.chainId.toLowerCase() === chainId &&
-      entry.trackedAddresses.some((a) => a.toLowerCase() === address)
+      entry.trackedAddresses?.some((a) => a.toLowerCase() === address)
   );
 }
 
@@ -116,8 +119,8 @@ async function readGunzipLines(
  * Host {@link ExternalSyncProvider} backed by the saga CDN.
  * Tornado Cash reads bulk historical logs from here during cold sync.
  *
- * Every fetch here is counted as a saga request by the Tor fetch wrapper, so
- * this provider does no progress bookkeeping of its own.
+ * Each segment is one saga progress unit. The total is the filtered segment
+ * list, fixed before the first download. HTTP requests are not the unit.
  */
 export function createSagaExternalSyncProvider(opts: {
   baseUrl: string;
@@ -181,6 +184,7 @@ export function createSagaExternalSyncProvider(opts: {
         return segFrom <= toBlock && segLast >= fromBlock;
       });
 
+      const progress = addSyncUnits("saga", segments.length, `Saga ${params.address.slice(0, 8)}…${params.address.slice(-4)}`);
       const out: ExternalRawEvent[] = [];
       for (const seg of segments) {
         const url = `${opts.baseUrl}/${seg.file}`;
@@ -196,6 +200,7 @@ export function createSagaExternalSyncProvider(opts: {
           if (block < fromBlock || block > toBlock) continue;
           out.push(parsed);
         }
+        progress.advance();
       }
 
       out.sort((a, b) => {

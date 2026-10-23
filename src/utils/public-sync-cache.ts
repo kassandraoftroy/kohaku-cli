@@ -73,6 +73,23 @@ export function isPublicSyncCacheableRequest(
   return isPublicSyncCacheableUrl(url);
 }
 
+/** Only block-bounded Subsquid pages are immutable. Head/count/unbounded
+ * queries must never reuse a snapshot's answer as the current indexer tip. */
+export function isImmutableSubsquidRequest(body: Uint8Array | string): boolean {
+  let request: { query?: unknown; variables?: Record<string, unknown> };
+  try {
+    request = JSON.parse(typeof body === "string" ? body : Buffer.from(body).toString("utf8"));
+  } catch { return false; }
+  if (!request || typeof request.query !== "string") return false;
+  const query = request.query;
+  if (/blockNumber_DESC|totalCount/.test(query)) return false;
+  const bound = query.match(/\bblockNumber_lte\s*:\s*(?:\$(\w+)|"?(0x[0-9a-fA-F]+|\d+)"?)/);
+  if (!bound) return false;
+  const value = bound[1] ? request.variables?.[bound[1]] : bound[2];
+  return (typeof value === "string" && /^(0x[0-9a-fA-F]+|\d+)$/.test(value)) ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+}
+
 export function publicSyncCacheKey(
   method: string,
   url: string,

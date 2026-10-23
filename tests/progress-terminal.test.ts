@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 
 import { manageSpinner, type QuietSpinner } from "../src/utils/cli-quiet.js";
@@ -69,7 +70,13 @@ describe("worker progress renderer", () => {
     managed.start("held");
     clearTerminalOwner(managed);
 
-    assert.equal(startProgressRenderer("Railgun first sync", Date.now()), null);
+    assert.equal(
+      startProgressRenderer(
+        { header: "Railgun first sync", firstRun: false, rows: [] },
+        Date.now()
+      ),
+      null
+    );
     managed.stop("done");
   });
 
@@ -82,7 +89,10 @@ describe("worker progress renderer", () => {
     process.env.KOHAKU_NO_WORKER_PROGRESS = "1";
     try {
       assert.equal(
-        startProgressRenderer("Railgun first sync", Date.now()),
+        startProgressRenderer(
+          { header: "Railgun first sync", firstRun: false, rows: [] },
+          Date.now()
+        ),
         null
       );
       assert.equal(managed.active, true, "the spinner keeps the line");
@@ -92,4 +102,31 @@ describe("worker progress renderer", () => {
       managed.stop("done");
     }
   });
+});
+
+
+it("renders task speed and ETA from the actual worker", () => {
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--eval", `
+    (async () => {
+      const { manageSpinner } = await import("./src/utils/cli-quiet.ts");
+      const { startProgressRenderer } = await import("./src/utils/sync-progress-renderer.ts");
+      Object.defineProperty(process.stdout, "isTTY", { value: true });
+      const spinner = manageSpinner({ start() {}, stop() {}, message() {} }, false);
+      spinner.start("sync");
+      const renderer = startProgressRenderer({
+        header: "Railgun sync", firstRun: false,
+        rows: [{ label: "RPC test", done: 450, total: 1350, suffix: "450/1350 blocks",
+          unit: "blocks", samples: 3, startedAt: Date.now() - 5000, updatedAt: Date.now() }],
+      }, Date.now() - 5000);
+      await new Promise(resolve => setTimeout(resolve, 800));
+      renderer?.stop();
+      spinner.stop("done");
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `], {
+    cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 10000,
+    env: { ...process.env, KOHAKU_NO_WORKER_PROGRESS: "0" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /RPC test · 33% · [\d,]+ blocks\/s · task ETA ~/);
+  assert.match(result.stdout, /450\/1350 blocks/);
 });

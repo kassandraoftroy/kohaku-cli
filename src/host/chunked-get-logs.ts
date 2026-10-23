@@ -2,7 +2,7 @@ import type { EthereumProvider } from "@kohaku-eth/provider";
 import type { Filter } from "ox/Filter";
 import type { RpcRequest } from "ox/RpcRequest";
 
-import { countSyncRequest } from "../utils/sync-progress.js";
+import { addRpcSyncRange, needsSyncHead, noteSyncHead } from "../utils/sync-progress.js";
 
 /** Max inclusive block span per `eth_getLogs` call (env / option override). */
 const DEFAULT_MAX_BLOCK_SPAN = 499n;
@@ -109,7 +109,8 @@ async function fetchLogsChunked(
   fromBn: bigint,
   toBn: bigint,
   chunkSpan: bigint,
-  invoke: (from: bigint, to: bigint) => Promise<unknown>
+  invoke: (from: bigint, to: bigint) => Promise<unknown>,
+  progress: ReturnType<typeof addRpcSyncRange>
 ): Promise<unknown[]> {
   const out: unknown[] = [];
   let windowFrom = fromBn;
@@ -118,7 +119,6 @@ async function fetchLogsChunked(
     const windowTo =
       windowFrom + chunkSpan - 1n > toBn ? toBn : windowFrom + chunkSpan - 1n;
     w += 1;
-    countSyncRequest("rpc");
     let raw: unknown;
     try {
       raw = await invoke(windowFrom, windowTo);
@@ -127,6 +127,7 @@ async function fetchLogsChunked(
       throw e;
     }
     out.push(...asLogArray(raw));
+    progress.complete(windowFrom, windowTo);
     windowFrom = windowTo + 1n;
   }
   return out;
@@ -158,14 +159,40 @@ export function withTransactionCount<T>(
 }
 
 export function withChunkedGetLogs<T>(
-  provider: EthereumProvider<T>
+  provider: EthereumProvider<T>,
+  opts: { syncToHead?: boolean } = {}
 ): EthereumProvider<T> {
   const chunkSpan = resolveMaxBlockSpan();
   const baseGetLogs = provider.getLogs.bind(provider);
   const baseRequest = provider.request.bind(provider);
 
+  const ensureSyncHead = async () => {
+    if (!opts.syncToHead || !needsSyncHead()) return;
+    try {
+      noteSyncHead(await provider.getBlockNumber());
+    } catch {
+      // Progress discovery must not turn an otherwise valid bounded query into a failure.
+    }
+  };
+
+  const progressFor = (filter: Record<string, unknown>, from: bigint, to: bigint) => {
+    const addresses = Array.isArray(filter.address) ? [...filter.address].sort() : filter.address;
+    const topics = filter.topics ?? [];
+    const key = JSON.stringify([addresses, topics]).toLowerCase();
+    const address = typeof addresses === "string" ? addresses : "contracts";
+    const topic = Array.isArray(topics) && typeof topics[0] === "string" ? ` / ${topics[0].slice(0, 10)}` : "";
+    const label = `RPC ${address.slice(0, 8)}…${address.slice(-4)}${topic}`;
+    // Single-block metadata lookups are bounded queries, not new head scans.
+    return addRpcSyncRange(key, label, from, to, opts.syncToHead && from !== to);
+  };
+
   return {
     ...provider,
+    getBlockNumber: async () => {
+      const head = await provider.getBlockNumber();
+      noteSyncHead(head);
+      return head;
+    },
     getLogs: async (filter: Filter) => {
       const fromBn = filterBlockToBigInt(filter.fromBlock);
       const toBn = filterBlockToBigInt(filter.toBlock);
@@ -173,6 +200,7 @@ export function withChunkedGetLogs<T>(
         return baseGetLogs(filter);
       }
 
+      await ensureSyncHead();
       const merged = await fetchLogsChunked(
         "getLogs",
         fromBn,
@@ -183,12 +211,19 @@ export function withChunkedGetLogs<T>(
             ...filter,
             fromBlock: from,
             toBlock: to,
-          })
+          }),
+        progressFor(filter as Record<string, unknown>, fromBn, toBn)
       );
       return merged as Awaited<ReturnType<EthereumProvider<T>["getLogs"]>>;
     },
 
     request: async (req: Pick<RpcRequest, "method" | "params">) => {
+      if (req.method === "eth_blockNumber") {
+        const result = await baseRequest(req);
+        const head = blockSpecToBigInt(result);
+        if (head !== null) noteSyncHead(head);
+        return result;
+      }
       if (req.method !== "eth_getLogs") {
         return baseRequest(req);
       }
@@ -207,6 +242,7 @@ export function withChunkedGetLogs<T>(
         return baseRequest(req);
       }
 
+      await ensureSyncHead();
       return fetchLogsChunked(
         "request.eth_getLogs",
         fromBn,
@@ -222,7 +258,8 @@ export function withChunkedGetLogs<T>(
                 toBlock: toRpcBlockQuantity(to),
               },
             ],
-          })
+          }),
+        progressFor(filterObj, fromBn, toBn)
       );
     },
   };

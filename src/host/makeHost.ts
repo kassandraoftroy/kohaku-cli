@@ -49,7 +49,8 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
   noteProtocolStorageFreshness(walletDir, pluginId);
 
   const provider = withChunkedGetLogs(
-    withTransactionCount(kohakuViemProvider(rpc))
+    withTransactionCount(kohakuViemProvider(rpc)),
+    { syncToHead: true }
   );
 
   const stealthStorage = makeStealthAccountsStorage(walletDir, password);

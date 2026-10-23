@@ -43,8 +43,8 @@ import {
   type TrafficCategory,
   type TrafficClearnetReason,
 } from "./network-traffic-log.js";
+import { beginSyncActivity } from "./sync-progress.js";
 import { formatCaughtError, withTorBootstrapHint } from "./cli-errors.js";
-import { countSyncRequest } from "./sync-progress.js";
 import {
   artifactRelativeKeyFromUrl,
   buildLocalArtifactResponse,
@@ -54,6 +54,7 @@ import {
   buildCachedPublicSyncResponse,
   cachePublicSyncNetworkResponse,
   isPublicSyncCacheableRequest,
+  isImmutableSubsquidRequest,
   readPublicSyncCache,
   setPublicSyncCacheDataDir,
 } from "./public-sync-cache.js";
@@ -279,9 +280,6 @@ async function loggedFetch(
       : "GET");
   const started = Date.now();
   const category = meta.category ?? categorizeUrl(meta.url);
-  if (category === "subsquid" || category === "asp" || category === "saga") {
-    countSyncRequest(category);
-  }
   try {
     const fetched = await doFetch();
     let responseBytes: number | undefined;
@@ -531,7 +529,20 @@ async function storePublicSyncResponseIfOk(
  * Proving artifacts: the kohaku-artifacts package. A missing file throws.
  * Saga CDN: Tor-or-fail with hard timeout.
  */
-export async function kohakuFetch(
+export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const category = categorizeUrl(resolveRequestUrl(input));
+  const label = category === "subsquid" ? "Subsquid history · total unavailable"
+    : category === "ppoi" ? "Railgun POI · total unavailable"
+    : category === "asp" ? "ASP lists · total unavailable" : undefined;
+  const finish = label ? beginSyncActivity(label) : undefined;
+  try {
+    return await kohakuFetchInner(input, init);
+  } finally {
+    finish?.();
+  }
+}
+
+async function kohakuFetchInner(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> {
@@ -565,10 +576,12 @@ export async function kohakuFetch(
     );
   }
 
-  const cacheable = isPublicSyncCacheableRequest(url, method);
-  const reqBody = cacheable
+  const candidate = isPublicSyncCacheableRequest(url, method);
+  const reqBody = candidate
     ? await requestBodyBytesForCache(input, init)
     : Buffer.alloc(0);
+  const cacheable = candidate && (categorizeUrl(url) !== "subsquid" ||
+    (method === "POST" && isImmutableSubsquidRequest(reqBody)));
   if (cacheable) {
     const cached = readPublicSyncCache({ method, url, body: reqBody });
     if (cached) {
