@@ -10,6 +10,7 @@
 import type { Host } from "@kohaku-eth/plugins";
 import { DataService } from "@kohaku-eth/privacy-pools";
 import { Client, HttpStore, type CanonicalEvent } from "@saga-sync/client";
+import { addSyncUnits } from "./sync-progress.js";
 import {
   decodeEventLog,
   encodeAbiParameters,
@@ -19,6 +20,54 @@ import {
 } from "viem";
 
 const MAINNET_SAGA_URL = "https://saga-pp-state.global.ssl.fastly.net";
+
+/** Matches `@saga-sync/client`'s default in-flight window. */
+const SAGA_CHUNK_CONCURRENCY = 4;
+
+type SagaChunkMeta = Parameters<Client["fetchChunk"]>[0];
+
+/**
+ * Half-open `[from, to)` overlap. Same rule as the client's unexported
+ * `selectSealedChunks` / `selectHotHead`.
+ */
+function chunkOverlapsWindow(
+  chunk: { fromBlock: string; toBlock: string },
+  from: bigint,
+  to: bigint
+): boolean {
+  const cFrom = BigInt(chunk.fromBlock);
+  const cTo = BigInt(chunk.toBlock);
+  return cTo > from && cFrom < to;
+}
+
+/**
+ * Sealed chunks in block order, with a small in-flight window, then the hot
+ * head. `advance` runs once per chunk after that chunk is in hand.
+ */
+async function loadSagaEvents(
+  client: Client,
+  chunks: SagaChunkMeta[],
+  hot: SagaChunkMeta | undefined,
+  advance: () => void
+): Promise<CanonicalEvent[]> {
+  const events: CanonicalEvent[] = [];
+  const queue: Promise<CanonicalEvent[]>[] = [];
+  let next = 0;
+  while (next < chunks.length && queue.length < SAGA_CHUNK_CONCURRENCY) {
+    queue.push(client.fetchChunk(chunks[next++]!));
+  }
+  while (queue.length > 0) {
+    const batch = await queue.shift()!;
+    if (next < chunks.length) queue.push(client.fetchChunk(chunks[next++]!));
+    events.push(...batch);
+    advance();
+  }
+  if (hot) {
+    events.push(...(await client.fetchChunk(hot, { hot: true })));
+    advance();
+  }
+  return events;
+}
 
 const LEAF_ABI = parseAbi([
   "event Deposited(address indexed _depositor, uint256 _commitment, uint256 _label, uint256 _value, uint256 _precommitment)",
@@ -233,13 +282,18 @@ export function createPrivacyPoolsSagaDataService(opts: {
     });
     if (plan.kind === "rpc" || !protocolId) return rpcLogs(params);
 
-    const events: CanonicalEvent[] = [];
-    for await (const ev of client.streamEvents(protocolId, {
-      fromBlock: 0n,
-      toBlock: plan.sagaTo,
-    })) {
-      events.push(ev);
-    }
+    const sealed = index
+      .sealedChunks(protocolId)
+      .filter((chunk) => chunkOverlapsWindow(chunk, 0n, plan.sagaTo));
+    const hotHead = index.hotHead(protocolId);
+    const hot =
+      hotHead && chunkOverlapsWindow(hotHead, 0n, plan.sagaTo) ? hotHead : undefined;
+    const chunkTotal = sealed.length + (hot ? 1 : 0);
+    const progress = addSyncUnits("saga", chunkTotal, `Saga ${params.address.slice(0, 8)}…${params.address.slice(-4)}`);
+    const events =
+      chunkTotal === 0
+        ? []
+        : await loadSagaEvents(client, sealed, hot, () => progress.advance());
     const logs = privacyPoolsLogsFromSagaEvents({
       events,
       pool: params.address,

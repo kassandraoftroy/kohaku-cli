@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.11] - 2026-10-22
+
+### Changed
+
+- Sepolia Privacy Pools bundled state snapshot now includes chain history through block 11,954,218 (previously 10,460,265). First syncs on Sepolia start from that later tip.
+- Sync progress is one bar per step when that step's size is known: saga chunks, RPC windows, and stealth blocks (`scanned/total`). A quiet stretch says still working while the elapsed clock keeps moving.
+
 ## [0.0.10] - 2026-10-21
 
 ### Changed

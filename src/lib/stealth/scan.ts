@@ -7,7 +7,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { resolveGetLogsMaxBlockSpan } from "../../host/chunked-get-logs.js";
 import type { KohakuPublicClient } from "../../utils/rpc.js";
-import { countSyncRequest, noteSyncFirstRun, reportSyncBlockProgress } from "../../utils/sync-progress.js";
+import { noteSyncFirstRun, reportSyncBlockProgress } from "../../utils/sync-progress.js";
 import {
   STEALTH_ANNOUNCER_ADDRESS,
   defaultStealthImportStartBlock,
@@ -225,7 +225,6 @@ export async function scanAndImportStealthAnnouncements(opts: {
   let cursor = fromBlock;
   while (cursor <= latest) {
     const to = cursor + maxSpan - 1n > latest ? latest : cursor + maxSpan - 1n;
-    countSyncRequest("rpc");
 
     const logs = (await opts.client.getLogs({
       address: STEALTH_ANNOUNCER_ADDRESS,

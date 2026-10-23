@@ -21,6 +21,7 @@ import {
   installPublicSyncCacheArchive,
   installPublicSyncCacheChunk,
   isPublicSyncCacheableRequest,
+  isImmutableSubsquidRequest,
   packPublicSyncCacheChunks,
   parseSyncCacheManifest,
   publicSyncCacheHasAllKeys,
@@ -617,5 +618,30 @@ describe("parseSyncCacheManifest", () => {
       () => parseSyncCacheManifest(manifest({ chunks: [chunk, chunk] })),
       /Duplicate chunk/
     );
+  });
+});
+
+
+describe("mutable Subsquid query policy", () => {
+  const body = (query: string, variables?: Record<string, unknown>) => JSON.stringify({ query, variables });
+  it("never treats the latest indexer block or counts as historical cache data", () => {
+    assert.equal(isImmutableSubsquidRequest(body(`query BlockNumberQuery {
+      transactions(orderBy: blockNumber_DESC, limit: 1) { blockNumber }
+    }`)), false);
+    assert.equal(isImmutableSubsquidRequest(body("query { transactionsConnection { totalCount } }")), false);
+    assert.equal(isImmutableSubsquidRequest(body("query { transactions { blockNumber } }")), false);
+  });
+  it("keeps SDK history pages cacheable only with an actual upper block bound", () => {
+    const query = `query CommitmentsQuery($blockNumber_lte: BigInt) {
+      commitments(where: {blockNumber_lte: $blockNumber_lte}) { blockNumber }
+    }`;
+    for (const value of ["25832229", "0x18a2c25", 25832229, 0]) {
+      assert.equal(isImmutableSubsquidRequest(body(query, { blockNumber_lte: value })), true);
+    }
+    for (const value of [undefined, null, "latest", -1]) {
+      assert.equal(isImmutableSubsquidRequest(body(query, { blockNumber_lte: value })), false);
+    }
+    assert.equal(isImmutableSubsquidRequest(body("query { commitments(where: {blockNumber_lte: 123}) { id } }")), true);
+    assert.equal(isImmutableSubsquidRequest("not JSON"), false);
   });
 });
