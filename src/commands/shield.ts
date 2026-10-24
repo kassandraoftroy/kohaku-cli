@@ -13,12 +13,14 @@ import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   parseFromIndex,
+  assertTornadoShieldCalls,
   partitionShieldTxs,
   resolveShieldApprovalCalls,
   resolveShieldSender,
   shieldTransactionConfirmMessage,
   summarizeMultiShieldPlan,
   toShieldTxs,
+  tornadoShieldTargetsLine,
   type PublicAccountWithBalance,
 } from "../lib/shield-flow.js";
 import { parseStealthIndex } from "../lib/stealth/storage.js";
@@ -781,6 +783,15 @@ export function registerShieldCommand(program: Command): void {
             assetFor(amt)
           );
           const rawTxs = toShieldTxs(op);
+          const tornadoTargets =
+            protocol === "tornado"
+              ? assertTornadoShieldCalls(chainId, rawTxs, {
+                  isEth: tokenMeta.isEth,
+                  tokenAddress: tokenMeta.tokenAddress,
+                  symbol: tokenMeta.symbol,
+                  amount: amt,
+                })
+              : undefined;
           let nextApprovals: Array<{ to: string; data: string; value: bigint }> =
             [];
           let nextDeposits: Array<{ to: string; data: string; value: bigint }>;
@@ -801,12 +812,16 @@ export function registerShieldCommand(program: Command): void {
             approvals: nextApprovals,
             shieldTxs: nextDeposits,
             calls: buildShieldCallList(nextApprovals, nextDeposits),
+            targetsLine: tornadoTargets
+              ? `\n  ${tornadoShieldTargetsLine(tornadoTargets, tokenMeta)}`
+              : "",
           };
         };
 
         let shieldTxs: Array<{ to: string; data: string; value: bigint }>;
         let approvals: Array<{ to: string; data: string; value: bigint }> = [];
         let calls: ReturnType<typeof buildShieldCallList>;
+        let targetsLine = "";
         let ppShieldEstimate:
           | {
               fee: bigint;
@@ -831,6 +846,7 @@ export function registerShieldCommand(program: Command): void {
           approvals = prepared.approvals;
           shieldTxs = prepared.shieldTxs;
           calls = prepared.calls;
+          targetsLine = prepared.targetsLine;
 
           if (usedAmountMax && amountMaxEthBalance !== undefined) {
             for (let i = 0; i < 3; i++) {
@@ -889,6 +905,7 @@ export function registerShieldCommand(program: Command): void {
               approvals = next.approvals;
               shieldTxs = next.shieldTxs;
               calls = next.calls;
+              targetsLine = next.targetsLine;
             }
           }
 
@@ -1086,7 +1103,7 @@ export function registerShieldCommand(program: Command): void {
               : "";
           await maybeConfirm(
             !!opts.nonInteractive,
-            `Submit shield of ${amountPreview}${plan} as one EIP-7702 UserOp (${calls.length} calls) from ${senderAddress}?\n  ${feeConfirmLine(fees)}`,
+            `Submit shield of ${amountPreview}${plan} as one EIP-7702 UserOp (${calls.length} calls) from ${senderAddress}?${targetsLine}\n  ${feeConfirmLine(fees)}`,
             txSpinner
           );
 
@@ -1141,7 +1158,7 @@ export function registerShieldCommand(program: Command): void {
               shieldTxs,
               tokenMeta,
               senderAddress,
-            }) + `\n  ${feeConfirmLine(fees)}`,
+            }) + `${targetsLine}\n  ${feeConfirmLine(fees)}`,
             txSpinner
           );
 
