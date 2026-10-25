@@ -1,3 +1,5 @@
+import { assertTornadoUnshieldPoolsDeployed } from "../utils/tornado-unshield-pools.js";
+import { disposePublicClient, makePublicClient, type KohakuPublicClient } from "../utils/rpc.js";
 import { PPv1ExactOutputError } from "@kohaku-eth/privacy-pools";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 
@@ -16,6 +18,7 @@ import {
   type UnshieldTailCall,
 } from "../utils/privacy-pools-paymaster.js";
 import {
+  listTornadoUnspentNotes,
   privateUnshieldAsset,
   railgunUnshieldOptions,
   tornadoUnshieldOptions,
@@ -218,6 +221,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
 
 /** One prepare entry for every protocol. Protocol-specific options stay inside. */
 export async function prepareProtocolUnshield(opts: {
+  client?: KohakuPublicClient;
   protocol: SupportedProtocol;
   plugin: AnyPlugin;
   chainId: bigint;
@@ -248,6 +252,17 @@ export async function prepareProtocolUnshield(opts: {
     opts.amountWei
   );
   if (opts.protocol === "tornado") {
+    const client = opts.client ?? await makePublicClient(opts.rpcUrl);
+    try {
+      await assertTornadoUnshieldPoolsDeployed({
+        client,
+        chainId: opts.chainId,
+        notes: await listTornadoUnspentNotes(opts.plugin, asset.asset),
+        amount: opts.amountWei,
+      });
+    } finally {
+      if (!opts.client) disposePublicClient(client);
+    }
     return prepare(
       asset,
       opts.recipient,

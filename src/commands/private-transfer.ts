@@ -21,6 +21,7 @@ export function registerPrivateTransferCommand(program: Command): void {
       "--to <address>",
       "Final recipient: public address, stealth selector (s0), or name (.eth/.gwei/.wei). Not the EIP-7702 delegator"
     )
+    .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Exact amount the recipient receives, in wei/base units")
     .option(

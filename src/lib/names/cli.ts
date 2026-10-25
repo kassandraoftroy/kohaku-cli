@@ -1,3 +1,4 @@
+import { startActivityLog } from "../../utils/activity-log.js";
 import type { Command } from "commander";
 
 import {
@@ -97,6 +98,7 @@ export async function withNameCommandContext(
   let chainId: bigint;
   try {
     chainId = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
+    startActivityLog({ walletDir, password, chainId, operation: process.argv[2] ?? "name-transaction" });
   } catch (e) {
     cliErrorFromCaught(e);
     return;

@@ -1,3 +1,4 @@
+import { recordSubmission } from "./activity-log.js";
 /**
  * Tornado paymaster broadcast tuned for Tor-proxied Pimlico.
  *
@@ -51,7 +52,7 @@ type PaymasterWithdrawal = {
   userOperation: SerializedUserOperation;
 };
 
-type PaymasterBroadcastResult = { userOpHash: Hash };
+type PaymasterBroadcastResult = { userOpHash: Hash; txHash: Hash };
 
 function errorText(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
@@ -164,11 +165,15 @@ async function broadcastOne(
     entryPoint,
     chainId
   );
-  await client.waitForUserOperationReceipt({
+  const updateActivity = recordSubmission({ userOpHash });
+  const receipt = await client.waitForUserOperationReceipt({
     hash: userOpHash,
     timeout: RECEIPT_WAIT_MS,
   });
-  return { userOpHash };
+  const txHash = receipt.receipt.transactionHash;
+  updateActivity({ txHash, status: receipt.success ? "confirmed" : "reverted" });
+  if (!receipt.success) throw new Error(`User operation reverted: ${userOpHash} (tx ${txHash})`);
+  return { userOpHash, txHash };
 }
 
 /**

@@ -1,3 +1,4 @@
+import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
@@ -150,6 +151,7 @@ export type UnshieldOpts = {
   amountWei?: string;
   amountFormatted?: string;
   amountMax?: boolean;
+  excludeNewPools?: boolean;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -200,6 +202,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         return;
       }
       const protocol = resolvedProtocol.protocol;
+      if (opts.excludeNewPools && protocol !== "tornado") {
+        cliError("--exclude-new-pools is only supported with --protocol tornado.");
+        return;
+      }
 
       let tailCalls: UnshieldTailCall[] = [];
       if (opts.tailCalls !== undefined) {
@@ -310,6 +316,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       let chainId: bigint;
       try {
         chainId = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
+        startActivityLog({ walletDir, password, chainId, operation: opts.privateTransfer ? "private-transfer" : "unshield", protocol });
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -343,6 +350,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             isEth: tokenMeta.isEth,
             tokenAddress: tokenMeta.tokenAddress,
             symbol: tokenMeta.symbol,
+            excludeNewPools: opts.excludeNewPools,
           });
         } catch (e) {
           cliErrorFromCaught(e);
@@ -609,7 +617,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
-        const plugins = await createSchemedPlugins(protocol, host, chainId);
+        let plugins = await createSchemedPlugins(protocol, host, chainId);
         let plugin = plugins.signature;
 
         if (protocol === "railgun") {
@@ -642,6 +650,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             await syncPluginWithProgress(plugins.legacy, protocol);
             if (plugins.signature !== plugins.legacy) {
               await syncPluginWithProgress(plugins.signature, protocol);
+            }
+            if (protocol === "tornado" && opts.excludeNewPools) {
+              plugins = await createSchemedPlugins(protocol, host, chainId, true);
+              plugin = plugins.signature;
             }
             if (protocol === "railgun") {
               const hint = await maxUnshieldAmountHint(
@@ -806,6 +818,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                     tokenAddress: tokenMeta.tokenAddress,
                     symbol: tokenMeta.symbol,
                     decimals: tokenMeta.decimals,
+                    excludeNewPools: opts.excludeNewPools,
                   });
                 }
               } catch (e) {
@@ -896,6 +909,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               tokenAddress: tokenMeta.tokenAddress,
               symbol: tokenMeta.symbol,
               decimals: tokenMeta.decimals,
+              excludeNewPools: opts.excludeNewPools,
             });
           } catch (e) {
             cliErrorFromCaught(e);
@@ -1144,6 +1158,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                 tokenAddress: tokenMeta.tokenAddress,
                 symbol: tokenMeta.symbol,
                 decimals: tokenMeta.decimals,
+                excludeNewPools: opts.excludeNewPools,
               });
               tornadoDelegationConfig({
                 delegationPath: recipientDerivationPath,
@@ -1306,6 +1321,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           { start: prepareLabel, failure: "Prepare failed." },
           () =>
             prepareProtocolUnshield({
+              client: rpcForHost,
               protocol,
               plugin,
               chainId,
@@ -1735,6 +1751,7 @@ export function registerUnshieldCommand(program: Command): void {
       "--next",
       "Unshield to the next fresh public account (persisted only after a successful --broadcast). An index that already has a nonce, balance, or code is saved and skipped."
     )
+    .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")

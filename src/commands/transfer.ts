@@ -1,3 +1,4 @@
+import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
@@ -284,6 +285,7 @@ export function registerTransferCommand(program: Command): void {
       let chainId: bigint;
       try {
         chainId = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
+        startActivityLog({ walletDir, password, chainId, operation: "transfer" });
       } catch (e) {
         cliErrorFromCaught(e);
         return;

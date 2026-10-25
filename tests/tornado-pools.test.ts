@@ -87,7 +87,8 @@ describe("assertTornadoTokenSupported", () => {
 
 describe("tornadoMinDenomination", () => {
   it("returns the smallest catalog denomination for ETH and USDC", () => {
-    assert.equal(tornadoMinDenomination(1n, ETH), ETH_01);
+    assert.equal(tornadoMinDenomination(1n, ETH), ETH_01 / 10n);
+    assert.equal(tornadoMinDenomination(1n, { ...ETH, excludeNewPools: true }), ETH_01);
     assert.equal(tornadoMinDenomination(1n, USDC), USDC_100);
   });
 });
@@ -101,8 +102,8 @@ describe("assertTornadoDepositAmount", () => {
 
   it("rejects amounts that are not a multiple of the smallest pool", () => {
     assert.throws(
-      () => assertTornadoDepositAmount(1n, ETH_01 / 2n, ETH),
-      /exact multiple of 0.1 ETH/
+      () => assertTornadoDepositAmount(1n, ETH_01 / 20n, ETH),
+      /exact multiple of 0.01 ETH/
     );
   });
 
@@ -146,10 +147,10 @@ describe("assertTornadoUnshieldAmountForToken", () => {
     );
   });
 
-  it("rejects a non-multiple of the paymaster-backed minimum", () => {
+  it("rejects a non-multiple of the selected catalog minimum", () => {
     assert.throws(
-      () => assertTornadoUnshieldAmountForToken(1n, ETH_01 / 2n, ETH),
-      /smallest paymaster-backed pool denomination/
+      () => assertTornadoUnshieldAmountForToken(1n, ETH_01 / 20n, ETH),
+      /smallest pool denomination/
     );
   });
 });
@@ -163,5 +164,24 @@ describe("tornadoPaymasterPoolsForAsset", () => {
     for (const p of paymaster) {
       assert.ok(depositAddrs.has(p.poolAddress.toLowerCase()));
     }
+  });
+});
+
+
+describe("extended Tornado pools", () => {
+  it("includes all new denominations on each chain, preserving classic pools", () => {
+    assert.deepEqual(tornadoPoolsForChain(1n).filter((p) => p.isNew).map((p) => p.denomination),
+      [1n, 3n, 30n, 300n, 3000n].map((n) => n * 10n ** 16n));
+    assert.equal(tornadoPoolsForChain(11155111n).filter((p) => p.isNew).length, 6);
+    assert.equal(tornadoPoolsForAsset(1n, { ...ETH, excludeNewPools: true }).length, 4);
+    assert.equal(tornadoPoolsForAsset(11155111n, { ...ETH, excludeNewPools: true }).length, 2);
+    assert.deepEqual(tornadoPoolsForAsset(1n, { ...USDC, excludeNewPools: true }), tornadoPoolsForAsset(1n, USDC));
+  });
+
+  it("accepts 2.45 ETH by default and rejects it with the opt-out", () => {
+    const amount = 245n * 10n ** 16n;
+    assert.doesNotThrow(() => assertTornadoDepositAmount(1n, amount, ETH));
+    assert.throws(() => assertTornadoDepositAmount(1n, amount, { ...ETH, excludeNewPools: true }), /exact multiple of 0.1 ETH/);
+    assert.doesNotThrow(() => assertTornadoDepositAmount(1n, 240n * 10n ** 16n, { ...ETH, excludeNewPools: true }));
   });
 });

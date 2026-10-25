@@ -2,6 +2,8 @@ import "./bigint-json";
 import "./reselect-init";
 
 import { createRequire } from "node:module";
+import { registerRagequitCommand } from "./commands/ragequit.js";
+import { registerActivityCommand } from "./commands/activity.js";
 import { Command } from "commander";
 
 import { registerBalancesCommand } from "./commands/balances";
@@ -44,6 +46,8 @@ async function main(): Promise<void> {
     .description("Kohaku CLI")
     .version(cliVersion);
 
+  registerRagequitCommand(program);
+  registerActivityCommand(program);
   registerCreateWalletCommand(program);
   registerExportPrivateKeyCommand(program);
   registerRevealSeedPhraseCommand(program);

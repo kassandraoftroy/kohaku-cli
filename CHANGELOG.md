@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Tornado shields check every call from the plugin against the static pool catalog before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools.
 
+## [0.0.12] - 2026-10-25
+
+### Added
+
+- Extended Tornado ETH denominations enabled by default. `--exclude-new-pools` on shield, unshield, and private-transfer restricts packing and spending to classic pools while keeping complete pool sync and balances.
+- Encrypted per-wallet CLI transaction history through `activity --wallet`, including submission status, transaction hashes, and UserOp hashes. Dry runs do not log activity.
+- Privacy Pools `ragequit --label` for a full unapproved note exit signed by its original depositor.
+- Tornado unshields and private transfers check every selected pool for configured, deployed, approved paymaster adapters before generating proofs. Unsupported pools produce a clear error.
+
+### Changed
+
+- Privacy Pools SDK to `0.1.0-alpha.31` and Tornado Cash SDK to `0.1.0-alpha.29`.
+- EOA and UserOp broadcasts detect reverted receipts and retain their activity records.
+
 ## [0.0.11] - 2026-10-22
 
 ### Changed

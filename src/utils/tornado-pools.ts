@@ -6,11 +6,12 @@
  *
  * Unshield via paymaster requires each pool in
  * `@kohaku-eth/tornado-cash` `TornadoPaymasterConfigs.poolsAccountsMap`
- * (FeeAdapter). This catalog only lists pools that are both depositable and
- * paymaster-backed.
+ * (FeeAdapter). Classic pools are depositable and paymaster-backed.
+ * Extended ETH pools are available for sync / deposits before their adapters
+ * are deployed. Unshield validates the selected pools before proving.
  */
 import { formatUnits, getAddress, type Address } from "viem";
-import { TornadoPaymasterConfigs } from "@kohaku-eth/tornado-cash";
+import { ExtendedEthPools, TornadoPaymasterConfigs } from "@kohaku-eth/tornado-cash";
 
 export type TornadoSagaPool = {
   poolAddress: Address;
@@ -18,6 +19,8 @@ export type TornadoSagaPool = {
   asset: string;
   decimals: number;
   isERC20: boolean;
+  /** Extended ETH pool introduced in v0.0.12. */
+  isNew?: boolean;
   /** Present for ERC-20 pools; omitted for ETH. */
   assetAddress?: Address;
 };
@@ -184,16 +187,25 @@ function toPool(def: TornadoPoolDef): TornadoSagaPool {
 
 /** All Tornado Cash pools for this chain (static catalog). */
 export function tornadoPoolsForChain(chainId: bigint): TornadoSagaPool[] {
-  if (chainId === 1n) return MAINNET_POOLS.map(toPool);
-  if (chainId === 11155111n) return SEPOLIA_POOLS.map(toPool);
-  return [];
+  const classic = chainId === 1n ? MAINNET_POOLS : chainId === 11155111n ? SEPOLIA_POOLS : [];
+  const addresses = ExtendedEthPools[Number(chainId) as keyof typeof ExtendedEthPools] ?? [];
+  const denominations = chainId === 1n
+    ? [10n ** 16n, 3n * 10n ** 16n, 3n * 10n ** 17n, 3n * 10n ** 18n, 3n * 10n ** 19n]
+    : [10n ** 16n, 3n * 10n ** 16n, 3n * 10n ** 17n, 3n * 10n ** 18n, 10n ** 19n, 3n * 10n ** 19n];
+  return [
+    ...classic.map(toPool),
+    ...addresses.map((address, i) => ({
+      ...toPool({ poolAddress: `0x${address.toString(16).padStart(40, "0")}`, denomination: denominations[i]!, asset: "ETH", decimals: 18 }),
+      isNew: true,
+    })),
+  ];
 }
 
 export function tornadoPoolsForAsset(
   chainId: bigint,
-  opts: { isEth: boolean; tokenAddress?: string }
+  opts: { isEth: boolean; tokenAddress?: string; excludeNewPools?: boolean }
 ): TornadoSagaPool[] {
-  const pools = tornadoPoolsForChain(chainId);
+  const pools = tornadoPoolsForChain(chainId).filter((pool) => !opts.excludeNewPools || !pool.isNew);
   if (opts.isEth) {
     return pools.filter((p) => !p.isERC20);
   }
@@ -210,7 +222,7 @@ export function tornadoPoolsForAsset(
 /** Throws if this ERC-20 (or ETH) has no Tornado pools in the static catalog. */
 export function assertTornadoTokenSupported(
   chainId: bigint,
-  opts: { isEth: boolean; tokenAddress: string; symbol: string }
+  opts: { isEth: boolean; tokenAddress: string; symbol: string; excludeNewPools?: boolean }
 ): TornadoSagaPool[] {
   const pools = tornadoPoolsForAsset(chainId, opts);
   if (pools.length === 0) {
@@ -226,7 +238,7 @@ export function assertTornadoTokenSupported(
 /** Smallest pool denomination for this asset (deposit strategizer step size). */
 export function tornadoMinDenomination(
   chainId: bigint,
-  opts: { isEth: boolean; tokenAddress: string; symbol: string }
+  opts: { isEth: boolean; tokenAddress: string; symbol: string; excludeNewPools?: boolean }
 ): bigint {
   const pools = assertTornadoTokenSupported(chainId, opts);
   return pools.reduce(
@@ -240,8 +252,7 @@ export function tornadoMinDenomination(
  * ERC-20 unshields require the withdrawn asset to be quoteable as `feeToken`.
  */
 export function tornadoPaymasterPoolAddresses(chainId: bigint): Set<string> {
-  const cfg =
-    TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs];
+  const cfg = TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs];
   if (!cfg?.poolsAccountsMap) return new Set();
   return new Set(
     Object.keys(cfg.poolsAccountsMap).map((a) => a.toLowerCase())
@@ -251,7 +262,7 @@ export function tornadoPaymasterPoolAddresses(chainId: bigint): Set<string> {
 /** Deposit catalog ∩ paymaster FeeAdapter map (unshieldable via paymaster). */
 export function tornadoPaymasterPoolsForAsset(
   chainId: bigint,
-  opts: { isEth: boolean; tokenAddress?: string }
+  opts: { isEth: boolean; tokenAddress?: string; excludeNewPools?: boolean }
 ): TornadoSagaPool[] {
   const paymasterPools = tornadoPaymasterPoolAddresses(chainId);
   return tornadoPoolsForAsset(chainId, opts).filter((p) =>
@@ -265,7 +276,7 @@ export function tornadoPaymasterPoolsForAsset(
  */
 export function assertTornadoPaymasterTokenSupported(
   chainId: bigint,
-  opts: { isEth: boolean; tokenAddress: string; symbol: string }
+  opts: { isEth: boolean; tokenAddress: string; symbol: string; excludeNewPools?: boolean }
 ): TornadoSagaPool[] {
   const depositPools = tornadoPoolsForAsset(chainId, opts);
   const paymasterPools = tornadoPaymasterPoolsForAsset(chainId, opts);
@@ -293,6 +304,7 @@ export function assertTornadoDepositAmount(
     tokenAddress: string;
     symbol: string;
     decimals: number;
+    excludeNewPools?: boolean;
   }
 ): void {
   if (amount <= 0n) {
@@ -316,6 +328,7 @@ export function assertTornadoExactPoolDenomination(
     tokenAddress: string;
     symbol: string;
     decimals: number;
+    excludeNewPools?: boolean;
   }
 ): TornadoSagaPool {
   if (amount <= 0n) {
@@ -335,7 +348,7 @@ export function assertTornadoExactPoolDenomination(
   return match[0]!;
 }
 
-/** Like {@link assertTornadoDepositAmount}, but only against paymaster-backed pools. */
+/** Validate amount granularity; selected pools are checked separately before proving. */
 export function assertTornadoUnshieldAmountForToken(
   chainId: bigint,
   amount: bigint,
@@ -344,20 +357,8 @@ export function assertTornadoUnshieldAmountForToken(
     tokenAddress: string;
     symbol: string;
     decimals: number;
+    excludeNewPools?: boolean;
   }
 ): void {
-  if (amount <= 0n) {
-    throw new Error("Amount must be greater than zero.");
-  }
-  const pools = assertTornadoPaymasterTokenSupported(chainId, opts);
-  const min = pools.reduce(
-    (m, p) => (p.denomination < m ? p.denomination : m),
-    pools[0]!.denomination
-  );
-  if (amount % min !== 0n) {
-    const minFmt = formatUnits(min, opts.decimals);
-    throw new Error(
-      `Tornado unshield amount must be a positive exact multiple of ${minFmt} ${opts.symbol} (smallest paymaster-backed pool denomination).`
-    );
-  }
+  assertTornadoDepositAmount(chainId, amount, opts);
 }
