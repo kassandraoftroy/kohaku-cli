@@ -8,7 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Tornado shields check every call from the plugin against the static pool catalog before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools.
+- Tornado shields check every call from the plugin against the installed SDK's static `TornadoInstances` catalog intersected with its paymaster support before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools. Pools without SDK paymaster support, including cDAI, are excluded from both shields and unshields. New denominations are included by default; `--exclude-new-pools` also restricts this call validation.
+
+## [0.0.12] - 2026-10-25
+
+### Added
+
+- Extended Tornado ETH denominations enabled by default. `--exclude-new-pools` on shield, unshield, and private-transfer restricts packing and spending to classic pools while keeping complete pool sync and balances.
+- Encrypted per-wallet CLI transaction history through `activity --wallet`, including submission status, transaction hashes, and UserOp hashes. Dry runs do not log activity.
+- Privacy Pools `ragequit --label` for a full unapproved note exit signed by its original depositor.
+- Tornado unshields and private transfers check every selected pool for SDK support, a deployed paymaster, and on-chain pool allowlisting before generating proofs. Unsupported pools produce a clear error.
+
+### Changed
+
+- Privacy Pools SDK to `0.1.0-alpha.33` and Tornado Cash SDK to `0.1.0-alpha.31`. Tornado uses the new direct-paymaster contracts on mainnet and Sepolia for all classic and extended pools; fee estimates match the new SDK gas budgets.
+- EOA and UserOp broadcasts detect reverted receipts and retain their activity records.
 
 ## [0.0.11] - 2026-10-22
 

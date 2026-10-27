@@ -112,7 +112,7 @@ Choose a public account that has enough balance and review the planned transacti
 kohaku shield --protocol tornado --wallet testWallet --amount-formatted 0.1 --broadcast
 ```
 
-Tornado shields must be exact multiples of 0.1 ETH. Confirm the shield transaction when asked; spinners show mining status.
+Tornado ETH shields accept exact multiples of 0.01 ETH by default, or 0.1 ETH with `--exclude-new-pools`. Confirm the shield transaction when asked; spinners show mining status.
 
 Check balances again — public ETH should drop and the Tornado private balance should show a 0.1 ETH note:
 
@@ -448,7 +448,7 @@ Move funds from a **public** account into a private protocol.
 
 - **privacy-pools** — Any asset the entrypoint has a pool for (mainnet: ETH, USDC, USDT; Sepolia: ETH). Any amount at or above that pool's minimum deposit. The vetting fee is deducted from the deposit and shown in the fee preview.
 - **railgun** — ETH and ERC-20; non-ETH may need an approval. Approval + shield (2+ calls) are submitted as **one EIP-7702 UserOp** via Pimlico.
-- **tornado** — ETH and ERC-20 tokens in the static pool catalog (`src/utils/tornado-pools.ts`; mainnet and Sepolia differ). Amount must be an exact multiple of the smallest pool denomination for that asset. Multi-denomination deposits (and any ERC-20 approvals) are batched into **one EIP-7702 UserOp**. Approvals are aggregated per pool (e.g. 2×1000 + 5×100 → approve 2000 and 500, not seven separate approves).
+- **tornado** — ETH and ERC-20 tokens in the installed SDK's static `TornadoInstances` catalog that also have SDK paymaster support (`src/utils/tornado-pools.ts` adapts it for the CLI; mainnet and Sepolia differ). Amount must be an exact multiple of the smallest pool denomination for that asset. Multi-denomination deposits (and any ERC-20 approvals) are batched into **one EIP-7702 UserOp**. Approvals are aggregated per pool (e.g. 2×1000 + 5×100 → approve 2000 and 500, not seven separate approves).
 
 When a shield needs more than one on-chain call, the CLI uses EIP-7702 Simple7702Account (`0xe6Cae83B…855B`) the same way as `transact-raw`.
 
@@ -481,7 +481,7 @@ Withdraw **private** balance to a **public** address. Railgun, Tornado Cash, and
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount. |
 | `--amount-max` | Maximum spendable amount from one derivation scheme (Railgun: after estimated fees; Privacy Pools: one scheme after its own estimated fees; Tornado: one scheme's unspent notes). |
-| `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the payout. Optional third field is `msg.value` (hex or decimal wei) — **ETH unshields only**; ERC-20 tails cannot include `msg.value`. Tornado ERC-20 tails work for paymaster FeeAdapter tokens (Sepolia: DAI; mainnet: DAI, USDC, USDT, WBTC). Railgun ERC-20 tails work for any shielded token; bundler gas is paid from a separate shielded WETH balance, not from the unshielded asset. Tornado and Privacy Pools tails require `--next`, a **stored** public HD `--to`, or a **stored stealth** `--to` (`sN`). Peeked/custom addresses are not allowed. That account is the EIP-7702 delegator: tail calls run there and leftover funds stay there. Railgun tails require a wallet-controlled recipient (`--next` / HD `--to` / stealth). |
+| `--tail-calls <target:calldata[:value],...>` | Ordered calls appended after the payout. Optional third field is `msg.value` (hex or decimal wei) — **ETH unshields only**; ERC-20 tails cannot include `msg.value`. Tornado ERC-20 tails work for paymaster-supported tokens (Sepolia: DAI; mainnet: DAI, USDC, USDT, WBTC). Railgun ERC-20 tails work for any shielded token; bundler gas is paid from a separate shielded WETH balance, not from the unshielded asset. Tornado and Privacy Pools tails require `--next`, a **stored** public HD `--to`, or a **stored stealth** `--to` (`sN`). Peeked/custom addresses are not allowed. That account is the EIP-7702 delegator: tail calls run there and leftover funds stay there. Railgun tails require a wallet-controlled recipient (`--next` / HD `--to` / stealth). |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol bundler or paymaster. **Omit** to print prepared private operation JSON only. |
 | `--without-tor` | Disable Tor for non-RPC HTTP (default: **Tor on** for all private-protocol network calls). Covers Pimlico (via local reverse proxy), Railgun Subsquid/PPOI, Tornado saga CDN + proving artifacts, Privacy Pools ASP, and other `fetch` traffic. Ethereum RPC stays on clearnet. First Tor bootstrap may take several seconds. Or set `KOHAKU_WITHOUT_TOR=1`. |
@@ -490,7 +490,7 @@ Withdraw **private** balance to a **public** address. Railgun, Tornado Cash, and
 
 **Interactive:** recipient menu (next fresh / custom address / existing public or stealth account) → amount (shows max: the larger single-scheme amount; Railgun and Privacy Pools after estimated fees; Tornado by that scheme's unspent notes) → a warning only when the withdrawal spends legacy notes → prepared op or broadcast confirmation.
 
-**Tornado amounts:** shields must be an exact multiple of the smallest denomination for that asset (ETH: 0.1; DAI Sepolia: 100; etc.). New shields use signature-derived secrets. Existing BIP-32 notes and imported note strings stay spendable as legacy notes. A withdrawal spends one derivation scheme. The balance line names the legacy portion only when it is non-zero, and a warning is printed only when that withdrawal spends legacy notes. Wallets with no legacy notes do not mention derivation schemes. `--amount-max` is the larger single-scheme amount, not the sum of both. Unshield can combine multiple notes of that one scheme in one paymaster UserOp (including ERC-20: fee taken from the first note via `quoteWeiInToken`, remaining notes withdrawn in the execution phase) **only** when the recipient is `--next`, a stored public HD `--to`, or a stored stealth `--to` (`sN`) — otherwise extra notes would land on a note-derived EIP-7702 account this wallet does not store. `--tail-calls` have the same requirement. A custom / peeked `--to` is allowed only for a **single-note** unshield with **no** `--tail-calls` (funds go directly to that address). ERC-20 tails cannot include `msg.value`.
+**Tornado amounts:** shields must be an exact multiple of the smallest denomination for that asset (ETH: 0.01 by default, 0.1 with `--exclude-new-pools`; DAI Sepolia: 100; etc.). New shields use signature-derived secrets. Existing BIP-32 notes and imported note strings stay spendable as legacy notes. A withdrawal spends one derivation scheme. The balance line names the legacy portion only when it is non-zero, and a warning is printed only when that withdrawal spends legacy notes. Wallets with no legacy notes do not mention derivation schemes. `--amount-max` is the larger single-scheme amount, not the sum of both. Unshield can combine multiple notes of that one scheme in one paymaster UserOp (including ERC-20: fee taken from the first note via `quoteWeiInToken`, remaining notes withdrawn in the execution phase) **only** when the recipient is `--next`, a stored public HD `--to`, or a stored stealth `--to` (`sN`) — otherwise extra notes would land on a note-derived EIP-7702 account this wallet does not store. `--tail-calls` have the same requirement. A custom / peeked `--to` is allowed only for a **single-note** unshield with **no** `--tail-calls` (funds go directly to that address). ERC-20 tails cannot include `msg.value`.
 
 **Railgun amounts:** treasury BPS is added on top of the requested amount so the recipient receives that amount exactly. Bundler / privacy-paymaster gas is always paid from **shielded WETH** (you need a WETH note even when unshielding USDC). `--tail-calls` works for ETH and ERC-20; funds already land at `to` via the privacy paymaster (no leftover-forward baking). ERC-20 tails cannot include `msg.value`.
 
@@ -871,3 +871,30 @@ Files include `public-accounts.json`, stealth storage, `rg-storage.json`, `ppv1-
 - **Tornado notes:** Use `export-tornado-note` / `import-tornado-note` to move legacy note secrets between wallets for testing or recovery.
 - **Private key / seed exports:** `export-private-key`, `reveal-seed-phrase`, and `export-tornado-note` print raw secrets to stdout. Avoid terminal logs, shell history, and shared environments.
 - **Agents:** Pass `--non-interactive --password-file … --wallet …` and parse JSON stdout. Set `RPC_URL` in the environment to avoid repeating `--rpc-url`. Secret files must be regular files, cannot be symlinks, and on POSIX must be owned by the current user with mode `0400` or `0600` (`chmod 600`).
+
+
+## New Tornado pools (v0.0.12)
+
+Tornado includes the extended ETH pools by default: 0.01, 0.03, 0.3, 3, and 30 ETH, plus 10 ETH on Sepolia. They may have small anonymity sets. `shield --exclude-new-pools`, `unshield --exclude-new-pools`, and `private-transfer --exclude-new-pools` restrict the operation to classic pools. This flag is Tornado-only. Every command still syncs the complete pool set first; balances, note import/export, and balance sync always include new pools.
+
+The default minimum-fee packing for 2.45 ETH is 2×1 + 0.3 + 0.1 + 0.03 + 2×0.01 ETH. The opt-out rejects 2.45 ETH because classic pools cannot represent it. For 2.4 ETH, default packing is 2×1 + 0.3 + 0.1; classic packing is 2×1 + 4×0.1. `--amount-max` floors to the minimum denomination permitted by the selected policy. Unshield's opt-out excludes new-pool notes from scheme selection, available balance, and maximum amount.
+
+Tornado SDK alpha.31 includes new direct-paymaster deployments for both mainnet and Sepolia, covering every classic and extended ETH pool plus the existing supported token pools. Pools without SDK paymaster support, including cDAI, are excluded from both shields and unshields. Unshields and private transfers support the new denominations by default. Before proving, the CLI checks that each selected pool is supported by the SDK configuration, that the paymaster is deployed, and that its on-chain `instances` allowlist permits the pool. An unsupported or disabled pool produces a clear error. `--exclude-new-pools` still leaves new-pool notes untouched, while balances and sync include all pools.
+
+## Activity
+
+`kohaku activity --wallet my-wallet` shows transactions submitted by this CLI, newest first. Add `--non-interactive` for versioned JSON. It uses the wallet password (`--password-file` is supported) and requires no RPC or protocol sync.
+
+The encrypted local log covers shield, unshield, public/stealth/private transfers, raw transactions, ragequit, and name/profile transactions. Each submission records its operation, protocol when applicable, chain, time, UserOp hash when applicable, and actual transaction hash once a receipt is available. Reverted operations are marked reverted. A receipt timeout leaves the submission recorded as submitted; activity does not poll or refresh its later status. Dry runs and cancelled commands do not create entries. The log starts with v0.0.12 and does not reconstruct earlier transactions or activity from other tools. Back up the wallet's `activity/` directory along with the rest of the wallet.
+
+## Privacy Pools ragequit
+
+Use `ragequit` to recover the full remaining balance of one unapproved Privacy Pools note to its original depositor. The original depositor must sign and hold ETH for gas. Ragequit reveals the link to that deposit. It applies to unapproved notes, including notes awaiting vetting; it is not for a shield transaction that reverted and never created a deposit.
+
+Find the note label in `balances --wallet my-wallet --include privacy-pools --verbose`, then simulate:
+
+```sh
+kohaku ragequit --wallet my-wallet --label NOTE_LABEL --scheme signature
+```
+
+Add `--broadcast` to submit after reviewing the simulation. The sender defaults to the note's depositor; `--from 0`, `--from s0`, or `--from ADDRESS` selects it explicitly. `--from-priv` permits deriving an unsaved HD index. Use `--scheme legacy` for an older BIP-32 note. Approved notes use `unshield` instead.

@@ -10,9 +10,9 @@ const TORNADO_PER_DIRECT_WITHDRAW_GAS = 400_000n;
 const TORNADO_PER_DIRECT_WITHDRAW_GAS_ERC20 = 500_000n;
 
 const TORNADO_PAYMASTER_GAS_UNITS = {
-  preVerificationGas: 80_000n,
+  preVerificationGas: 100_000n,
   verificationGasLimit: 50_000n,
-  paymasterVerificationGasLimit: 350_000n,
+  paymasterVerificationGasLimit: 450_000n,
   paymasterPostOpGasLimit: 50_000n,
 } as const;
 

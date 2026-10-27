@@ -391,8 +391,7 @@ export function configureRailgunForUnshield(
 export function tornadoPaymasterConfig(
   chainId: bigint
 ): Record<number, unknown> | undefined {
-  const staticCfg =
-    TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs];
+  const staticCfg = TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs];
   if (!staticCfg) return undefined;
   return {
     [Number(chainId)]: {
@@ -828,18 +827,20 @@ export type SchemedPlugins = {
 export async function createSchemedPlugins(
   protocol: SupportedProtocol,
   host: Host,
-  chainId: bigint
+  chainId: bigint,
+  excludeNewPools = false
 ): Promise<SchemedPlugins> {
   if (protocol === "railgun") {
     const plugin = await createProtocolPlugin(protocol, host, chainId, "legacy");
     return { legacy: plugin, signature: plugin };
   }
-  const legacy = await createProtocolPlugin(protocol, host, chainId, "legacy");
+  const legacy = await createProtocolPlugin(protocol, host, chainId, "legacy", excludeNewPools);
   const signature = await createProtocolPlugin(
     protocol,
     hostForScheme(host, "signature"),
     chainId,
-    "signature"
+    "signature",
+    excludeNewPools
   );
   return { legacy, signature };
 }
@@ -848,7 +849,8 @@ export async function createProtocolPlugin(
   protocol: SupportedProtocol,
   host: Host,
   chainId: bigint,
-  scheme: NoteDerivation = "legacy"
+  scheme: NoteDerivation = "legacy",
+  excludeNewPools = false
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
     return (await createRailgunPlugin(
@@ -868,6 +870,7 @@ export async function createProtocolPlugin(
     return createTCPlugin(host, {
       accountIndex: 0,
       protocolConfig: config,
+      useExtendedEthPools: !excludeNewPools,
       minExternalSyncBlocksAmount: TORNADO_MIN_EXTERNAL_SYNC_BLOCKS,
       artifactsLoader: makeTornadoArtifactsLoader(),
       secretManagerFactory: (params) => tornadoSchemeSecretManager(scheme, params),

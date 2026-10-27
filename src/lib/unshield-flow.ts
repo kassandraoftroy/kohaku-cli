@@ -1,3 +1,4 @@
+import { recordSubmission } from "../utils/activity-log.js";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import { formatUnits, parseUnits } from "viem";
 
@@ -236,6 +237,7 @@ type RailgunBroadcastPlugin = {
   broadcast: (op: unknown) => Promise<void>;
   bundler?: {
     sendUserOperation: (...args: unknown[]) => Promise<unknown>;
+    waitForReceipt?: (...args: unknown[]) => Promise<unknown>;
   };
 };
 
@@ -243,9 +245,11 @@ type RailgunBroadcastPlugin = {
 async function broadcastRailgunOp(
   plugin: unknown,
   operation: unknown
-): Promise<{ userOpHash: string } | undefined> {
+): Promise<{ userOpHash: string; txHash?: string } | undefined> {
   const rg = plugin as RailgunBroadcastPlugin;
   let userOpHash: string | undefined;
+  let txHash: string | undefined;
+  let updateActivity: ReturnType<typeof recordSubmission> | undefined;
   const bundler = rg.bundler;
   let restoreSend: (() => void) | undefined;
 
@@ -255,11 +259,23 @@ async function broadcastRailgunOp(
       const result = await original(...args);
       if (typeof result === "string" && /^0x[a-fA-F0-9]{64}$/.test(result)) {
         userOpHash = result;
+        updateActivity = recordSubmission({ userOpHash });
       }
       return result;
     };
+    const originalWait = bundler.waitForReceipt?.bind(bundler);
+    if (originalWait) {
+      bundler.waitForReceipt = async (...args: unknown[]) => {
+        const receipt = await originalWait(...args) as { success?: boolean; receipt?: { transactionHash?: string } };
+        txHash = receipt.receipt?.transactionHash;
+        updateActivity?.({ txHash, status: receipt.success === false ? "reverted" : "confirmed" });
+        if (receipt.success === false) throw new Error(`User operation reverted: ${userOpHash}`);
+        return receipt;
+      };
+    }
     restoreSend = () => {
       bundler.sendUserOperation = original;
+      if (originalWait) bundler.waitForReceipt = originalWait;
     };
   }
 
@@ -269,7 +285,7 @@ async function broadcastRailgunOp(
     restoreSend?.();
   }
 
-  return userOpHash ? { userOpHash } : undefined;
+  return userOpHash ? { userOpHash, ...(txHash ? { txHash } : {}) } : undefined;
 }
 
 

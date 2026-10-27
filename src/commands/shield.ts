@@ -1,3 +1,4 @@
+import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
@@ -118,6 +119,7 @@ type ShieldOpts = {
   amountWei?: string;
   amountFormatted?: string;
   amountMax?: boolean;
+  excludeNewPools?: boolean;
   rpcUrl?: string;
   baseFeeGwei?: string;
   priorityFeeGwei?: string;
@@ -311,6 +313,7 @@ export function registerShieldCommand(program: Command): void {
       "--skip-sim",
       "Skip on-chain simulation and fee estimates (dry-run only; not allowed with --broadcast)"
     )
+    .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
@@ -335,6 +338,10 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
       const protocol = resolvedProtocol.protocol;
+      if (opts.excludeNewPools && protocol !== "tornado") {
+        cliError("--exclude-new-pools is only supported with --protocol tornado.");
+        return;
+      }
 
       const amountFlags = [
         opts.amountWei,
@@ -392,6 +399,7 @@ export function registerShieldCommand(program: Command): void {
       let chainId: bigint;
       try {
         chainId = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
+        startActivityLog({ walletDir, password, chainId, operation: "shield", protocol });
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -438,6 +446,7 @@ export function registerShieldCommand(program: Command): void {
             isEth: tokenMeta.isEth,
             tokenAddress: tokenMeta.tokenAddress,
             symbol: tokenMeta.symbol,
+            excludeNewPools: opts.excludeNewPools,
           });
         } catch (e) {
           cliErrorFromCaught(e);
@@ -463,6 +472,7 @@ export function registerShieldCommand(program: Command): void {
               tokenAddress: tokenMeta.tokenAddress,
               symbol: tokenMeta.symbol,
               decimals: tokenMeta.decimals,
+              excludeNewPools: opts.excludeNewPools,
             });
           } else {
             assertPpDepositAmount(amount);
@@ -518,6 +528,7 @@ export function registerShieldCommand(program: Command): void {
                   isEth: tokenMeta.isEth,
                   tokenAddress: tokenMeta.tokenAddress,
                   symbol: tokenMeta.symbol,
+                  excludeNewPools: opts.excludeNewPools,
                 })
               : undefined;
           const { amount: maxAmount } = computeShieldMaxAmount({
@@ -613,6 +624,7 @@ export function registerShieldCommand(program: Command): void {
                     tokenAddress: tokenMeta.tokenAddress,
                     symbol: tokenMeta.symbol,
                     decimals: tokenMeta.decimals,
+                    excludeNewPools: opts.excludeNewPools,
                   });
                 }
                 assertPpDepositAmount(parsed);
@@ -644,6 +656,7 @@ export function registerShieldCommand(program: Command): void {
                 tokenAddress: tokenMeta.tokenAddress,
                 symbol: tokenMeta.symbol,
                 decimals: tokenMeta.decimals,
+                excludeNewPools: opts.excludeNewPools,
               });
             }
             assertPpDepositAmount(amount);
@@ -751,7 +764,7 @@ export function registerShieldCommand(program: Command): void {
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
-        const plugin = await createProtocolPlugin(
+        let plugin = await createProtocolPlugin(
           protocol,
           host,
           chainId,
@@ -790,6 +803,7 @@ export function registerShieldCommand(program: Command): void {
                   tokenAddress: tokenMeta.tokenAddress,
                   symbol: tokenMeta.symbol,
                   amount: amt,
+                  excludeNewPools: opts.excludeNewPools,
                 })
               : undefined;
           let nextApprovals: Array<{ to: string; data: string; value: bigint }> =
@@ -839,6 +853,11 @@ export function registerShieldCommand(program: Command): void {
             },
             async () => {
               await syncPluginWithProgress(plugin, protocol);
+              // Sync every pool first, then restrict operation selection on a fresh
+              // instance loaded from the fully synced store. Never narrow the saved catalog.
+              if (protocol === "tornado" && opts.excludeNewPools) {
+                plugin = await createProtocolPlugin(protocol, host, chainId, "signature", true);
+              }
               return prepareShieldCalls(amount!);
             }
           );

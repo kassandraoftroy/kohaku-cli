@@ -276,14 +276,14 @@ const TORNADO_DEPOSIT_SELECTOR = "0xb214faa5"; // deposit(bytes32)
 export type TornadoShieldTarget = { pool: TornadoSagaPool; count: number };
 
 /**
- * Checks Tornado prepareShield() calls against the static pool catalog before anything
- * is signed. The plugin reads pool addresses from the RPC, so an unchecked call list can
- * deposit to, or approve, whatever address the RPC names.
+ * Independently validates prepared Tornado calls against the SDK's static catalog
+ * before estimating or signing. Returned calls must still match the requested
+ * asset, amount, and pool policy, even if the plugin or RPC returns a bad plan.
  */
 export function assertTornadoShieldCalls(
   chainId: bigint,
   txs: ShieldCall[],
-  opts: { isEth: boolean; tokenAddress: string; symbol: string; amount: bigint }
+  opts: { isEth: boolean; tokenAddress: string; symbol: string; amount: bigint; excludeNewPools?: boolean }
 ): TornadoShieldTarget[] {
   const pools = new Map(
     tornadoPoolsForAsset(chainId, opts).map((p) => [p.poolAddress, p])

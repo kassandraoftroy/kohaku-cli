@@ -1,3 +1,4 @@
+import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, select } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
 import chalk from "chalk";
@@ -294,6 +295,7 @@ export function registerTransactRawCommand(program: Command): void {
       let chainId: bigint;
       try {
         chainId = await getRpcChainIdMatchingWallet(rpcUrl, walletDir);
+        startActivityLog({ walletDir, password, chainId, operation: "transact-raw" });
       } catch (e) {
         cliErrorFromCaught(e);
         return;

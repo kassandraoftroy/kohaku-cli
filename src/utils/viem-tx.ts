@@ -1,3 +1,4 @@
+import { recordSubmission } from "./activity-log.js";
 import {
   createWalletClient,
   encodeFunctionData,
@@ -96,6 +97,9 @@ export async function sendTransactionAndWait(
       ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas }
       : {}),
   });
-  await publicClient.waitForTransactionReceipt({ hash });
+  const updateActivity = recordSubmission({ txHash: hash });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  updateActivity({ status: receipt.status === "reverted" ? "reverted" : "confirmed" });
+  if (receipt.status === "reverted") throw new Error(`Transaction reverted: ${hash}`);
   return hash;
 }

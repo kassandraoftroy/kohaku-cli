@@ -1,3 +1,4 @@
+import { recordSubmission } from "./activity-log.js";
 /**
  * Batch multiple calls into one ERC-4337 UserOperation via EIP-7702 delegation
  * to Simple7702Account, submitted through Pimlico's public bundler (via Tor by
@@ -300,11 +301,14 @@ export async function sendEip7702BatchUserOperation(
         ...(authorization ? { authorization } : {}),
       });
 
+      const updateActivity = recordSubmission({ userOpHash });
       const receipt = await bundlerClient.waitForUserOperationReceipt({
         hash: userOpHash,
         timeout: RECEIPT_WAIT_MS,
       });
 
+      updateActivity({ txHash: receipt.receipt.transactionHash, status: receipt.success ? "confirmed" : "reverted" });
+      if (!receipt.success) throw new Error(`User operation reverted: ${userOpHash} (tx ${receipt.receipt.transactionHash})`);
       return {
         userOpHash,
         txHash: receipt.receipt.transactionHash,

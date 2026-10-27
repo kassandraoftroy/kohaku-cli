@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { TornadoInstances, TornadoPaymasterConfigs, extendedEthPoolSet } from "@kohaku-eth/tornado-cash";
 
 import {
   assertTornadoDepositAmount,
   assertTornadoExactPoolDenomination,
   assertTornadoTokenSupported,
+  assertTornadoPaymasterTokenSupported,
   assertTornadoUnshieldAmountForToken,
   tornadoMinDenomination,
   tornadoPaymasterPoolsForAsset,
@@ -87,7 +89,8 @@ describe("assertTornadoTokenSupported", () => {
 
 describe("tornadoMinDenomination", () => {
   it("returns the smallest catalog denomination for ETH and USDC", () => {
-    assert.equal(tornadoMinDenomination(1n, ETH), ETH_01);
+    assert.equal(tornadoMinDenomination(1n, ETH), ETH_01 / 10n);
+    assert.equal(tornadoMinDenomination(1n, { ...ETH, excludeNewPools: true }), ETH_01);
     assert.equal(tornadoMinDenomination(1n, USDC), USDC_100);
   });
 });
@@ -101,8 +104,8 @@ describe("assertTornadoDepositAmount", () => {
 
   it("rejects amounts that are not a multiple of the smallest pool", () => {
     assert.throws(
-      () => assertTornadoDepositAmount(1n, ETH_01 / 2n, ETH),
-      /exact multiple of 0.1 ETH/
+      () => assertTornadoDepositAmount(1n, ETH_01 / 20n, ETH),
+      /exact multiple of 0.01 ETH/
     );
   });
 
@@ -146,10 +149,10 @@ describe("assertTornadoUnshieldAmountForToken", () => {
     );
   });
 
-  it("rejects a non-multiple of the paymaster-backed minimum", () => {
+  it("rejects a non-multiple of the selected catalog minimum", () => {
     assert.throws(
-      () => assertTornadoUnshieldAmountForToken(1n, ETH_01 / 2n, ETH),
-      /smallest paymaster-backed pool denomination/
+      () => assertTornadoUnshieldAmountForToken(1n, ETH_01 / 20n, ETH),
+      /smallest pool denomination/
     );
   });
 });
@@ -164,4 +167,63 @@ describe("tornadoPaymasterPoolsForAsset", () => {
       assert.ok(depositAddrs.has(p.poolAddress.toLowerCase()));
     }
   });
+});
+
+
+describe("extended Tornado pools", () => {
+  it("includes all new denominations on each chain, preserving classic pools", () => {
+    assert.deepEqual(tornadoPoolsForChain(1n).filter((p) => p.isNew).map((p) => p.denomination),
+      [1n, 3n, 30n, 300n, 3000n].map((n) => n * 10n ** 16n));
+    assert.equal(tornadoPoolsForChain(11155111n).filter((p) => p.isNew).length, 6);
+    assert.equal(tornadoPoolsForAsset(1n, { ...ETH, excludeNewPools: true }).length, 4);
+    assert.equal(tornadoPoolsForAsset(11155111n, { ...ETH, excludeNewPools: true }).length, 2);
+    assert.deepEqual(tornadoPoolsForAsset(1n, { ...USDC, excludeNewPools: true }), tornadoPoolsForAsset(1n, USDC));
+  });
+
+  it("accepts 2.45 ETH by default and rejects it with the opt-out", () => {
+    const amount = 245n * 10n ** 16n;
+    assert.doesNotThrow(() => assertTornadoDepositAmount(1n, amount, ETH));
+    assert.throws(() => assertTornadoDepositAmount(1n, amount, { ...ETH, excludeNewPools: true }), /exact multiple of 0.1 ETH/);
+    assert.doesNotThrow(() => assertTornadoDepositAmount(1n, 240n * 10n ** 16n, { ...ETH, excludeNewPools: true }));
+  });
+});
+
+
+describe("SDK catalog parity", () => {
+  it("preserves metadata for exactly the paymaster-supported SDK pools", () => {
+    for (const chainId of [1, 11155111] as const) {
+      const pools = tornadoPoolsForChain(BigInt(chainId));
+      const supported = new Set(TornadoPaymasterConfigs[chainId].supportedPools.map(BigInt));
+      const expected = TornadoInstances[chainId].filter((instance) => supported.has(instance.address));
+      assert.equal(pools.length, expected.length);
+      const extended = extendedEthPoolSet(BigInt(chainId));
+      for (const instance of TornadoInstances[chainId]) {
+        const pool = pools.find((pool) => BigInt(pool.poolAddress) === instance.address)!;
+        if (!supported.has(instance.address)) {
+          assert.equal(pool, undefined);
+          continue;
+        }
+        assert.ok(pool);
+        assert.equal(pool.denomination, instance.denomination);
+        assert.equal(pool.asset, instance.symbol);
+        assert.equal(pool.decimals, instance.decimals);
+        assert.equal(pool.isERC20, instance.asset !== 0n);
+        assert.equal(pool.assetAddress ? BigInt(pool.assetAddress) : 0n, instance.asset);
+        assert.equal(!!pool.isNew, extended.has(instance.address));
+      }
+    }
+  });
+});
+
+it("rejects cDAI for both shields and unshields", () => {
+  const instances = TornadoInstances[1].filter((instance) => instance.symbol === "cDAI");
+  assert.equal(instances.length, 4);
+  for (const instance of instances) {
+    for (const excludeNewPools of [false, true]) {
+      const opts = { isEth: false, tokenAddress: `0x${instance.asset.toString(16).padStart(40, "0")}`, symbol: "cDAI", excludeNewPools };
+      assert.deepEqual(tornadoPoolsForAsset(1n, opts), []);
+      assert.throws(() => assertTornadoTokenSupported(1n, opts), /not in the Tornado Cash pool catalog/);
+      assert.throws(() => assertTornadoPaymasterTokenSupported(1n, opts), /not in the Tornado Cash pool catalog/);
+    }
+  }
 });
