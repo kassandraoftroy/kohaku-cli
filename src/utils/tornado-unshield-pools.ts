@@ -4,9 +4,8 @@ import type { KohakuPublicClient } from "./rpc.js";
 import { tornadoPoolsForChain } from "./tornado-pools.js";
 
 export type TornadoWithdrawalNote = Pick<TCNote, "pool" | "amount" | "balance">;
-type PaymasterPool = { pool: Address; adapter: Address };
 const PAYMASTER_ABI = parseAbi([
-  "function approvedAdapters(address adapter) view returns (bool)",
+  "function instances(address instance) view returns (bool allowed, address token)",
 ]);
 
 /** Match the SDK's largest-denomination-first selection without overshooting. */
@@ -33,28 +32,26 @@ export function tornadoSelectedPaymasterPools(
   chainId: bigint,
   notes: readonly TornadoWithdrawalNote[],
   amount: bigint,
-  poolsAccountsMap: Readonly<Record<string, string>> =
-    TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs]?.poolsAccountsMap ?? {}
-): PaymasterPool[] {
-  const adapters = new Map(Object.entries(poolsAccountsMap).map(([pool, adapter]) =>
-    [BigInt(pool), adapter] as const));
+  supportedPools: readonly string[] =
+    TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs]?.supportedPools ?? []
+): Address[] {
+  const supported = new Set(supportedPools.map((pool) => BigInt(pool)));
   const selected = selectTornadoWithdrawalNotes(notes, amount);
-  const pools = new Map<bigint, PaymasterPool>();
+  const pools = new Set<Address>();
   for (const note of selected) {
     const pool = getAddress(`0x${note.pool.toString(16).padStart(40, "0")}`);
-    const adapter = adapters.get(note.pool);
-    if (!adapter || BigInt(adapter) === 0n) {
+    if (!supported.has(note.pool)) {
       const meta = tornadoPoolsForChain(chainId).find((p) => BigInt(p.poolAddress) === note.pool);
       const label = meta ? ` (${formatUnits(note.amount, meta.decimals)} ${meta.asset})` : "";
       throw new Error(
-        `Tornado pool ${pool}${label} has no paymaster FeeAdapter configured on chain ${chainId}. ` +
-        "This unshield cannot proceed until a supported adapter is deployed and configured." +
+        `Tornado pool ${pool}${label} has no paymaster support configured on chain ${chainId}. ` +
+        "This unshield cannot proceed until a supported deployment is configured." +
         (meta?.isNew ? " Use --exclude-new-pools to spend only classic-pool notes." : "")
       );
     }
-    pools.set(note.pool, { pool, adapter: getAddress(adapter) });
+    pools.add(pool);
   }
-  return [...pools.values()];
+  return [...pools];
 }
 
 export async function assertTornadoUnshieldPoolsDeployed(opts: {
@@ -63,7 +60,7 @@ export async function assertTornadoUnshieldPoolsDeployed(opts: {
   notes: readonly TornadoWithdrawalNote[];
   amount: bigint;
 }): Promise<void> {
-  // Fail on missing map entries before doing any network requests or proving.
+  // Fail on unsupported pools before doing any network requests or proving.
   const pools = tornadoSelectedPaymasterPools(opts.chainId, opts.notes, opts.amount);
   const config = TornadoPaymasterConfigs[Number(opts.chainId) as keyof typeof TornadoPaymasterConfigs];
   if (!config) throw new Error(`Tornado paymaster is not configured on chain ${opts.chainId}.`);
@@ -72,19 +69,15 @@ export async function assertTornadoUnshieldPoolsDeployed(opts: {
   if (!code || code === "0x") {
     throw new Error(`Tornado paymaster ${paymaster} is not deployed on chain ${opts.chainId}.`);
   }
-  await Promise.all(pools.map(async ({ pool, adapter }) => {
-    const adapterCode = await opts.client.getCode({ address: adapter });
-    if (!adapterCode || adapterCode === "0x") {
-      throw new Error(`Tornado pool ${pool} has no deployed paymaster FeeAdapter at ${adapter} on chain ${opts.chainId}.`);
-    }
-    const approved = await opts.client.readContract({
+  await Promise.all(pools.map(async (pool) => {
+    const [allowed] = await opts.client.readContract({
       address: paymaster,
       abi: PAYMASTER_ABI,
-      functionName: "approvedAdapters",
-      args: [adapter],
+      functionName: "instances",
+      args: [pool],
     });
-    if (!approved) {
-      throw new Error(`Tornado pool ${pool} has a FeeAdapter (${adapter}) that is not approved by paymaster ${paymaster}.`);
+    if (!allowed) {
+      throw new Error(`Tornado pool ${pool} is not allowlisted by paymaster ${paymaster} on chain ${opts.chainId}.`);
     }
   }));
 }

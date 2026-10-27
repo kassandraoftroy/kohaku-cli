@@ -5,10 +5,9 @@
  * Keep in sync when new pools are added; do not fetch at runtime.
  *
  * Unshield via paymaster requires each pool in
- * `@kohaku-eth/tornado-cash` `TornadoPaymasterConfigs.poolsAccountsMap`
- * (FeeAdapter). Classic pools are depositable and paymaster-backed.
- * Extended ETH pools are available for sync / deposits before their adapters
- * are deployed. Unshield validates the selected pools before proving.
+ * `@kohaku-eth/tornado-cash` `TornadoPaymasterConfigs.supportedPools`
+ * (direct TornadoPaymaster allowlist). Both classic and extended pools are
+ * supported. Unshield validates selected pools on-chain before proving.
  */
 import { formatUnits, getAddress, type Address } from "viem";
 import { ExtendedEthPools, TornadoPaymasterConfigs } from "@kohaku-eth/tornado-cash";
@@ -248,18 +247,18 @@ export function tornadoMinDenomination(
 }
 
 /**
- * Pool addresses the on-chain Tornado paymaster can sponsor (FeeAdapter map).
+ * Pool addresses the direct Tornado paymaster can sponsor (SDK allowlist).
  * ERC-20 unshields require the withdrawn asset to be quoteable as `feeToken`.
  */
 export function tornadoPaymasterPoolAddresses(chainId: bigint): Set<string> {
   const cfg = TornadoPaymasterConfigs[Number(chainId) as keyof typeof TornadoPaymasterConfigs];
-  if (!cfg?.poolsAccountsMap) return new Set();
+  if (!cfg?.supportedPools) return new Set();
   return new Set(
-    Object.keys(cfg.poolsAccountsMap).map((a) => a.toLowerCase())
+    cfg.supportedPools.map((a) => a.toLowerCase())
   );
 }
 
-/** Deposit catalog ∩ paymaster FeeAdapter map (unshieldable via paymaster). */
+/** Deposit catalog ∩ paymaster pool allowlist (unshieldable via paymaster). */
 export function tornadoPaymasterPoolsForAsset(
   chainId: bigint,
   opts: { isEth: boolean; tokenAddress?: string; excludeNewPools?: boolean }
@@ -271,7 +270,7 @@ export function tornadoPaymasterPoolsForAsset(
 }
 
 /**
- * Unshield via paymaster: token must have at least one pool with a FeeAdapter
+ * Unshield via paymaster: token must have at least one allowlisted pool
  * so the paymaster can take fees in that asset (`quoteWeiInToken`).
  */
 export function assertTornadoPaymasterTokenSupported(
@@ -285,8 +284,8 @@ export function assertTornadoPaymasterTokenSupported(
   if (depositPools.length > 0) {
     throw new Error(
       opts.isEth
-        ? `Tornado Cash ETH pools exist on chainId ${chainId.toString()}, but none have a paymaster FeeAdapter configured.`
-        : `Token ${opts.symbol} can be shielded into Tornado on chainId ${chainId.toString()}, but the paymaster has no FeeAdapter for it (cannot take ${opts.symbol} as feeToken). Unshield via paymaster is unsupported for this asset.`
+        ? `Tornado Cash ETH pools exist on chainId ${chainId.toString()}, but none are configured for the Tornado paymaster.`
+        : `Token ${opts.symbol} can be shielded into Tornado on chainId ${chainId.toString()}, but the paymaster has no supported pool for it (cannot take ${opts.symbol} as feeToken). Unshield via paymaster is unsupported for this asset.`
     );
   }
   return assertTornadoTokenSupported(chainId, opts);

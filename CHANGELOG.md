@@ -17,11 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Extended Tornado ETH denominations enabled by default. `--exclude-new-pools` on shield, unshield, and private-transfer restricts packing and spending to classic pools while keeping complete pool sync and balances.
 - Encrypted per-wallet CLI transaction history through `activity --wallet`, including submission status, transaction hashes, and UserOp hashes. Dry runs do not log activity.
 - Privacy Pools `ragequit --label` for a full unapproved note exit signed by its original depositor.
-- Tornado unshields and private transfers check every selected pool for configured, deployed, approved paymaster adapters before generating proofs. Unsupported pools produce a clear error.
+- Tornado unshields and private transfers check every selected pool for SDK support, a deployed paymaster, and on-chain pool allowlisting before generating proofs. Unsupported pools produce a clear error.
 
 ### Changed
 
-- Privacy Pools SDK to `0.1.0-alpha.31` and Tornado Cash SDK to `0.1.0-alpha.29`.
+- Privacy Pools SDK to `0.1.0-alpha.33` and Tornado Cash SDK to `0.1.0-alpha.31`. Tornado uses the new direct-paymaster contracts on mainnet and Sepolia for all classic and extended pools; fee estimates match the new SDK gas budgets.
 - EOA and UserOp broadcasts detect reverted receipts and retain their activity records.
 
 ## [0.0.11] - 2026-10-22

@@ -34,22 +34,22 @@ describe("tornadoWithdrawalCallGasLimit", () => {
 
 describe("estimateTornadoPaymasterFee", () => {
   it("applies the SDK 1.2× safety margin to ETH withdrawal gas", () => {
-    // 50k + 300k + 350k + 80k + 50k = 830k
-    assert.equal(estimateTornadoPaymasterFee(1n), (830_000n * 12n) / 10n);
+    // 50k + 300k + 450k + 100k + 50k = 950k
+    assert.equal(estimateTornadoPaymasterFee(1n), (950_000n * 12n) / 10n);
   });
 
   it("adds ERC-20 transfer gas onto paymaster verification", () => {
-    // 50k + 300k + 450k + 80k + 50k = 930k
+    // 50k + 300k + 550k + 100k + 50k = 1050k
     assert.equal(
       estimateTornadoPaymasterFee(1n, { isERC20: true }),
-      (930_000n * 12n) / 10n
+      (1_050_000n * 12n) / 10n
     );
   });
 
   it("uses an explicit callGasLimit when provided", () => {
     assert.equal(
       estimateTornadoPaymasterFee(1n, { callGasLimit: 1_000_000n }),
-      ((50_000n + 1_000_000n + 350_000n + 80_000n + 50_000n) * 12n) / 10n
+      ((50_000n + 1_000_000n + 450_000n + 100_000n + 50_000n) * 12n) / 10n
     );
   });
 });

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { TORNADO_CIRCUIT_SHA256, TORNADO_PROVING_KEY_SHA256 } from "@kohaku-eth/tornado-cash";
 import { describe, it } from "node:test";
 
 import {
@@ -52,6 +54,19 @@ describe("packaged artifacts", () => {
     }
     const circuit = readPackagedArtifact("tornado/tornado.json");
     assert.equal(circuit!.subarray(0, 1).toString(), "{");
+  });
+});
+
+describe("Tornado SDK artifact integrity", () => {
+  it("packaged circuit and proving key match the SDK's pinned hashes", () => {
+    for (const [key, expected] of [
+      ["tornado/tornado.json", TORNADO_CIRCUIT_SHA256],
+      ["tornado/tornadoProvingKey.bin", TORNADO_PROVING_KEY_SHA256],
+    ]) {
+      const bytes = readPackagedArtifact(key);
+      assert.ok(bytes, `missing packaged artifact ${key}`);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), expected, key);
+    }
   });
 });
 

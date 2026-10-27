@@ -6,28 +6,29 @@ import {
   selectTornadoWithdrawalNotes,
   tornadoSelectedPaymasterPools,
 } from "../src/utils/tornado-unshield-pools.js";
-import { tornadoPoolsForChain } from "../src/utils/tornado-pools.js";
+import { tornadoPaymasterPoolsForAsset, tornadoPoolsForChain } from "../src/utils/tornado-pools.js";
 import { prepareProtocolUnshield } from "../src/lib/privacy-pools-unshield.js";
+import { tornadoPaymasterAddress } from "../src/utils/tornado-paymaster-quote.js";
+import { tornadoPaymasterConfig } from "../src/utils/plugins.js";
 
-const catalog = tornadoPoolsForChain(1n).filter((pool) => !pool.isERC20);
-const note = (denomination: bigint, balance = denomination) => ({
-  pool: BigInt(catalog.find((pool) => pool.denomination === denomination)!.poolAddress),
-  amount: denomination,
-  balance,
-});
 const eth = 10n ** 18n;
+function note(denomination: bigint, balance = denomination, chainId = 1n) {
+  const pool = tornadoPoolsForChain(chainId).find((pool) => !pool.isERC20 && pool.denomination === denomination)!;
+  return { pool: BigInt(pool.poolAddress), amount: denomination, balance };
+}
 const one = note(eth);
 const tenth = note(eth / 10n);
 const threeTenths = note(3n * eth / 10n);
 const hundredth = note(eth / 100n);
+const unknown = { pool: 0xdeadn, amount: eth / 100n, balance: eth / 100n };
 
-function client(options: { paymasterCode?: string; adapterCode?: string; approved?: boolean } = {}) {
+function client(options: { paymasterCode?: string; allowed?: boolean; check?: (request: any) => void } = {}) {
   return {
-    getCode: async ({ address }: { address: string }) =>
-      address.toLowerCase() === TornadoPaymasterConfigs[1].paymasterAddress.toLowerCase()
-        ? options.paymasterCode ?? "0x1234"
-        : options.adapterCode ?? "0x1234",
-    readContract: async () => options.approved ?? true,
+    getCode: async () => options.paymasterCode ?? "0x1234",
+    readContract: async (request: unknown) => {
+      options.check?.(request);
+      return [options.allowed ?? true, "0x0000000000000000000000000000000000000000"];
+    },
   } as never;
 }
 
@@ -40,53 +41,83 @@ test("selection matches largest-first exact packing and ignores spent or oversiz
   assert.throws(() => selectTornadoWithdrawalNotes([one], eth / 10n), /compose/);
 });
 
-test("a classic withdrawal succeeds even when the wallet also holds unsupported new-pool notes", async () => {
-  assert.equal(tornadoSelectedPaymasterPools(1n, [hundredth, threeTenths, one], eth).length, 1);
-  await assertTornadoUnshieldPoolsDeployed({ client: client(), chainId: 1n, notes: [hundredth, one], amount: eth });
-});
+for (const chainId of [1, 11155111] as const) {
+  test(`all classic and extended pools use the direct paymaster on chain ${chainId}`, async () => {
+    const config = TornadoPaymasterConfigs[chainId];
+    const pools = tornadoPoolsForChain(BigInt(chainId));
+    assert.equal(tornadoPaymasterPoolsForAsset(BigInt(chainId), { isEth: true }).length,
+      pools.filter((pool) => !pool.isERC20).length);
+    const pluginConfig = tornadoPaymasterConfig(BigInt(chainId)) as Record<number, typeof config>;
+    assert.equal(pluginConfig[chainId].paymasterAddress, config.paymasterAddress);
+    assert.equal(tornadoPaymasterAddress(BigInt(chainId)), config.paymasterAddress);
+    for (const pool of pools) {
+      const poolNote = { pool: BigInt(pool.poolAddress), amount: pool.denomination, balance: pool.denomination };
+      assert.deepEqual(tornadoSelectedPaymasterPools(BigInt(chainId), [poolNote], pool.denomination), [pool.poolAddress]);
+      await assertTornadoUnshieldPoolsDeployed({
+        client: client({ check: (request) => {
+          assert.equal(request.address.toLowerCase(), config.paymasterAddress.toLowerCase());
+          assert.equal(request.functionName, "instances");
+          assert.deepEqual(request.args, [pool.poolAddress]);
+        } }),
+        chainId: BigInt(chainId), notes: [poolNote], amount: pool.denomination,
+      });
+    }
+    const classic = tornadoPaymasterPoolsForAsset(BigInt(chainId), { isEth: true, excludeNewPools: true });
+    assert.ok(classic.every((pool) => !pool.isNew));
+    assert.equal(classic.length, chainId === 1 ? 4 : 2);
+  });
 
-test("a selected unsupported pool fails clearly before any RPC request", async () => {
+  test(`mixed-denomination batch checks every pool on chain ${chainId}`, async () => {
+    const notes = [note(eth, eth, BigInt(chainId)), note(3n * eth / 10n, 3n * eth / 10n, BigInt(chainId)), note(eth / 100n, eth / 100n, BigInt(chainId))];
+    const checked: string[] = [];
+    await assertTornadoUnshieldPoolsDeployed({
+      client: client({ check: (request) => { checked.push(request.args[0]); } }),
+      chainId: BigInt(chainId), notes, amount: 131n * eth / 100n,
+    });
+    assert.equal(checked.length, 3);
+  });
+}
+
+test("unsupported execution-phase pools fail before any RPC requests", async () => {
   await assert.rejects(assertTornadoUnshieldPoolsDeployed({
-    client: { getCode: async () => { assert.fail("Must not query RPC when configuration is missing"); } } as never,
-    chainId: 1n, notes: [hundredth], amount: eth / 100n,
-  }), /0\.01 ETH.*no paymaster FeeAdapter configured.*--exclude-new-pools/);
+    client: { getCode: async () => { assert.fail("Must not query RPC with missing pool support"); } } as never,
+    chainId: 1n, notes: [one, unknown], amount: 101n * eth / 100n,
+  }), /no paymaster support configured/);
+  assert.throws(() => tornadoSelectedPaymasterPools(1n, [hundredth], eth / 100n, []), /0\.01 ETH.*--exclude-new-pools/);
 });
 
-test("batch checks include unsupported execution-phase pools, not just its first note", () => {
-  assert.throws(() => tornadoSelectedPaymasterPools(1n, [one, threeTenths], 13n * eth / 10n), /0\.3 ETH.*no paymaster FeeAdapter/);
-  assert.throws(() => tornadoSelectedPaymasterPools(1n, [one, hundredth], 101n * eth / 100n), /no paymaster FeeAdapter/);
+test("holding an unsupported note does not block a withdrawal that selects only supported pools", async () => {
+  await assertTornadoUnshieldPoolsDeployed({ client: client(), chainId: 1n, notes: [unknown, one], amount: eth });
 });
 
-test("future SDK adapter mappings enable the new denominations without a new exclusion rule", () => {
-  const map = {
-    ...TornadoPaymasterConfigs[1].poolsAccountsMap,
-    [`0x${threeTenths.pool.toString(16).padStart(40, "0")}`]: "0x0000000000000000000000000000000000000001",
-  };
-  assert.equal(tornadoSelectedPaymasterPools(1n, [one, threeTenths], 13n * eth / 10n, map).length, 2);
+test("missing paymaster code and disabled instances fail before proving", async () => {
+  await assert.rejects(assertTornadoUnshieldPoolsDeployed({
+    client: client({ paymasterCode: "0x" }), chainId: 1n, notes: [one], amount: eth,
+  }), /paymaster .*not deployed/);
+  await assert.rejects(assertTornadoUnshieldPoolsDeployed({
+    client: client({ allowed: false }), chainId: 1n, notes: [hundredth], amount: eth / 100n,
+  }), /not allowlisted by paymaster/);
 });
 
-test("missing paymaster code, missing adapter code, and unapproved adapters each fail before proving", async () => {
-  for (const [options, message] of [
-    [{ paymasterCode: "0x" }, /paymaster .*not deployed/],
-    [{ adapterCode: "0x" }, /no deployed paymaster FeeAdapter/],
-    [{ approved: false }, /not approved by paymaster/],
-  ] as const) {
-    await assert.rejects(assertTornadoUnshieldPoolsDeployed({
-      client: client(options), chainId: 1n, notes: [one], amount: eth,
-    }), message);
+test("central prepare accepts new denominations and delegates proof construction to the SDK", async () => {
+  for (const chainId of [1n, 11155111n]) {
+    let prepared = false;
+    const poolNote = note(eth / 100n, eth / 100n, chainId);
+    const result = await prepareProtocolUnshield({
+      protocol: "tornado", chainId, rpcUrl: "unused", client: client(),
+      plugin: {
+        notes: async () => [poolNote],
+        prepareUnshield: async (_asset: unknown, _recipient: unknown, options: { mode: string }) => {
+          prepared = true;
+          assert.equal(options.mode, "paymaster");
+          return "prepared";
+        },
+      } as never,
+      tokenMeta: { isEth: true, tokenAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", symbol: "ETH", decimals: 18 },
+      amountWei: eth / 100n, recipient: "0x0000000000000000000000000000000000000001", tailCalls: [],
+      tornadoMaxFeePerGas: 1n, tornadoWithdrawalCount: 1,
+    });
+    assert.equal(prepared, true);
+    assert.equal(result, "prepared");
   }
-});
-
-test("central prepare rejects unsupported pools without calling SDK prepareUnshield", async () => {
-  let prepared = false;
-  await assert.rejects(prepareProtocolUnshield({
-    protocol: "tornado", chainId: 1n, rpcUrl: "unused", client: client(),
-    plugin: {
-      notes: async () => [hundredth],
-      prepareUnshield: async () => { prepared = true; },
-    } as never,
-    tokenMeta: { isEth: true, tokenAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", symbol: "ETH", decimals: 18 },
-    amountWei: eth / 100n, recipient: "0x0000000000000000000000000000000000000001", tailCalls: [],
-  }), /no paymaster FeeAdapter/);
-  assert.equal(prepared, false);
 });
