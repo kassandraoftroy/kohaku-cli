@@ -17,6 +17,7 @@ import {
   type ShieldCall,
 } from "../src/lib/shield-flow.js";
 import { makeStealthAccountsStorage } from "../src/lib/stealth/storage.js";
+import { tornadoPoolsForChain } from "../src/utils/tornado-pools.js";
 import { ERC20_ABI } from "../src/utils/tokens-util.js";
 import { addressFromPrivateKey } from "../src/utils/viem-tx.js";
 
@@ -313,6 +314,33 @@ describe("assertTornadoShieldCalls", () => {
       }).length,
       1
     );
+  });
+
+  it("validates all new denominations and enforces the classic-pool opt-out on both chains", () => {
+    for (const chainId of [1n, 11155111n]) {
+      for (const pool of tornadoPoolsForChain(chainId).filter((pool) => pool.isNew)) {
+        const call = deposit(pool.poolAddress, pool.denomination);
+        const opts = { isEth: true, tokenAddress: "", symbol: "ETH", amount: pool.denomination };
+        const targets = assertTornadoShieldCalls(chainId, [call], opts);
+        assert.equal(targets[0].pool.poolAddress, pool.poolAddress);
+        assert.throws(() => assertTornadoShieldCalls(chainId, [call], {
+          ...opts, excludeNewPools: true,
+        }), /not a ETH Tornado pool/);
+        assert.throws(() => assertTornadoShieldCalls(chainId, [{ ...call, value: 1n }], opts), /sends 1 wei/);
+      }
+    }
+  });
+
+  it("accepts the 2.45 ETH packing and rejects a mismatched total or an excluded new pool", () => {
+    for (const chainId of [1n, 11155111n]) {
+      const pools = tornadoPoolsForChain(chainId).filter((pool) => !pool.isERC20);
+      const values = [100n, 100n, 30n, 10n, 3n, 1n, 1n].map((n) => n * 10n ** 16n);
+      const calls = values.map((value) => deposit(pools.find((pool) => pool.denomination === value)!.poolAddress, value));
+      const opts = { isEth: true, tokenAddress: "", symbol: "ETH", amount: 245n * 10n ** 16n };
+      assert.equal(assertTornadoShieldCalls(chainId, calls, opts).reduce((n, target) => n + target.count, 0), 7);
+      assert.throws(() => assertTornadoShieldCalls(chainId, calls.slice(1), opts), /add up to/);
+      assert.throws(() => assertTornadoShieldCalls(chainId, calls, { ...opts, excludeNewPools: true }), /not a ETH Tornado pool/);
+    }
   });
 
   it("rejects a deposit or approve to an address the RPC injected", () => {

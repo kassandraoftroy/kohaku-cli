@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { TornadoInstances, extendedEthPoolSet } from "@kohaku-eth/tornado-cash";
 
 import {
   assertTornadoDepositAmount,
@@ -183,5 +184,26 @@ describe("extended Tornado pools", () => {
     assert.doesNotThrow(() => assertTornadoDepositAmount(1n, amount, ETH));
     assert.throws(() => assertTornadoDepositAmount(1n, amount, { ...ETH, excludeNewPools: true }), /exact multiple of 0.1 ETH/);
     assert.doesNotThrow(() => assertTornadoDepositAmount(1n, 240n * 10n ** 16n, { ...ETH, excludeNewPools: true }));
+  });
+});
+
+
+describe("SDK catalog parity", () => {
+  it("preserves every SDK pool's address, denomination, asset, decimals and extended status", () => {
+    for (const chainId of [1, 11155111] as const) {
+      const pools = tornadoPoolsForChain(BigInt(chainId));
+      assert.equal(pools.length, TornadoInstances[chainId].length);
+      const extended = extendedEthPoolSet(BigInt(chainId));
+      for (const instance of TornadoInstances[chainId]) {
+        const pool = pools.find((pool) => BigInt(pool.poolAddress) === instance.address)!;
+        assert.ok(pool);
+        assert.equal(pool.denomination, instance.denomination);
+        assert.equal(pool.asset, instance.symbol);
+        assert.equal(pool.decimals, instance.decimals);
+        assert.equal(pool.isERC20, instance.asset !== 0n);
+        assert.equal(pool.assetAddress ? BigInt(pool.assetAddress) : 0n, instance.asset);
+        assert.equal(!!pool.isNew, extended.has(instance.address));
+      }
+    }
   });
 });

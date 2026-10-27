@@ -803,6 +803,7 @@ export function registerShieldCommand(program: Command): void {
                   tokenAddress: tokenMeta.tokenAddress,
                   symbol: tokenMeta.symbol,
                   amount: amt,
+                  excludeNewPools: opts.excludeNewPools,
                 })
               : undefined;
           let nextApprovals: Array<{ to: string; data: string; value: bigint }> =

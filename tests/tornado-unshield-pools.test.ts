@@ -45,12 +45,13 @@ for (const chainId of [1, 11155111] as const) {
   test(`all classic and extended pools use the direct paymaster on chain ${chainId}`, async () => {
     const config = TornadoPaymasterConfigs[chainId];
     const pools = tornadoPoolsForChain(BigInt(chainId));
+    const supported = new Set(config.supportedPools.map((pool) => pool.toLowerCase()));
     assert.equal(tornadoPaymasterPoolsForAsset(BigInt(chainId), { isEth: true }).length,
       pools.filter((pool) => !pool.isERC20).length);
     const pluginConfig = tornadoPaymasterConfig(BigInt(chainId)) as Record<number, typeof config>;
     assert.equal(pluginConfig[chainId].paymasterAddress, config.paymasterAddress);
     assert.equal(tornadoPaymasterAddress(BigInt(chainId)), config.paymasterAddress);
-    for (const pool of pools) {
+    for (const pool of pools.filter((pool) => supported.has(pool.poolAddress.toLowerCase()))) {
       const poolNote = { pool: BigInt(pool.poolAddress), amount: pool.denomination, balance: pool.denomination };
       assert.deepEqual(tornadoSelectedPaymasterPools(BigInt(chainId), [poolNote], pool.denomination), [pool.poolAddress]);
       await assertTornadoUnshieldPoolsDeployed({
@@ -120,4 +121,14 @@ test("central prepare accepts new denominations and delegates proof construction
     assert.equal(prepared, true);
     assert.equal(result, "prepared");
   }
+});
+
+
+test("SDK catalog tokens without paymaster support remain depositable but cannot unshield", () => {
+  const cdai = tornadoPoolsForChain(1n).find((pool) => pool.asset === "cDAI")!;
+  assert.ok(cdai);
+  assert.deepEqual(tornadoPaymasterPoolsForAsset(1n, { isEth: false, tokenAddress: cdai.assetAddress }), []);
+  assert.throws(() => tornadoSelectedPaymasterPools(1n, [{
+    pool: BigInt(cdai.poolAddress), amount: cdai.denomination, balance: cdai.denomination,
+  }], cdai.denomination), /no paymaster support configured/);
 });

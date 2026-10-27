@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Tornado shields check every call from the plugin against the static pool catalog before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools.
+- Tornado shields check every call from the plugin against the installed SDK's static `TornadoInstances` catalog before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools. New denominations are included by default; `--exclude-new-pools` also restricts this call validation.
 
 ## [0.0.12] - 2026-10-25
 
