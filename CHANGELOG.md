@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Tornado shields check every call from the plugin against the static pool catalog before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools.
+
 ## [0.0.11] - 2026-10-22
 
 ### Changed

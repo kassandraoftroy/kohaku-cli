@@ -7,6 +7,7 @@ import { encodeFunctionData, getAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import {
+  assertTornadoShieldCalls,
   fromValueNeedsNameResolution,
   parseFromIndex,
   partitionShieldTxs,
@@ -273,5 +274,90 @@ describe("fromValueNeedsNameResolution", () => {
         assert.equal(resolved.senderAddress, getAddress(STEALTH_ADDRESS));
       }
     });
+  });
+});
+
+describe("assertTornadoShieldCalls", () => {
+  const DAI = getAddress("0x6B175474E89094C44Da98b954EedeAC495271d0F");
+  const DAI_100 = getAddress("0xD4B88Df4D29F5CedD6857912842cff3b20C8Cfa3");
+  const ETH_0_1 = getAddress("0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc");
+  const ATTACKER = getAddress("0x000000000000000000000000000000000000dEaD");
+  const HUNDRED = 100n * 10n ** 18n;
+  const dai = { isEth: false, tokenAddress: DAI, symbol: "DAI", amount: HUNDRED };
+  const deposit = (to: string, value = 0n): ShieldCall => ({
+    to,
+    value,
+    data: `0xb214faa5${"11".repeat(32)}`,
+  });
+  const daiApprove = (spender: string, amount: bigint): ShieldCall => ({
+    ...approveCall(spender, amount),
+    to: DAI,
+  });
+
+  it("accepts plugin calls that target catalog pools", () => {
+    const targets = assertTornadoShieldCalls(
+      1n,
+      [daiApprove(DAI_100, HUNDRED), deposit(DAI_100)],
+      dai
+    );
+    assert.deepEqual(
+      targets.map((t) => [t.pool.poolAddress, t.count]),
+      [[DAI_100, 1]]
+    );
+    assert.equal(
+      assertTornadoShieldCalls(1n, [deposit(ETH_0_1, 10n ** 17n)], {
+        isEth: true,
+        tokenAddress: "",
+        symbol: "ETH",
+        amount: 10n ** 17n,
+      }).length,
+      1
+    );
+  });
+
+  it("rejects a deposit or approve to an address the RPC injected", () => {
+    assert.throws(
+      () =>
+        assertTornadoShieldCalls(
+          1n,
+          [daiApprove(ATTACKER, HUNDRED), deposit(ATTACKER)],
+          dai
+        ),
+      /not a DAI Tornado pool/
+    );
+    assert.throws(
+      () =>
+        assertTornadoShieldCalls(1n, [daiApprove(ATTACKER, HUNDRED), deposit(DAI_100)], dai),
+      /approve spender .* is not a DAI Tornado pool/
+    );
+  });
+
+  it("rejects approves on the wrong token, wrong values and mismatched totals", () => {
+    assert.throws(
+      () =>
+        assertTornadoShieldCalls(1n, [approveCall(DAI_100, HUNDRED), deposit(DAI_100)], dai),
+      /not the DAI token/
+    );
+    assert.throws(
+      () => assertTornadoShieldCalls(1n, [daiApprove(DAI_100, HUNDRED), deposit(DAI_100, 1n)], dai),
+      /sends 1 wei/
+    );
+    assert.throws(
+      () => assertTornadoShieldCalls(1n, [daiApprove(DAI_100, HUNDRED * 2n), deposit(DAI_100)], dai),
+      /does not match its deposits/
+    );
+    assert.throws(
+      () =>
+        assertTornadoShieldCalls(1n, [daiApprove(DAI_100, HUNDRED), deposit(DAI_100)], {
+          ...dai,
+          amount: HUNDRED * 2n,
+        }),
+      /add up to/
+    );
+    assert.throws(
+      () =>
+        assertTornadoShieldCalls(1n, [{ to: DAI_100, value: 0n, data: "0xdeadbeef" }], dai),
+      /not deposit\(bytes32\)/
+    );
   });
 });

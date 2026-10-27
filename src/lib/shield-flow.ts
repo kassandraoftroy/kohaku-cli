@@ -15,7 +15,11 @@ import {
   railgunErc20AssetAmount,
   type SupportedProtocol,
 } from "../utils/plugins";
-import { assertTornadoDepositAmount } from "../utils/tornado-pools.js";
+import {
+  assertTornadoDepositAmount,
+  tornadoPoolsForAsset,
+  type TornadoSagaPool,
+} from "../utils/tornado-pools.js";
 import type { BalancesSnapshot } from "./balances-snapshot.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts";
 import { estimateEoaTxFeePreview } from "../utils/fee-preview.js";
@@ -265,6 +269,91 @@ export function tryDecodeErc20Approve(data: string): {
   const amountWord = hex.slice(74, 138);
   const spender = getAddress(`0x${spenderWord.slice(24)}`);
   return { spender, amount: BigInt(`0x${amountWord}`) };
+}
+
+const TORNADO_DEPOSIT_SELECTOR = "0xb214faa5"; // deposit(bytes32)
+
+export type TornadoShieldTarget = { pool: TornadoSagaPool; count: number };
+
+/**
+ * Checks Tornado prepareShield() calls against the static pool catalog before anything
+ * is signed. The plugin reads pool addresses from the RPC, so an unchecked call list can
+ * deposit to, or approve, whatever address the RPC names.
+ */
+export function assertTornadoShieldCalls(
+  chainId: bigint,
+  txs: ShieldCall[],
+  opts: { isEth: boolean; tokenAddress: string; symbol: string; amount: bigint }
+): TornadoShieldTarget[] {
+  const pools = new Map(
+    tornadoPoolsForAsset(chainId, opts).map((p) => [p.poolAddress, p])
+  );
+  if (pools.size === 0) {
+    throw new Error(
+      `No ${opts.symbol} Tornado pools in the catalog for chainId ${chainId.toString()}.`
+    );
+  }
+  const reject = (why: string): never => {
+    throw new Error(`Refusing Tornado shield: ${why}`);
+  };
+  const deposits = new Map<Address, TornadoShieldTarget>();
+  const approved = new Map<Address, bigint>();
+  let total = 0n;
+
+  for (const tx of txs) {
+    const to = getAddress(tx.to);
+    const data = tx.data.toLowerCase();
+    const approve = tryDecodeErc20Approve(data);
+    if (approve) {
+      if (opts.isEth) reject(`unexpected approve call to ${to} for an ETH deposit.`);
+      if (data.length !== 2 + 8 + 128 || tx.value !== 0n) {
+        reject(`malformed approve call to ${to}.`);
+      }
+      if (to !== getAddress(opts.tokenAddress)) {
+        reject(`approve call targets ${to}, not the ${opts.symbol} token.`);
+      }
+      if (!pools.has(approve.spender)) {
+        reject(`approve spender ${approve.spender} is not a ${opts.symbol} Tornado pool.`);
+      }
+      approved.set(approve.spender, (approved.get(approve.spender) ?? 0n) + approve.amount);
+      continue;
+    }
+    const pool = pools.get(to);
+    if (!pool) reject(`deposit targets ${to}, which is not a ${opts.symbol} Tornado pool.`);
+    if (!data.startsWith(TORNADO_DEPOSIT_SELECTOR) || data.length !== 2 + 8 + 64) {
+      reject(`call to ${to} is not deposit(bytes32).`);
+    }
+    if (tx.value !== (opts.isEth ? pool!.denomination : 0n)) {
+      reject(`deposit to ${to} sends ${tx.value} wei.`);
+    }
+    const target = deposits.get(to) ?? { pool: pool!, count: 0 };
+    target.count += 1;
+    deposits.set(to, target);
+    total += pool!.denomination;
+  }
+
+  if (total !== opts.amount) {
+    reject(`deposits add up to ${total}, not the requested ${opts.amount}.`);
+  }
+  for (const [spender, amount] of approved) {
+    const target = deposits.get(spender);
+    if (!target || amount !== BigInt(target.count) * target.pool.denomination) {
+      reject(`approve to ${spender} does not match its deposits.`);
+    }
+  }
+  return [...deposits.values()];
+}
+
+/** Confirm-prompt line naming each Tornado pool a shield deposits into. */
+export function tornadoShieldTargetsLine(
+  targets: TornadoShieldTarget[],
+  tokenMeta: ResolvedTokenMeta
+): string {
+  const parts = targets.map(
+    ({ pool, count }) =>
+      `${count} × ${formatAmountPreview(pool.denomination, tokenMeta)} → ${pool.poolAddress}`
+  );
+  return `Tornado pools: ${parts.join(", ")}`;
 }
 
 /** Parse prepareShield() into one or more deposit/shield calls (may include approves). */
@@ -565,6 +654,14 @@ export async function prepareShieldPlan(opts: {
           }
         );
         const rawTxs = toShieldTxs(op);
+        if (protocol === "tornado") {
+          assertTornadoShieldCalls(chainId, rawTxs, {
+            isEth: tokenMeta.isEth,
+            tokenAddress: tokenMeta.tokenAddress,
+            symbol: tokenMeta.symbol,
+            amount,
+          });
+        }
 
         let approvals: ShieldCall[] = [];
         let deposits: ShieldCall[];
