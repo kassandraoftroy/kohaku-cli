@@ -1,8 +1,7 @@
 /**
  * Tornado pool metadata from the installed SDK's static instance catalog.
- * Deposit validation and CLI previews share the same trusted source as the SDK.
- * Paymaster support is a separate allowlist; not every depositable token can
- * currently pay for an unshield through the paymaster.
+ * Only instances supported by the SDK's paymaster configuration are available
+ * for CLI shields and unshields.
  */
 import { formatUnits, getAddress, type Address } from "viem";
 import { extendedEthPoolSet, TornadoInstances, TornadoPaymasterConfigs } from "@kohaku-eth/tornado-cash";
@@ -19,13 +18,14 @@ export type TornadoSagaPool = {
   assetAddress?: Address;
 };
 
-/** All instances from the installed SDK's static, trusted catalog; no RPC discovery. */
+/** SDK catalog intersected with paymaster support; no RPC discovery. */
 export function tornadoPoolsForChain(chainId: bigint): TornadoSagaPool[] {
   const instances = TornadoInstances[Number(chainId) as keyof typeof TornadoInstances] ?? [];
   const extended = extendedEthPoolSet(chainId);
+  const supported = tornadoPaymasterPoolAddresses(chainId);
   const address = (value: bigint): Address =>
     getAddress(`0x${value.toString(16).padStart(40, "0")}`);
-  return instances.map((instance) => ({
+  return instances.filter((instance) => supported.has(address(instance.address).toLowerCase())).map((instance) => ({
     poolAddress: address(instance.address),
     denomination: instance.denomination,
     asset: instance.symbol,

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { TornadoInstances, extendedEthPoolSet } from "@kohaku-eth/tornado-cash";
+import { TornadoInstances, TornadoPaymasterConfigs, extendedEthPoolSet } from "@kohaku-eth/tornado-cash";
 
 import {
   assertTornadoDepositAmount,
   assertTornadoExactPoolDenomination,
   assertTornadoTokenSupported,
+  assertTornadoPaymasterTokenSupported,
   assertTornadoUnshieldAmountForToken,
   tornadoMinDenomination,
   tornadoPaymasterPoolsForAsset,
@@ -189,13 +190,19 @@ describe("extended Tornado pools", () => {
 
 
 describe("SDK catalog parity", () => {
-  it("preserves every SDK pool's address, denomination, asset, decimals and extended status", () => {
+  it("preserves metadata for exactly the paymaster-supported SDK pools", () => {
     for (const chainId of [1, 11155111] as const) {
       const pools = tornadoPoolsForChain(BigInt(chainId));
-      assert.equal(pools.length, TornadoInstances[chainId].length);
+      const supported = new Set(TornadoPaymasterConfigs[chainId].supportedPools.map(BigInt));
+      const expected = TornadoInstances[chainId].filter((instance) => supported.has(instance.address));
+      assert.equal(pools.length, expected.length);
       const extended = extendedEthPoolSet(BigInt(chainId));
       for (const instance of TornadoInstances[chainId]) {
         const pool = pools.find((pool) => BigInt(pool.poolAddress) === instance.address)!;
+        if (!supported.has(instance.address)) {
+          assert.equal(pool, undefined);
+          continue;
+        }
         assert.ok(pool);
         assert.equal(pool.denomination, instance.denomination);
         assert.equal(pool.asset, instance.symbol);
@@ -206,4 +213,17 @@ describe("SDK catalog parity", () => {
       }
     }
   });
+});
+
+it("rejects cDAI for both shields and unshields", () => {
+  const instances = TornadoInstances[1].filter((instance) => instance.symbol === "cDAI");
+  assert.equal(instances.length, 4);
+  for (const instance of instances) {
+    for (const excludeNewPools of [false, true]) {
+      const opts = { isEth: false, tokenAddress: `0x${instance.asset.toString(16).padStart(40, "0")}`, symbol: "cDAI", excludeNewPools };
+      assert.deepEqual(tornadoPoolsForAsset(1n, opts), []);
+      assert.throws(() => assertTornadoTokenSupported(1n, opts), /not in the Tornado Cash pool catalog/);
+      assert.throws(() => assertTornadoPaymasterTokenSupported(1n, opts), /not in the Tornado Cash pool catalog/);
+    }
+  }
 });

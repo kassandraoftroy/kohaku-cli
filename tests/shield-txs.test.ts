@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { encodeFunctionData, getAddress, type Hex } from "viem";
+import { TornadoInstances } from "@kohaku-eth/tornado-cash";
 import { privateKeyToAccount } from "viem/accounts";
 
 import {
@@ -293,6 +294,21 @@ describe("assertTornadoShieldCalls", () => {
   const daiApprove = (spender: string, amount: bigint): ShieldCall => ({
     ...approveCall(spender, amount),
     to: DAI,
+  });
+
+  it("rejects prepared cDAI deposits and approvals without paymaster support", () => {
+    const pools = TornadoInstances[1].filter((pool) => pool.symbol === "cDAI");
+    assert.equal(pools.length, 4);
+    for (const pool of pools) {
+      const to = getAddress(`0x${pool.address.toString(16).padStart(40, "0")}`);
+      const token = getAddress(`0x${pool.asset.toString(16).padStart(40, "0")}`);
+      const approval = { ...approveCall(to, pool.denomination), to: token };
+      for (const calls of [[deposit(to)], [approval, deposit(to)]]) {
+        assert.throws(() => assertTornadoShieldCalls(1n, calls, {
+          isEth: false, tokenAddress: token, symbol: "cDAI", amount: pool.denomination,
+        }), /No cDAI Tornado pools in the catalog/);
+      }
+    }
   });
 
   it("accepts plugin calls that target catalog pools", () => {

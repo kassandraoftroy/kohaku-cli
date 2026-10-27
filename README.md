@@ -448,7 +448,7 @@ Move funds from a **public** account into a private protocol.
 
 - **privacy-pools** — Any asset the entrypoint has a pool for (mainnet: ETH, USDC, USDT; Sepolia: ETH). Any amount at or above that pool's minimum deposit. The vetting fee is deducted from the deposit and shown in the fee preview.
 - **railgun** — ETH and ERC-20; non-ETH may need an approval. Approval + shield (2+ calls) are submitted as **one EIP-7702 UserOp** via Pimlico.
-- **tornado** — ETH and ERC-20 tokens in the installed SDK's static `TornadoInstances` catalog (`src/utils/tornado-pools.ts` adapts it for the CLI; mainnet and Sepolia differ). Amount must be an exact multiple of the smallest pool denomination for that asset. Multi-denomination deposits (and any ERC-20 approvals) are batched into **one EIP-7702 UserOp**. Approvals are aggregated per pool (e.g. 2×1000 + 5×100 → approve 2000 and 500, not seven separate approves).
+- **tornado** — ETH and ERC-20 tokens in the installed SDK's static `TornadoInstances` catalog that also have SDK paymaster support (`src/utils/tornado-pools.ts` adapts it for the CLI; mainnet and Sepolia differ). Amount must be an exact multiple of the smallest pool denomination for that asset. Multi-denomination deposits (and any ERC-20 approvals) are batched into **one EIP-7702 UserOp**. Approvals are aggregated per pool (e.g. 2×1000 + 5×100 → approve 2000 and 500, not seven separate approves).
 
 When a shield needs more than one on-chain call, the CLI uses EIP-7702 Simple7702Account (`0xe6Cae83B…855B`) the same way as `transact-raw`.
 
@@ -879,7 +879,7 @@ Tornado includes the extended ETH pools by default: 0.01, 0.03, 0.3, 3, and 30 E
 
 The default minimum-fee packing for 2.45 ETH is 2×1 + 0.3 + 0.1 + 0.03 + 2×0.01 ETH. The opt-out rejects 2.45 ETH because classic pools cannot represent it. For 2.4 ETH, default packing is 2×1 + 0.3 + 0.1; classic packing is 2×1 + 4×0.1. `--amount-max` floors to the minimum denomination permitted by the selected policy. Unshield's opt-out excludes new-pool notes from scheme selection, available balance, and maximum amount.
 
-Tornado SDK alpha.31 includes new direct-paymaster deployments for both mainnet and Sepolia, covering every classic and extended ETH pool plus the existing supported token pools. The SDK catalog also includes cDAI deposit pools, which currently have no paymaster support. Unshields and private transfers support the new denominations by default. Before proving, the CLI checks that each selected pool is supported by the SDK configuration, that the paymaster is deployed, and that its on-chain `instances` allowlist permits the pool. An unsupported or disabled pool produces a clear error. `--exclude-new-pools` still leaves new-pool notes untouched, while balances and sync include all pools.
+Tornado SDK alpha.31 includes new direct-paymaster deployments for both mainnet and Sepolia, covering every classic and extended ETH pool plus the existing supported token pools. Pools without SDK paymaster support, including cDAI, are excluded from both shields and unshields. Unshields and private transfers support the new denominations by default. Before proving, the CLI checks that each selected pool is supported by the SDK configuration, that the paymaster is deployed, and that its on-chain `instances` allowlist permits the pool. An unsupported or disabled pool produces a clear error. `--exclude-new-pools` still leaves new-pool notes untouched, while balances and sync include all pools.
 
 ## Activity
 

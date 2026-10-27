@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TornadoPaymasterConfigs } from "@kohaku-eth/tornado-cash";
+import { TornadoInstances, TornadoPaymasterConfigs } from "@kohaku-eth/tornado-cash";
 import {
   assertTornadoUnshieldPoolsDeployed,
   selectTornadoWithdrawalNotes,
@@ -124,11 +124,11 @@ test("central prepare accepts new denominations and delegates proof construction
 });
 
 
-test("SDK catalog tokens without paymaster support remain depositable but cannot unshield", () => {
-  const cdai = tornadoPoolsForChain(1n).find((pool) => pool.asset === "cDAI")!;
+test("rejects existing cDAI notes without paymaster support", () => {
+  const cdai = TornadoInstances[1].find((pool) => pool.symbol === "cDAI")!;
   assert.ok(cdai);
-  assert.deepEqual(tornadoPaymasterPoolsForAsset(1n, { isEth: false, tokenAddress: cdai.assetAddress }), []);
+  assert.deepEqual(tornadoPaymasterPoolsForAsset(1n, { isEth: false, tokenAddress: `0x${cdai.asset.toString(16).padStart(40, "0")}` }), []);
   assert.throws(() => tornadoSelectedPaymasterPools(1n, [{
-    pool: BigInt(cdai.poolAddress), amount: cdai.denomination, balance: cdai.denomination,
+    pool: cdai.address, amount: cdai.denomination, balance: cdai.denomination,
   }], cdai.denomination), /no paymaster support configured/);
 });
