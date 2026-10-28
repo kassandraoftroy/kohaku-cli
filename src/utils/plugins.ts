@@ -471,6 +471,11 @@ export function tornadoUnshieldOptions(
   const base: TCPaymasterUnshieldOptions = {
     mode: "paymaster",
     gasEstimationPolicy: tailCalls.length > 0 ? "required" : "best-effort",
+    // Alpha.32's baseline-derived ceilings reject observed single-note 7702
+    // estimates (204422 account / 1535324 paymaster, including SDK buffers).
+    // These are upper bounds, not budgets: the SDK still estimates and rebuilds
+    // the actual gas, proof-bound fee and signature together.
+    maxGasLimits: { verificationGasLimit: 250_000n, paymasterVerificationGasLimit: 2_000_000n },
     ...(delegation ? { delegation } : {}),
   };
 
