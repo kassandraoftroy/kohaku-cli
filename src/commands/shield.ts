@@ -1,3 +1,4 @@
+import { assertTornadoShieldNoteLimit } from "../utils/tornado-operation-limits.js";
 import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
@@ -626,6 +627,7 @@ export function registerShieldCommand(program: Command): void {
                     decimals: tokenMeta.decimals,
                     excludeNewPools: opts.excludeNewPools,
                   });
+                  assertTornadoShieldNoteLimit(chainId, parsed, { ...tokenMeta, excludeNewPools: opts.excludeNewPools });
                 }
                 assertPpDepositAmount(parsed);
               } catch (e) {
@@ -790,6 +792,9 @@ export function registerShieldCommand(program: Command): void {
               }) as AssetAmount;
 
         const prepareShieldCalls = async (amt: bigint) => {
+          if (protocol === "tornado") {
+            assertTornadoShieldNoteLimit(chainId, amt, { ...tokenMeta, excludeNewPools: opts.excludeNewPools });
+          }
           const op = await prepareProtocolShield(
             plugin,
             protocol,
@@ -844,6 +849,9 @@ export function registerShieldCommand(program: Command): void {
             }
           | undefined;
         try {
+          if (protocol === "tornado") {
+            assertTornadoShieldNoteLimit(chainId, amount!, { ...tokenMeta, excludeNewPools: opts.excludeNewPools });
+          }
           if (!quiet) txSpinner.start("Syncing private state...");
           const prepared = await runWithSyncProgress(
             {

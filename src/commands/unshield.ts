@@ -1,3 +1,5 @@
+import { preflightTornadoUnshield } from "../utils/tornado-unshield-preflight.js";
+import { tornadoUnavailableAmountMessage } from "../utils/tornado-operation-limits.js";
 import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
@@ -820,6 +822,13 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                     decimals: tokenMeta.decimals,
                     excludeNewPools: opts.excludeNewPools,
                   });
+                  if (!privateTransfer &&
+                    !tornadoSchemeCanCover(signatureTornadoNotes, parsed) &&
+                    !tornadoSchemeCanCover(legacyTornadoNotes, parsed)) {
+                    throw new Error(tornadoUnavailableAmountMessage(
+                      { signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, parsed, tokenMeta
+                    ));
+                  }
                 }
               } catch (e) {
                 return e instanceof Error ? e.message : String(e);
@@ -939,6 +948,11 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               signatureCanCover,
             });
             if (!scheme) {
+              if (protocol === "tornado") {
+                throw new Error(tornadoUnavailableAmountMessage(
+                  { signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, amountWei, tokenMeta
+                ));
+              }
               throw new Error(
                 unshieldSchemeFailure({
                   legacyCap,
@@ -1319,8 +1333,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           quiet,
           spin,
           { start: prepareLabel, failure: "Prepare failed." },
-          () =>
-            prepareProtocolUnshield({
+          async () => {
+            const prepared = await prepareProtocolUnshield({
               client: rpcForHost,
               protocol,
               plugin,
@@ -1336,7 +1350,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               tornadoTailCallsGasEstimate,
               tornadoErc20Tail,
               tornadoForwardLeftover: forwardLeftover,
-            }),
+            });
+            if (protocol === "tornado") await preflightTornadoUnshield(prepared);
+            return prepared;
+          },
           () =>
             privateTransfer
               ? "Private transfer prepared."

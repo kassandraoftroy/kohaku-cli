@@ -6,8 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-10-28
+
 ### Changed
 
+- Tornado shields reject packings of six or more deposit notes before preparing commitments, with smaller-amount suggestions. The five-note limit respects `--exclude-new-pools` and excludes approval calls.
+- Tornado unshields show usable whole-note amount examples per derivation scheme and preflight final signed gas budgets before confirmation. Bundler estimation failures and insufficient gas stop before broadcast instead of submitting SDK fallback limits.
 - Tornado shields check every call from the plugin against the installed SDK's static `TornadoInstances` catalog intersected with its paymaster support before anything is signed or estimated. Each deposit must be `deposit(bytes32)` to a catalog pool for the asset, with the pool's value. Each approve must be on the asset's token, to a pool the shield deposits into, for exactly those deposits. The deposits must add up to the requested amount. The confirm prompt now lists the destination pools. Pools without SDK paymaster support, including cDAI, are excluded from both shields and unshields. New denominations are included by default; `--exclude-new-pools` also restricts this call validation.
 
 ## [0.0.12] - 2026-10-25
