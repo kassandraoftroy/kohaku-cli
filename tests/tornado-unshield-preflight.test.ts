@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { preflightTornadoUnshield } from "../src/utils/tornado-unshield-preflight.js";
 import type { SerializedUserOperation } from "../src/utils/tornado-paymaster-broadcaster.js";
+import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
 
 function prepared() {
   const userOperation: SerializedUserOperation = {
@@ -11,8 +12,38 @@ function prepared() {
     paymaster: "0x0000000000000000000000000000000000000002", paymasterData: "0xabcd",
     paymasterVerificationGasLimit: "0x6ddd0", paymasterPostOpGasLimit: "0xc350",
   };
-  return { withdrawals: [{ mode: "paymaster" as const, bundlerUrl: "unused", entryPointAddress: "0x0000000000000000000000000000000000000003" as const, userOperation }] };
+  return { withdrawals: [{ mode: "paymaster" as const, bundlerUrl: "unused", entryPointAddress: "0x0000000000000000000000000000000000000003" as const, userOperation, gasEstimation: undefined as PaymasterGasEstimation | undefined }] };
 }
+
+it("uses successful SDK estimation without asking a brittle estimator to run again", async () => {
+  const operation = prepared();
+  operation.withdrawals[0].gasEstimation = { status: "estimated" };
+  const original = structuredClone(operation);
+  const result = await preflightTornadoUnshield(operation, async () => { throw new Error("must not estimate again"); });
+  assert.deepEqual(result, [{ status: "estimated" }]);
+  assert.deepEqual(operation, original);
+});
+
+for (const reason of ["transport-unavailable", "bundler-internal"] as const) {
+  it(`accepts the SDK's explicit ${reason} fallback without modifying or re-estimating it`, async () => {
+    const operation = prepared();
+    operation.withdrawals[0].userOperation.preVerificationGas = "0x61a80";
+    operation.withdrawals[0].gasEstimation = { status: "fallback", reason, message: "estimator unavailable" };
+    const original = structuredClone(operation);
+    const result = await preflightTornadoUnshield(operation, async () => { throw new Error("must not estimate again"); });
+    assert.deepEqual(result, [operation.withdrawals[0].gasEstimation]);
+    assert.deepEqual(operation, original);
+    await assert.rejects(preflightTornadoUnshield(operation, undefined, { allowFallback: false }), /requires successful SDK gas estimation/);
+  });
+}
+
+it("rejects unknown metadata and fallback categories instead of treating them as successful estimation", async () => {
+  for (const metadata of [{ status: "unknown" }, { status: "fallback", reason: "AA33", message: "reverted" }]) {
+    const operation = prepared();
+    operation.withdrawals[0].gasEstimation = metadata as PaymasterGasEstimation;
+    await assert.rejects(preflightTornadoUnshield(operation), /unknown SDK gas estimation status|requires successful SDK gas estimation/);
+  }
+});
 
 it("catches the reported preVerificationGas mismatch without modifying the signed operation", async () => {
   const operation = prepared();

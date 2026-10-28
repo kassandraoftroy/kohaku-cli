@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-10-28
+
+### Changed
+
+- Privacy Pools SDK to `0.1.0-alpha.34` and Tornado Cash SDK to `0.1.0-alpha.32`.
+- Tornado unshields honor the SDK's final gas-estimation status instead of requiring a second estimate. Standard unshields may use the SDK's explicit conservative fallback after eligible estimation availability failures, with a warning before broadcast and `gasEstimation` in JSON. User tail calls, including private transfers, still require successful SDK estimation. Older payloads without metadata retain the CLI gas preflight.
+- Tornado fee previews and private-transfer leftover calculations use the fee committed in the prepared proof, including token fees and fallback budgets. Confirmation identifies the actual EIP-7702 executor even for single-note withdrawals, and explains where unused-gas refunds remain. A prepared fee that leaves too little for a private transfer stops before broadcast.
+- Privacy Pools historical sync accepts Saga 0.3's record API and rejects derived entity records where raw pool logs are required.
+
 ## [0.0.13] - 2026-10-28
 
 ### Changed

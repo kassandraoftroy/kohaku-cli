@@ -160,6 +160,7 @@ describe("tornadoUnshieldConfirmExtraLines", () => {
       [
         `  EIP-7702 executor: ${RECIPIENT} (this wallet)`,
         "  Tail-calls execute on the EIP-7702 executor",
+        "  Unused-gas refunds stay on this executor",
       ]
     );
   });
@@ -175,24 +176,27 @@ describe("tornadoUnshieldConfirmExtraLines", () => {
       [
         `  EIP-7702 executor: ${RECIPIENT} (this wallet, stealth s0)`,
         "  Tail-calls execute on the EIP-7702 executor",
+        "  Unused-gas refunds stay on this executor",
       ]
     );
   });
 
-  it("says direct withdrawal for custom --to", () => {
+  it("shows the actual note-derived sender for custom --to", () => {
     assert.deepEqual(
       tornadoUnshieldConfirmExtraLines({
         recipient: RECIPIENT,
+        sender: "0x0000000000000000000000000000000000000001",
         hasTailCalls: false,
         withdrawalCount: 1,
       }),
       [
-        "  Direct Tornado withdrawal to this address (single note; no wallet 7702 landing account)",
+        "  EIP-7702 executor: 0x0000000000000000000000000000000000000001 (recoverable from this note's secrets)",
+        "  The executor forwards the withdrawal minus its fee to the recipient; unused-gas refunds stay on the executor",
       ]
     );
   });
 
-  it("adds no extra lines for stored HD single-note with no tails", () => {
+  it("shows the wallet executor even for a single note without user tails", () => {
     assert.deepEqual(
       tornadoUnshieldConfirmExtraLines({
         recipient: RECIPIENT,
@@ -200,7 +204,7 @@ describe("tornadoUnshieldConfirmExtraLines", () => {
         hasTailCalls: false,
         withdrawalCount: 1,
       }),
-      []
+      [`  EIP-7702 executor: ${RECIPIENT} (this wallet)`, "  Unused-gas refunds stay on this executor"]
     );
   });
 });

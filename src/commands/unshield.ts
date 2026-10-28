@@ -1,4 +1,6 @@
 import { preflightTornadoUnshield } from "../utils/tornado-unshield-preflight.js";
+import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
+import { tornadoPreparedFee, tornadoPreparedSender, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
 import { tornadoUnavailableAmountMessage } from "../utils/tornado-operation-limits.js";
 import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
@@ -1329,6 +1331,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             }
           }
         }
+        let tornadoGasEstimation: PaymasterGasEstimation[] | undefined;
         const privateOp = await runQuietSpinner(
           quiet,
           spin,
@@ -1351,7 +1354,11 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               tornadoErc20Tail,
               tornadoForwardLeftover: forwardLeftover,
             });
-            if (protocol === "tornado") await preflightTornadoUnshield(prepared);
+            if (protocol === "tornado") {
+              tornadoGasEstimation = await preflightTornadoUnshield(prepared, undefined, {
+                allowFallback: tailCalls.length === 0,
+              });
+            }
             return prepared;
           },
           () =>
@@ -1381,67 +1388,25 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               : "paymaster fee paid from private balance so the recipient receives the requested amount (unused gas may refund to the recipient)",
           });
         } else if (protocol === "tornado") {
-          const tornadoIsErc20 = !tokenMeta.isEth;
-          const callGasLimit = tornadoWithdrawalCallGasLimit(
-            Math.max(0, (tornadoWithdrawalCount ?? 1) - 1),
-            tornadoTailCallsGasEstimate,
-            tornadoIsErc20
-          );
-          const feeWei = estimateTornadoPaymasterFee(tornadoMaxFeePerGas!, {
-            callGasLimit,
-            isERC20: tornadoIsErc20,
+          const fee = tornadoPreparedFee(privateOp);
+          const warning = tornadoEstimationWarning(tornadoGasEstimation ?? []);
+          fees = buildFeePreview({
+            kind: "tornado-paymaster",
+            amount: fee,
+            decimals: tokenMeta.decimals,
+            asset: tokenMeta.symbol,
+            note: "fee committed in the prepared withdrawal proof; unused gas may refund to the EIP-7702 executor" +
+              (warning ? "; conservative fallback gas (estimation unavailable)" : ""),
           });
-          if (!tornadoIsErc20) {
-            fees = buildFeePreview({
-              kind: "tornado-paymaster",
-              amount: feeWei,
-              decimals: 18,
-              asset: "ETH",
-              maxFeePerGasWei: tornadoMaxFeePerGas,
-              gasLimit: callGasLimit,
-              note: privateTransfer
-                ? "paymaster fee taken from unshielded ETH; leftover stays on the fresh account (gas×price estimate; SDK quotes exact)"
-                : "paymaster fee taken from unshielded ETH (gas×price estimate; SDK quotes exact)",
-            });
-            if (privateTransfer) tornadoFeeInAsset = feeWei;
-          } else {
-            const feeForQuote =
-              tailCalls.length > 0 ? padTornadoTailForwardFee(feeWei) : feeWei;
-            let feeToken = tornadoErc20Tail?.feeReserveToken;
-            if (feeToken === undefined) {
-              try {
-                feeToken = await quoteTornadoPaymasterFeeInToken({
-                  rpcUrl,
-                  chainId,
-                  feeToken: tokenMeta.tokenAddress as `0x${string}`,
-                  feeWei: feeForQuote,
-                });
-              } catch (e) {
-                cliErrorFromCaught(e);
-                return;
-              }
+          if (warning) {
+            if (quiet) console.error(warning);
+            else log.warn(warning);
+          }
+          if (privateTransfer) {
+            tornadoFeeInAsset = fee;
+            if (transferAmountWei !== undefined && fee + transferAmountWei > amountWei) {
+              throw new Error("The prepared Tornado paymaster fee leaves too little for this private transfer. Retry with a smaller transfer amount or more notes. No operation was submitted.");
             }
-            fees = buildFeePreview({
-              kind: "tornado-paymaster",
-              amount: feeToken,
-              decimals: tokenMeta.decimals,
-              asset: tokenMeta.symbol,
-              maxFeePerGasWei: tornadoMaxFeePerGas,
-              gasLimit: callGasLimit,
-              components: [
-                {
-                  label: "gas × maxFeePerGas",
-                  amount: feeWei.toString(),
-                  amountFormatted: formatFeeAmount(feeWei, 18, "ETH"),
-                  asset: "ETH",
-                },
-              ],
-              note:
-                tailCalls.length > 0
-                  ? `paymaster fee paid in ${tokenMeta.symbol} via on-chain quoteWeiInToken (15% tail leftover pad included)`
-                  : `paymaster fee paid in ${tokenMeta.symbol} via on-chain quoteWeiInToken (same TWAP as UserOp)`,
-            });
-            if (privateTransfer) tornadoFeeInAsset = feeToken;
           }
         } else {
           // railgun
@@ -1551,6 +1516,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                   token: tokenMeta.symbol,
                   ...privateTransferFields(),
                   fees,
+                  ...(tornadoGasEstimation ? { gasEstimation: tornadoGasEstimation, executor: tornadoPreparedSender(privateOp) } : {}),
                   privateOperation: privateOp,
                 }
               : {
@@ -1561,6 +1527,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                   amountWei: amountRaw,
                   amountFormatted,
                   fees,
+                  ...(tornadoGasEstimation ? { gasEstimation: tornadoGasEstimation, executor: tornadoPreparedSender(privateOp) } : {}),
                   privateOperation: privateOp,
                 }
             : { privateOperation: privateOp, fees };
@@ -1623,6 +1590,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                   delegationPath: recipientDerivationPath,
                   hasTailCalls: tailCalls.length > 0,
                   withdrawalCount: tornadoWithdrawalCount ?? 1,
+                  sender: tornadoPreparedSender(privateOp),
                 })
               : [];
           const privacyPoolsConfirmExtra =
@@ -1696,6 +1664,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                   token: tokenMeta.symbol,
                   ...privateTransferFields(),
                   fees,
+                  ...(tornadoGasEstimation ? { gasEstimation: tornadoGasEstimation, executor: tornadoPreparedSender(privateOp) } : {}),
                   relay: relayResult ?? null,
                   explorerHash,
                   explorerUrl: explorerHash
@@ -1710,6 +1679,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                   amountWei: amountRaw,
                   amountFormatted,
                   fees,
+                  ...(tornadoGasEstimation ? { gasEstimation: tornadoGasEstimation, executor: tornadoPreparedSender(privateOp) } : {}),
                   relay: relayResult ?? null,
                   explorerHash,
                   explorerUrl: explorerHash
