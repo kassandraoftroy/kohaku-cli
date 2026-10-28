@@ -21,7 +21,7 @@ import {
 const BUNDLER_HTTP_TIMEOUT_MS = 180_000;
 const RECEIPT_WAIT_MS = 180_000;
 
-type SerializedUserOperation = {
+export type SerializedUserOperation = {
   sender: `0x${string}`;
   nonce: `0x${string}`;
   callData: `0x${string}`;
