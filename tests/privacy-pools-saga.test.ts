@@ -102,6 +102,14 @@ describe("privacyPoolsSagaLogPlan", () => {
 });
 
 describe("privacyPoolsLogsFromSagaEvents", () => {
+  it("rejects Saga 0.3 entity records instead of silently losing pool history", () => {
+    assert.throws(() => privacyPoolsLogsFromSagaEvents({
+      events: [deposit(10n, 111n), { entity: "derived-operation", blockNumber: "0x14", transactionIndex: "0x0", opIndex: "0x0" }],
+      pool: POOL,
+      fromBlock: 0n,
+      sagaTo: 31n,
+    }), /must contain raw log events/);
+  });
   it("keeps absolute leaf indexes when the window starts mid-history", () => {
     const logs = privacyPoolsLogsFromSagaEvents({
       events: [deposit(10n, 111n), deposit(20n, 222n), deposit(30n, 333n)],

@@ -123,6 +123,38 @@ test("central prepare accepts new denominations and delegates proof construction
   }
 });
 
+test("single legacy 0.1 ETH with a wallet executor allows both reported buffered verification estimates", async () => {
+  for (const chainId of [1n, 11155111n]) {
+    const legacyNote = { ...note(eth / 10n, eth / 10n, chainId), kind: "legacy" };
+    const path = "m/44'/60'/0'/0/3";
+    const result = await prepareProtocolUnshield({
+      protocol: "tornado", chainId, rpcUrl: "unused", client: client(),
+      plugin: {
+        notes: async () => [legacyNote],
+        prepareUnshield: async (_asset: unknown, _recipient: unknown, options: {
+          maxGasLimits?: { verificationGasLimit?: bigint; paymasterVerificationGasLimit?: bigint };
+          delegation?: { mode: string; path: string };
+        }) => {
+          const ceiling = options.maxGasLimits?.verificationGasLimit;
+          assert.equal(ceiling, 250_000n);
+          assert.ok(ceiling >= 204_422n);
+          const paymasterCeiling = options.maxGasLimits?.paymasterVerificationGasLimit;
+          assert.equal(paymasterCeiling, 2_000_000n);
+          assert.ok(paymasterCeiling >= 1_535_324n);
+          assert.deepEqual(options.delegation, { mode: "deterministic", path });
+          // Other SDK ceilings remain intact; no signed gas is patched by the CLI.
+          assert.deepEqual(Object.keys(options.maxGasLimits!), ["verificationGasLimit", "paymasterVerificationGasLimit"]);
+          return "prepared";
+        },
+      } as never,
+      tokenMeta: { isEth: true, tokenAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", symbol: "ETH", decimals: 18 },
+      amountWei: eth / 10n, recipient: "0x0000000000000000000000000000000000000001", tailCalls: [],
+      recipientDerivationPath: path, tornadoMaxFeePerGas: 1n, tornadoWithdrawalCount: 1,
+    });
+    assert.equal(result, "prepared");
+  }
+});
+
 
 test("rejects existing cDAI notes without paymaster support", () => {
   const cdai = TornadoInstances[1].find((pool) => pool.symbol === "cDAI")!;

@@ -1,5 +1,6 @@
 import { http } from "viem";
 import { createBundlerClient } from "viem/account-abstraction";
+import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
 import type { SerializedUserOperation } from "./tornado-paymaster-broadcaster.js";
 
 type Withdrawal = {
@@ -7,6 +8,7 @@ type Withdrawal = {
   bundlerUrl: string;
   entryPointAddress: `0x${string}`;
   userOperation: SerializedUserOperation;
+  gasEstimation?: PaymasterGasEstimation;
 };
 type GasField = "preVerificationGas" | "verificationGasLimit" | "callGasLimit" |
   "paymasterVerificationGasLimit" | "paymasterPostOpGasLimit";
@@ -23,16 +25,33 @@ async function estimate(withdrawal: Withdrawal): Promise<GasEstimate> {
   });
 }
 
-/** Validate the final signed payload before confirmation. Never edit signed gas/proof data. */
+/** Honor SDK preparation metadata; estimate older payloads that have no metadata. Never edit signed data. */
 export async function preflightTornadoUnshield(
   operation: unknown,
-  estimateGas: Estimate = estimate
-): Promise<void> {
+  estimateGas: Estimate = estimate,
+  { allowFallback = true }: { allowFallback?: boolean } = {}
+): Promise<PaymasterGasEstimation[]> {
   const withdrawals = (operation as { withdrawals?: Withdrawal[] } | null)?.withdrawals;
   if (!withdrawals?.length) throw new Error("Tornado unshield is missing its prepared paymaster withdrawals.");
+  const results: PaymasterGasEstimation[] = [];
   for (const withdrawal of withdrawals) {
     if (withdrawal.mode !== "paymaster" || !withdrawal.userOperation) {
       throw new Error("Tornado unshield is missing a signed paymaster operation.");
+    }
+    const estimation = withdrawal.gasEstimation;
+    if (estimation?.status === "estimated") {
+      results.push(estimation);
+      continue;
+    }
+    if (estimation?.status === "fallback") {
+      if (!allowFallback || !["transport-unavailable", "bundler-internal"].includes(estimation.reason)) {
+        throw new Error("Tornado unshield requires successful SDK gas estimation for this operation. No operation was submitted.");
+      }
+      results.push(estimation);
+      continue;
+    }
+    if (estimation != null) {
+      throw new Error("Tornado unshield has an unknown SDK gas estimation status. No operation was submitted.");
     }
     let required: GasEstimate;
     try {
@@ -64,5 +83,7 @@ export async function preflightTornadoUnshield(
         );
       }
     }
+    results.push({ status: "estimated" });
   }
+  return results;
 }

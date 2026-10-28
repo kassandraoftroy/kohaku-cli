@@ -155,6 +155,16 @@ describe("resolveTornadoPrivateTransferCover", () => {
 describe("tornadoUnshieldOptions leftover forward", () => {
   const userTail = { to: PAYEE, data: "0x" as const, value: ONE_TENTH };
 
+  it("allows SDK best-effort estimation only for standard unshields", () => {
+    const standard = tornadoUnshieldOptions(RECIPIENT, ONE, 1_000_000_000n, PATH, 1);
+    assert.equal(standard.gasEstimationPolicy, "best-effort");
+    assert.equal(standard.tailCalls, undefined);
+    assert.deepEqual(standard.maxGasLimits, { verificationGasLimit: 250_000n, paymasterVerificationGasLimit: 2_000_000n });
+    const custom = tornadoUnshieldOptions(RECIPIENT, ONE, 1_000_000_000n, PATH, 1, [userTail], 50_000n);
+    assert.equal(custom.gasEstimationPolicy, "required");
+    assert.deepEqual(custom.maxGasLimits, { verificationGasLimit: 250_000n, paymasterVerificationGasLimit: 2_000_000n });
+  });
+
   it("prepends a leftover value transfer by default", async () => {
     const options = tornadoUnshieldOptions(
       RECIPIENT,

@@ -1,13 +1,11 @@
 /**
  * Tornado paymaster 7702 landing-account policy.
  *
- * The SDK consolidates onto a batch EIP-7702 delegator whenever there are
- * `--tail-calls` or more than one note. Pathless `{ mode: "deterministic" }`
- * makes that delegator a note-derived ephemeral key — not a wallet account —
- * so this CLI never emits it. Wallet-controlled deterministic is used for
+ * The SDK uses an EIP-7702 sender for every unshield. Omitting delegation
+ * selects a recoverable note-derived key. Wallet-controlled deterministic is used for
  * `--next` / stored public HD `--to` / stored stealth (`STEALTH_ADDRESS_MAGIC_VALUE_PATH`).
  * A custom `--to` is allowed only for a single-note unshield with no user tails
- * (proof recipient = `--to`).
+ * (the sender forwards the proceeds to `--to`).
  */
 
 import { parseStealthDelegatorPath } from "../lib/stealth/constants.js";
@@ -41,7 +39,7 @@ export function assertTornadoTailCallsHaveHdDelegator(
 /**
  * Delegation passed to the Tornado SDK.
  * - Stored HD / `--next` / stored stealth: `{ mode: "deterministic", path }`.
- * - Custom `--to`, single note, no tails: omit `delegation` (prove directly to `--to`).
+ * - Custom `--to`, single note, no tails: omit `delegation` (note-derived sender forwards to `--to`).
  */
 export function tornadoDelegationConfig(opts: {
   delegationPath: string | undefined;
@@ -74,25 +72,27 @@ export function tornadoUnshieldConfirmExtraLines(opts: {
   delegationPath?: string;
   hasTailCalls: boolean;
   withdrawalCount: number;
+  sender?: `0x${string}`;
 }): string[] {
   const path = opts.delegationPath?.trim() || undefined;
   const hasPath = path != null;
-  const consolidates = opts.hasTailCalls || opts.withdrawalCount > 1;
-  if (hasPath && consolidates) {
+  if (hasPath) {
     const stealthIndex = parseStealthDelegatorPath(path);
     const who =
       stealthIndex !== null
         ? `this wallet, stealth ${formatStealthSelector(stealthIndex)}`
         : "this wallet";
-    const lines = [`  EIP-7702 executor: ${opts.recipient} (${who})`];
+    const lines = [`  EIP-7702 executor: ${opts.sender ?? opts.recipient} (${who})`];
     if (opts.hasTailCalls) {
       lines.push("  Tail-calls execute on the EIP-7702 executor");
     }
+    lines.push("  Unused-gas refunds stay on this executor");
     return lines;
   }
   if (!hasPath) {
     return [
-      "  Direct Tornado withdrawal to this address (single note; no wallet 7702 landing account)",
+      `  EIP-7702 executor: ${opts.sender ?? "note-derived sender"} (recoverable from this note's secrets)`,
+      "  The executor forwards the withdrawal minus its fee to the recipient; unused-gas refunds stay on the executor",
     ];
   }
   return [];

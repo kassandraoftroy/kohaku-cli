@@ -9,7 +9,7 @@
  */
 import type { Host } from "@kohaku-eth/plugins";
 import { DataService } from "@kohaku-eth/privacy-pools";
-import { Client, HttpStore, type CanonicalEvent } from "@saga-sync/client";
+import { Client, HttpStore, isEntityRecord, type CanonicalEvent, type CanonicalRecord } from "@saga-sync/client";
 import { addSyncUnits } from "./sync-progress.js";
 import {
   decodeEventLog,
@@ -49,9 +49,9 @@ async function loadSagaEvents(
   chunks: SagaChunkMeta[],
   hot: SagaChunkMeta | undefined,
   advance: () => void
-): Promise<CanonicalEvent[]> {
-  const events: CanonicalEvent[] = [];
-  const queue: Promise<CanonicalEvent[]>[] = [];
+): Promise<CanonicalRecord[]> {
+  const events: CanonicalRecord[] = [];
+  const queue: Promise<CanonicalRecord[]>[] = [];
   let next = 0;
   while (next < chunks.length && queue.length < SAGA_CHUNK_CONCURRENCY) {
     queue.push(client.fetchChunk(chunks[next++]!));
@@ -189,7 +189,7 @@ function toSagaLog(ev: CanonicalEvent): SagaLog {
  * of the stream so a window that begins mid-history still matches the chain.
  */
 export function privacyPoolsLogsFromSagaEvents(opts: {
-  events: readonly CanonicalEvent[];
+  events: readonly CanonicalRecord[];
   pool: string;
   fromBlock: bigint;
   sagaTo: bigint;
@@ -197,6 +197,9 @@ export function privacyPoolsLogsFromSagaEvents(opts: {
   const logs: SagaLog[] = [];
   let leafIndex = 1n;
   for (const ev of opts.events) {
+    if (isEntityRecord(ev)) {
+      throw new Error("Privacy Pools saga history must contain raw log events, not derived entity records.");
+    }
     const block = BigInt(ev.blockNumber);
     const leaf = insertedLeaf(ev);
     const inWindow = block >= opts.fromBlock && block < opts.sagaTo;
