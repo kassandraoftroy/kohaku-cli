@@ -682,7 +682,7 @@ export function registerShieldCommand(program: Command): void {
             if (!choices.length) log.warn(opts.disallowMultipleUserops
               ? "No exact packing fits within five notes. Choose another amount or remove --disallow-multiple-userops."
               : "No exact packing is possible with these pool exclusions.");
-            const index = await select<number>({ message: `Choose notes${choices.some((plan) => plan.entries.some(({ pool }) => pool.isNew)) ? " (* = new pool)" : ""}`, choices: [
+            const index = await select<number>({ message: `Choose notes (fewest first)${choices.some((plan) => plan.entries.some(({ pool }) => pool.isNew)) ? " (* = new pool)" : ""}`, choices: [
               ...choices.map((plan, index) => ({ value: index, name: tornadoShieldPlanLabel(plan, tokenMeta.decimals, tokenMeta.symbol) })),
               { value: -1, name: "Shield a different amount" },
               { value: -2, name: "Cancel" },

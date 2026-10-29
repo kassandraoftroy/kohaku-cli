@@ -20,14 +20,22 @@ export function tornadoShieldConfirmation(opts: {
   const fee = (amount: bigint) => opts.feesUnknown ? "unknown (simulation skipped)" : compactShieldFee(amount);
   const hasNew = plan.entries.some(({ pool }) => pool.isNew);
   return [
-    `Shield ${fmt(plan.amount)}?`,
-    `  From: ${opts.sender}`,
-    `  Pools${hasNew ? " (* = new pool)" : ""}:`,
+    `Deposit ${fmt(plan.amount)} with:`,
+    "",
     ...plan.entries.map(({ pool, count }) =>
-      `    ${count}×${fmt(pool.denomination)}${pool.isNew ? "*" : ""} → ${pool.poolAddress}`),
+      `  ${count} x ${fmt(pool.denomination)}${pool.isNew ? "*" : ""}`),
+    ...(hasNew ? ["  * new pool"] : []),
+    "",
+    `  From: ${opts.sender}`,
+    "",
+    "  Pools:",
+    ...plan.entries.map(({ pool }) =>
+      `    ${fmt(pool.denomination)} → ${pool.poolAddress}`),
+    "",
     ...batches.map((batch, i) =>
       `  Tx ${i + 1}: ${fmt(batch.amount)} · ${batch.noteCount} ${batch.noteCount === 1 ? "note" : "notes"} · fee ${fee(batch.fee)}`),
     ...(batches.length > 1 ? [`  Total est. fee: ${fee(batches.reduce((sum, batch) => sum + batch.fee, 0n))}`] : []),
+    "",
     ...(opts.feesUnknown ? [] : ["  Fees are estimates; unused gas is refunded."]),
     ...(batches.length > 1 ? ["  Sent in order; fees re-estimated per tx. Partial completion is possible."] : []),
   ].join("\n");

@@ -2,10 +2,33 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { parseEther } from "viem";
 import { tornadoPoolsForAsset } from "../src/utils/tornado-pools.js";
-import { excludedTornadoDenominations, requireTornadoShieldPlan, tornadoShieldPlans, tornadoShieldChoices } from "../src/utils/tornado-shield-plans.js";
+import { excludedTornadoDenominations, requireTornadoShieldPlan, tornadoShieldPlans, tornadoShieldChoices, tornadoShieldPlanLabel } from "../src/utils/tornado-shield-plans.js";
 
 for (const chainId of [1n, 11155111n]) {
   const pools = tornadoPoolsForAsset(chainId, { isEth: true });
+  it(`prioritizes cumulative 3-style exclusions after the fewest-note packing on ${chainId}`, () => {
+    const choices = tornadoShieldChoices(tornadoShieldPlans(parseEther("3.33"), pools));
+    assert.deepEqual(choices.map((plan) => plan.noteCount), [3, 5, 7, 9]);
+    assert.deepEqual(choices.map((plan) => plan.excludedDenominations), [
+      [], [parseEther("3")], [parseEther("3"), parseEther("0.3")],
+      [parseEther("3"), parseEther("0.3"), parseEther("0.03")],
+    ]);
+    for (const plan of choices) {
+      assert.ok(plan.entries.every(({ pool }) => !plan.excludedDenominations!.includes(pool.denomination)));
+      assert.equal(plan.entries.reduce((sum, { pool, count }) => sum + pool.denomination * BigInt(count), 0n), parseEther("3.33"));
+    }
+    assert.match(tornadoShieldPlanLabel(choices[2]!, 18, "ETH"), /^7 notes · 1, 0.1, 0.03\* ETH · exclude 3, 0.3$/);
+  });
+  it(`honors flag exclusions and the single-UserOp constraint in every alternative on ${chainId}`, () => {
+    const allowed = pools.filter((pool) => pool.denomination !== parseEther("3"));
+    const choices = tornadoShieldChoices(tornadoShieldPlans(parseEther("3.33"), allowed, true));
+    assert.equal(choices[0]!.noteCount, 5);
+    assert.deepEqual(choices[0]!.excludedDenominations, []);
+    for (const plan of choices) {
+      assert.equal(plan.batchCount, 1);
+      assert.ok(plan.entries.every(({ pool }) => pool.denomination !== parseEther("3")));
+    }
+  });
   it(`offers efficient and classic 1.4 ETH packings on ${chainId}`, () => {
     const choices = tornadoShieldChoices(tornadoShieldPlans(parseEther("1.4"), pools));
     assert.equal(choices[0]!.noteCount, 3);

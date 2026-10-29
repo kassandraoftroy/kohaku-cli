@@ -8,6 +8,8 @@ export type TornadoShieldPlan = {
   entries: { pool: TornadoSagaPool; count: number }[];
   noteCount: number;
   batchCount: number;
+  /** Additional exclusions for this interactive alternative, beyond the CLI flags. */
+  excludedDenominations?: bigint[];
 };
 
 export function excludedTornadoDenominations(values: readonly string[], decimals: number, pools: readonly TornadoSagaPool[]): bigint[] {
@@ -68,31 +70,43 @@ function bestPacking(amount: bigint, pools: readonly TornadoSagaPool[]): Tornado
   return { amount, entries: best, noteCount, batchCount: Math.ceil(noteCount / TORNADO_SHIELD_NOTES_PER_USEROP) };
 }
 
-/** Optimal packing, classic-only alternative, and alternatives avoiding individual pools. */
+/** Fewest-note packing first, then explicit exclusions, prioritizing 3 × powers of ten. */
 export function tornadoShieldPlans(amount: bigint, pools: readonly TornadoSagaPool[], disallowMultiple = false): TornadoShieldPlan[] {
   if (amount <= 0n) throw new Error("Amount must be greater than zero.");
+  const isThree = (denomination: bigint): boolean => {
+    while (denomination > 0n && denomination % 10n === 0n) denomination /= 10n;
+    return denomination === 3n;
+  };
+  const denominations = [...new Set(pools.filter((pool) => pool.denomination <= amount).map((pool) => pool.denomination))]
+    .sort((a, b) => a > b ? -1 : a < b ? 1 : 0);
+  const threes = denominations.filter(isThree);
+  const exclusions: bigint[][] = [
+    [],
+    ...threes.map((_, index) => threes.slice(0, index + 1)),
+    denominations.filter((denomination) => pools.some((pool) => pool.denomination === denomination && pool.isNew)),
+    ...denominations.map((denomination) => [denomination]),
+  ];
   const plans = new Map<string, TornadoShieldPlan>();
-  for (const candidates of [pools, pools.filter((pool) => !pool.isNew), ...pools.map((excluded) => pools.filter((pool) => pool !== excluded))]) {
-    const plan = bestPacking(amount, candidates);
+  for (const excluded of exclusions) {
+    const plan = bestPacking(amount, pools.filter((pool) => !excluded.includes(pool.denomination)));
     if (!plan || (disallowMultiple && plan.noteCount > TORNADO_SHIELD_NOTES_PER_USEROP)) continue;
     const key = plan.entries.map(({ pool, count }) => `${pool.poolAddress}:${count}`).join(",");
-    plans.set(key, plan);
+    // Keep the first explanation for each distinct packing, especially the unrestricted optimum.
+    if (!plans.has(key)) plans.set(key, { ...plan, excludedDenominations: excluded });
   }
-  return [...plans.values()].sort((a, b) => a.noteCount - b.noteCount ||
-    a.entries.filter((e) => e.pool.isNew).length - b.entries.filter((e) => e.pool.isNew).length);
+  return [...plans.values()];
 }
 
-/** Few useful choices, including a classic-only choice even when it uses more notes. */
+/** Keep the optimum and the first few distinct, prioritized exclusion alternatives. */
 export function tornadoShieldChoices(plans: readonly TornadoShieldPlan[]): TornadoShieldPlan[] {
-  if (!plans.length) return [];
-  const best = plans[0]!;
-  const classic = plans.find((plan) => plan.entries.every(({ pool }) => !pool.isNew));
-  return [...new Set([best, ...(classic ? [classic] : []), ...plans.slice(1, 3)])].slice(0, 4);
+  return plans.slice(0, 4);
 }
 
 export function tornadoShieldPlanLabel(plan: TornadoShieldPlan, decimals: number, symbol: string): string {
-  const parts = plan.entries.map(({ pool, count }) => `${count > 1 ? `${count}×` : ""}${formatUnits(pool.denomination, decimals)}${pool.isNew ? "*" : ""}`);
-  return `${parts.join(" + ")} ${symbol} · ${plan.noteCount} ${plan.noteCount === 1 ? "note" : "notes"} · ${plan.batchCount} ${plan.batchCount === 1 ? "tx" : "txs"}`;
+  const denominations = plan.entries.map(({ pool }) => `${formatUnits(pool.denomination, decimals)}${pool.isNew ? "*" : ""}`);
+  const excluded = plan.excludedDenominations ?? [];
+  return `${plan.noteCount} ${plan.noteCount === 1 ? "note" : "notes"} · ${denominations.join(", ")} ${symbol}` +
+    (excluded.length ? ` · exclude ${excluded.map((amount) => formatUnits(amount, decimals)).join(", ")}` : "");
 }
 
 export function requireTornadoShieldPlan(amount: bigint, pools: readonly TornadoSagaPool[], disallowMultiple = false): TornadoShieldPlan {

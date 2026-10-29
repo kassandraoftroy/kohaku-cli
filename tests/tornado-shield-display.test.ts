@@ -16,19 +16,19 @@ const opts = {
 };
 
 it("keeps a mixed eight-note packing on a short line with one currency label", () => {
-  assert.equal(tornadoShieldPlanLabel(plan, 18, "ETH"), "2×1 + 2×0.3* + 0.1 + 0.03* + 2×0.01* ETH · 8 notes · 2 txs");
+  assert.equal(tornadoShieldPlanLabel(plan, 18, "ETH"), "8 notes · 1, 0.3*, 0.1, 0.03*, 0.01* ETH");
 });
 
 it("keeps full addresses and exact shield amounts readable without long fee decimals", () => {
   const message = tornadoShieldConfirmation(opts);
-  assert.match(message, /Shield 2.75 ETH\?/);
+  assert.ok(message.startsWith("Deposit 2.75 ETH with:\n\n  2 x 1 ETH\n  2 x 0.3 ETH*\n  1 x 0.1 ETH\n  1 x 0.03 ETH*\n  2 x 0.01 ETH*\n  * new pool\n\n"));
   assert.ok(message.includes(opts.sender));
   for (const { pool } of plan.entries) assert.ok(message.includes(pool.poolAddress));
   assert.match(message, /Tx 1: 2.7 ETH · 5 notes · fee ~0.005741 ETH/);
   assert.match(message, /Tx 2: 0.05 ETH · 3 notes · fee ~0.006169 ETH/);
   assert.match(message, /Total est. fee: ~0.011909 ETH/);
   assert.match(message, /Partial completion/);
-  assert.equal(message.split("* = new pool").length - 1, 1);
+  assert.equal(message.split("* new pool").length - 1, 1);
   assert.ok(message.split("\n").every((line) => line.length <= 80));
 });
 
