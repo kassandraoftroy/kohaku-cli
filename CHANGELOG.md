@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-10-29
+
+### Added
+
+- Interactive Tornado shields put the fewest-note packing first, followed by explicit denomination exclusions prioritizing individual 3-style sizes, then combinations, before other denominations. Choices show note count, denominations used, and transaction count. Confirmation separates the count-by-denomination breakdown, pool addresses, and fee estimates with line breaks; JSON retains exact values. Repeatable `--exclude-denomination <amount>` excludes specific pool sizes in token units; `--exclude-new-pools` remains available. Non-interactive shields choose the fewest-note exact packing allowed by the exclusions.
+- Tornado shields split into transactions of at most five deposit notes, with batching enabled by default. `--disallow-multiple-userops` rejects plans that need multiple transactions before preparing commitments. Approvals do not count as notes; every batch still requires estimation. Single native-note shields retain the EOA path.
+- Multi-UserOp shields estimate the full plan before confirmation, then submit sequentially, waiting for each successful UserOp receipt and one on-chain confirmation before starting the next. Partial failures report confirmed/unconfirmed amounts and hashes with a failing exit status. Prepared calls and progress are encrypted under the wallet's `shield-runs` directory. Ambiguous submissions stop the sequence without automatically retrying.
+- Invalid interactive Tornado unshield amounts offer the nearest valid lower/higher amounts from available notes, before fees, or another amount. Explicit amounts are never silently rounded. Suggestions respect derivation/pool restrictions and no longer inherit the shield note limit. Confirmation shows the amount forwarded after the prepared paymaster fee for standard unshields.
+
 ## [0.0.14] - 2026-10-28
 
 ### Changed
