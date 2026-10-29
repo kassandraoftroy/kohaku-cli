@@ -82,7 +82,9 @@ export function tornadoShieldPlans(amount: bigint, pools: readonly TornadoSagaPo
   const threes = denominations.filter(isThree);
   const exclusions: bigint[][] = [
     [],
-    ...threes.map((_, index) => threes.slice(0, index + 1)),
+    ...threes.map((denomination) => [denomination]),
+    ...threes.flatMap((denomination, index) => threes.slice(index + 1).map((other) => [denomination, other])),
+    ...threes.slice(2).map((_, index) => threes.slice(0, index + 3)),
     denominations.filter((denomination) => pools.some((pool) => pool.denomination === denomination && pool.isNew)),
     ...denominations.map((denomination) => [denomination]),
   ];
@@ -103,10 +105,8 @@ export function tornadoShieldChoices(plans: readonly TornadoShieldPlan[]): Torna
 }
 
 export function tornadoShieldPlanLabel(plan: TornadoShieldPlan, decimals: number, symbol: string): string {
-  const denominations = plan.entries.map(({ pool }) => `${formatUnits(pool.denomination, decimals)}${pool.isNew ? "*" : ""}`);
-  const excluded = plan.excludedDenominations ?? [];
-  return `${plan.noteCount} ${plan.noteCount === 1 ? "note" : "notes"} · ${denominations.join(", ")} ${symbol}` +
-    (excluded.length ? ` · exclude ${excluded.map((amount) => formatUnits(amount, decimals)).join(", ")}` : "");
+  const denominations = plan.entries.map(({ pool }) => formatUnits(pool.denomination, decimals));
+  return `${plan.noteCount} ${plan.noteCount === 1 ? "note" : "notes"} · ${denominations.join(", ")} ${symbol} · ${plan.batchCount} ${plan.batchCount === 1 ? "tx" : "txs"}`;
 }
 
 export function requireTornadoShieldPlan(amount: bigint, pools: readonly TornadoSagaPool[], disallowMultiple = false): TornadoShieldPlan {

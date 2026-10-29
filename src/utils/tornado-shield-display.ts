@@ -18,13 +18,11 @@ export function tornadoShieldConfirmation(opts: {
   const { plan, decimals, symbol, batches } = opts;
   const fmt = (amount: bigint) => `${formatUnits(amount, decimals)} ${symbol}`;
   const fee = (amount: bigint) => opts.feesUnknown ? "unknown (simulation skipped)" : compactShieldFee(amount);
-  const hasNew = plan.entries.some(({ pool }) => pool.isNew);
   return [
     `Deposit ${fmt(plan.amount)} with:`,
     "",
     ...plan.entries.map(({ pool, count }) =>
-      `  ${count} x ${fmt(pool.denomination)}${pool.isNew ? "*" : ""}`),
-    ...(hasNew ? ["  * new pool"] : []),
+      `  ${count} x ${fmt(pool.denomination)}`),
     "",
     `  From: ${opts.sender}`,
     "",

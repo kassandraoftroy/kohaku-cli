@@ -6,18 +6,25 @@ import { excludedTornadoDenominations, requireTornadoShieldPlan, tornadoShieldPl
 
 for (const chainId of [1n, 11155111n]) {
   const pools = tornadoPoolsForAsset(chainId, { isEth: true });
-  it(`prioritizes cumulative 3-style exclusions after the fewest-note packing on ${chainId}`, () => {
+  it(`prioritizes individual 3-style exclusions after the fewest-note packing on ${chainId}`, () => {
     const choices = tornadoShieldChoices(tornadoShieldPlans(parseEther("3.33"), pools));
-    assert.deepEqual(choices.map((plan) => plan.noteCount), [3, 5, 7, 9]);
+    assert.deepEqual(choices.map((plan) => plan.noteCount), [3, 5, 5, 5]);
     assert.deepEqual(choices.map((plan) => plan.excludedDenominations), [
-      [], [parseEther("3")], [parseEther("3"), parseEther("0.3")],
-      [parseEther("3"), parseEther("0.3"), parseEther("0.03")],
+      [], [parseEther("3")], [parseEther("0.3")], [parseEther("0.03")],
     ]);
     for (const plan of choices) {
       assert.ok(plan.entries.every(({ pool }) => !plan.excludedDenominations!.includes(pool.denomination)));
       assert.equal(plan.entries.reduce((sum, { pool, count }) => sum + pool.denomination * BigInt(count), 0n), parseEther("3.33"));
     }
-    assert.match(tornadoShieldPlanLabel(choices[2]!, 18, "ETH"), /^7 notes · 1, 0.1, 0.03\* ETH · exclude 3, 0.3$/);
+    assert.match(tornadoShieldPlanLabel(choices[2]!, 18, "ETH"), /^5 notes · 3, 0.1, 0.03 ETH · 1 tx$/);
+  });
+  it(`offers individual then combined exclusions for the 1.99 ETH example on ${chainId}`, () => {
+    const choices = tornadoShieldChoices(tornadoShieldPlans(parseEther("1.99"), pools));
+    assert.deepEqual(choices.map((plan) => plan.excludedDenominations), [
+      [], [parseEther("0.3")], [parseEther("0.03")], [parseEther("0.3"), parseEther("0.03")],
+    ]);
+    assert.deepEqual(choices.map((plan) => plan.noteCount), [7, 13, 13, 19]);
+    assert.ok(choices.every((plan) => plan.entries.some(({ pool }) => pool.denomination === parseEther("1"))));
   });
   it(`honors flag exclusions and the single-UserOp constraint in every alternative on ${chainId}`, () => {
     const allowed = pools.filter((pool) => pool.denomination !== parseEther("3"));
