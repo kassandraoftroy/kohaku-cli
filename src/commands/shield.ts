@@ -318,7 +318,7 @@ export function registerShieldCommand(program: Command): void {
     )
     .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
     .option("--exclude-denomination <amount>", "Tornado only: exclude this pool denomination in token units (repeatable)", (value: string, values: string[]) => [...values, value], [])
-    .option("--disallow-multiple-userops", "Tornado only: fail before preparation unless the packing fits within four deposit notes")
+    .option("--disallow-multiple-userops", "Tornado only: fail before preparation unless the packing fits within five deposit notes")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
@@ -534,7 +534,7 @@ export function registerShieldCommand(program: Command): void {
               ? allowedTornadoPools.reduce((min, pool) => pool.denomination < min ? pool.denomination : min, allowedTornadoPools[0]!.denomination)
               : undefined;
           if (protocol === "tornado") {
-            // Four native deposits can require ~4.8M total UserOp gas on Sepolia.
+            // Five native deposits can require ~5.8M total UserOp gas on Sepolia.
             // Start at 3x the existing padded 2M reserve per planned transaction;
             // the exact full-plan estimate is checked again before submission.
             const perBatchReserve = gasReserveWei * 3n;
@@ -680,9 +680,9 @@ export function registerShieldCommand(program: Command): void {
             const plans = tornadoShieldPlans(amount, allowedTornadoPools, opts.disallowMultipleUserops);
             const choices = tornadoShieldChoices(plans);
             if (!choices.length) log.warn(opts.disallowMultipleUserops
-              ? "No exact packing fits within four notes. Choose another amount or remove --disallow-multiple-userops."
+              ? "No exact packing fits within five notes. Choose another amount or remove --disallow-multiple-userops."
               : "No exact packing is possible with these pool exclusions.");
-            const index = await select<number>({ message: "Choose how to slice this Tornado shield", choices: [
+            const index = await select<number>({ message: `Choose notes${choices.some((plan) => plan.entries.some(({ pool }) => pool.isNew)) ? " (* = new pool)" : ""}`, choices: [
               ...choices.map((plan, index) => ({ value: index, name: tornadoShieldPlanLabel(plan, tokenMeta.decimals, tokenMeta.symbol) })),
               { value: -1, name: "Shield a different amount" },
               { value: -2, name: "Cancel" },

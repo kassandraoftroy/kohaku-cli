@@ -31,8 +31,8 @@ it("CLI rejects restricted or multi-UserOp plans before SDK preparation, and par
     writeWalletType("mainnet", walletDir);
     const address = server.address() as { port: number };
     const cases = [
-      { flags: ["--amount-formatted", "1.4", "--exclude-denomination", "0.3", "--disallow-multiple-userops"], error: /four deposit notes/ },
-      { flags: ["--amount-formatted", "3.3", "--exclude-denomination", "3", "--exclude-denomination", "0.3", "--disallow-multiple-userops"], error: /four deposit notes/ },
+      { flags: ["--amount-formatted", "1.5", "--exclude-denomination", "0.3", "--disallow-multiple-userops"], error: /five deposit notes/ },
+      { flags: ["--amount-formatted", "3.3", "--exclude-denomination", "3", "--exclude-denomination", "0.3", "--disallow-multiple-userops"], error: /five deposit notes/ },
       { flags: ["--amount-formatted", "0.02", "--exclude-denomination", "0.01"], error: /No exact Tornado packing/ },
       { flags: ["--amount-formatted", "1", "--exclude-denomination", "0.2"], error: /not a supported denomination/ },
     ];

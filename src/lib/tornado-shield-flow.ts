@@ -4,10 +4,10 @@ import { spinner } from "@clack/prompts";
 import { formatUnits, erc20Abi } from "viem";
 import type { Host } from "@kohaku-eth/plugins";
 import { createProtocolPlugin, ETH_AS_ERC20, prepareProtocolShield } from "../utils/plugins.js";
-import { assertTornadoShieldCalls, toShieldTxs, tornadoShieldTargetsLine } from "./shield-flow.js";
+import { assertTornadoShieldCalls, toShieldTxs } from "./shield-flow.js";
 import { isolatedShieldHost, shieldRunJournal, splitTornadoShieldCalls, submitTornadoShieldBatches, type ShieldBatchRun } from "./tornado-shield-batches.js";
 import { estimateEip7702BatchUserOpFee, sendEip7702BatchUserOperation, type Eip7702TorOpts } from "../utils/eip7702-batch-userop.js";
-import { buildFeePreview, estimateEoaTxFeePreview, feeConfirmLine, type FeePreview } from "../utils/fee-preview.js";
+import { buildFeePreview, estimateEoaTxFeePreview, type FeePreview } from "../utils/fee-preview.js";
 import { eoaShieldSendParams } from "../utils/shield-max.js";
 import { makeWalletClient, sendTransactionAndWait, simulateCallOrThrow } from "../utils/viem-tx.js";
 import { logCliJson, manageSpinner } from "../utils/cli-quiet.js";
@@ -15,7 +15,8 @@ import { runWithSyncProgress, syncPluginWithProgress } from "../utils/sync-progr
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import type { KohakuPublicClient } from "../utils/rpc.js";
-import { tornadoShieldPlanLabel, type TornadoShieldPlan } from "../utils/tornado-shield-plans.js";
+import type { TornadoShieldPlan } from "../utils/tornado-shield-plans.js";
+import { tornadoShieldConfirmation } from "../utils/tornado-shield-display.js";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 
 /** Prepare each pool once, estimate all batches, confirm the plan, then await each receipt in order. */
@@ -55,7 +56,7 @@ export async function runTornadoShield(opts: {
     }
     progress.stop("Tornado packing prepared.");
   } finally { if (progress.active) progress.stop("Tornado preparation stopped."); }
-  const targets = assertTornadoShieldCalls(opts.chainId, raw, { ...opts.token, amount: opts.plan.amount });
+  assertTornadoShieldCalls(opts.chainId, raw, { ...opts.token, amount: opts.plan.amount });
   const batches = splitTornadoShieldCalls(raw, opts.plan, opts.token.isEth ? undefined : opts.token.tokenAddress);
   const run: ShieldBatchRun = { version: 1, id: randomUUID(), chainId: opts.chainId.toString(), sender: opts.sender, amount: opts.plan.amount,
     status: "prepared", batches: batches.map((batch) => ({ status: "not-submitted", amount: batch.amount, calls: batch.calls })) };
@@ -96,12 +97,11 @@ export async function runTornadoShield(opts: {
   const transactions = batches.flatMap((batch) => batch.calls.map((call) => ({ ...call, from: opts.sender, value: call.value.toString() })));
   const summary = { ...(!singleEoa ? { mode: batches.length > 1 ? "eip7702-userops" : "eip7702-userop", implementation: SIMPLE_7702_IMPLEMENTATION } : {}), runId: run.id, protocol: "tornado", amount: opts.plan.amount.toString(),
     noteCount: opts.plan.noteCount, batchCount: batches.length, sender: opts.sender, fees };
-  const message = `Shield ${fmt(opts.plan.amount)} from ${opts.sender}?\n` +
-    `  ${tornadoShieldPlanLabel(opts.plan, opts.token.decimals, opts.token.symbol)}\n` +
-    `  ${tornadoShieldTargetsLine(targets, opts.token)}\n` +
-    batches.map((batch, i) => `  Transaction ${i + 1}: ${fmt(batch.amount)}, ${batch.deposits.length} notes — ${feeConfirmLine(estimates[i]!)}`).join("\n") +
-    `\n  Total ${feeConfirmLine(fees)}\n` +
-    (batches.length > 1 ? "  Transactions submit sequentially after successful inclusion. This shield can complete only partially.\n" : "");
+  const message = tornadoShieldConfirmation({
+    plan: opts.plan, decimals: opts.token.decimals, symbol: opts.token.symbol, sender: opts.sender,
+    batches: batches.map((batch, i) => ({ amount: batch.amount, noteCount: batch.deposits.length, fee: BigInt(estimates[i]!.estimatedMax) })),
+    feesUnknown: opts.skipSim,
+  });
   if (!opts.broadcast) {
     if (opts.nonInteractive) logCliJson({ ...summary, status: "prepared", batches: run.batches,
       ...(batches.length === 1 ? singleEoa ? { transactions } : { calls: transactions } : {}) });

@@ -12,18 +12,18 @@ import { isolatedShieldHost, shieldRunJournal, splitTornadoShieldCalls, submitTo
 const pool = tornadoPoolsForAsset(1n, { isEth: true }).find((pool) => pool.denomination === 10n ** 17n)!;
 const depositAbi = parseAbi(["function deposit(bytes32 commitment) payable"]);
 const approveAbi = parseAbi(["function approve(address spender, uint256 amount) returns (bool)"]);
-function fixture() {
-  const plan = requireTornadoShieldPlan(10n * pool.denomination, [pool]);
-  const raw = Array.from({ length: 10 }, (_, index) => ({ to: pool.poolAddress, value: pool.denomination,
+function fixture(count = 10) {
+  const plan = requireTornadoShieldPlan(BigInt(count) * pool.denomination, [pool]);
+  const raw = Array.from({ length: count }, (_, index) => ({ to: pool.poolAddress, value: pool.denomination,
     data: encodeFunctionData({ abi: depositAbi, functionName: "deposit", args: [`0x${BigInt(index + 1).toString(16).padStart(64, "0")}`] }) }));
   const batches = splitTornadoShieldCalls(raw, plan);
   const run: ShieldBatchRun = { version: 1, id: "test", chainId: "1", sender: "0x1", amount: plan.amount, status: "prepared",
     batches: batches.map((batch) => ({ amount: batch.amount, calls: batch.calls, status: "not-submitted" })) };
   return { plan, raw, batches, run };
 }
-it("splits ten unique commitments into 4/4/2 without preparing again", () => {
+it("splits ten unique commitments into 5/5 without preparing again", () => {
   const { batches, raw, plan } = fixture();
-  assert.deepEqual(batches.map((batch) => batch.deposits.length), [4, 4, 2]);
+  assert.deepEqual(batches.map((batch) => batch.deposits.length), [5, 5]);
   assert.deepEqual(batches.flatMap((batch) => batch.deposits), raw);
   assert.equal(batches.reduce((sum, batch) => sum + batch.amount, 0n), plan.amount);
   assert.throws(() => splitTornadoShieldCalls(raw.slice(1), plan), /deposit count/);
@@ -42,7 +42,7 @@ it("gives each token batch independent exact approvals, with reset for nonzero a
   }
 });
 it("awaits inclusion before starting the next batch and retains success when the second fails", async () => {
-  const { run } = fixture();
+  const { run } = fixture(12);
   const starts: number[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });

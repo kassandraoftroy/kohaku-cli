@@ -2,7 +2,7 @@ import { formatUnits, parseUnits } from "viem";
 import type { TornadoSagaPool } from "./tornado-pools.js";
 
 /** Operational margin for the public bundler, not a protocol or gas guarantee. */
-export const TORNADO_SHIELD_NOTES_PER_USEROP = 4;
+export const TORNADO_SHIELD_NOTES_PER_USEROP = 5;
 export type TornadoShieldPlan = {
   amount: bigint;
   entries: { pool: TornadoSagaPool; count: number }[];
@@ -91,15 +91,15 @@ export function tornadoShieldChoices(plans: readonly TornadoShieldPlan[]): Torna
 }
 
 export function tornadoShieldPlanLabel(plan: TornadoShieldPlan, decimals: number, symbol: string): string {
-  const parts = plan.entries.map(({ pool, count }) => `${count} × ${formatUnits(pool.denomination, decimals)} ${symbol}${pool.isNew ? " (new pool)" : ""}`);
-  return `${parts.join(" + ")} — ${plan.noteCount} notes, ${plan.batchCount} ${plan.batchCount === 1 ? "transaction" : "transactions"}`;
+  const parts = plan.entries.map(({ pool, count }) => `${count > 1 ? `${count}×` : ""}${formatUnits(pool.denomination, decimals)}${pool.isNew ? "*" : ""}`);
+  return `${parts.join(" + ")} ${symbol} · ${plan.noteCount} ${plan.noteCount === 1 ? "note" : "notes"} · ${plan.batchCount} ${plan.batchCount === 1 ? "tx" : "txs"}`;
 }
 
 export function requireTornadoShieldPlan(amount: bigint, pools: readonly TornadoSagaPool[], disallowMultiple = false): TornadoShieldPlan {
   if (amount <= 0n) throw new Error("Amount must be greater than zero.");
   const plan = bestPacking(amount, pools);
   if (!plan || (disallowMultiple && plan.batchCount > 1)) throw new Error(disallowMultiple
-    ? "No exact Tornado packing fits within four deposit notes with these pool exclusions. Remove --disallow-multiple-userops or choose another amount."
+    ? "No exact Tornado packing fits within five deposit notes with these pool exclusions. Remove --disallow-multiple-userops or choose another amount."
     : "No exact Tornado packing is possible with these pool exclusions. Choose another amount or allow additional denominations.");
   return plan;
 }

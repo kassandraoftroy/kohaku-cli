@@ -12,7 +12,8 @@ for (const chainId of [1n, 11155111n]) {
     const classic = choices.find((plan) => plan.entries.every(({ pool }) => !pool.isNew))!;
     assert.ok(classic);
     assert.equal(classic.noteCount, 5);
-    assert.equal(classic.batchCount, 2);
+    assert.equal(classic.batchCount, 1);
+    assert.equal(requireTornadoShieldPlan(parseEther("1.4"), pools.filter((pool) => !pool.isNew), true).noteCount, 5);
     assert.deepEqual(classic.entries.map(({ pool, count }) => [pool.denomination, count]), [[parseEther("1"), 1], [parseEther("0.1"), 4]]);
   });
   it(`excludes only 3 ETH and permits six notes across two batches on ${chainId}`, () => {
@@ -24,7 +25,7 @@ for (const chainId of [1n, 11155111n]) {
     assert.equal(plan.batchCount, 2);
     assert.equal(plan.entries[0]!.pool.denomination, parseEther("1"));
     assert.equal(plan.entries[0]!.count, 3);
-    assert.throws(() => requireTornadoShieldPlan(parseEther("3.5"), allowed, true), /four deposit notes/);
+    assert.throws(() => requireTornadoShieldPlan(parseEther("3.5"), allowed, true), /five deposit notes/);
   });
   it(`finds an exact restricted packing even when greedy over the entire catalog fails on ${chainId}`, () => {
     const allowed = pools.filter((pool) => [parseEther("1"), parseEther("0.3")].includes(pool.denomination));
