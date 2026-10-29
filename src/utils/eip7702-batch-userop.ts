@@ -1,4 +1,4 @@
-import { recordSubmission } from "./activity-log.js";
+import { submitPreparedShieldUserOp } from "./eip7702-submit.js";
 /**
  * Batch multiple calls into one ERC-4337 UserOperation via EIP-7702 delegation
  * to Simple7702Account, submitted through Pimlico's public bundler (via Tor by
@@ -260,6 +260,8 @@ export async function sendEip7702BatchUserOperation(
     privateKey: string;
     chainId: bigint;
     calls: readonly Eip7702BatchCall[];
+    /** Persist the deterministic hash before sending. A timeout must not trigger the next batch. */
+    onSubmitted?: (hash: Hash) => void;
   } & Eip7702TorOpts
 ): Promise<Eip7702BatchUserOpResult> {
   if (opts.calls.length === 0) {
@@ -295,23 +297,21 @@ export async function sendEip7702BatchUserOperation(
       );
       const calls = toCalls(opts.calls);
 
-      const userOpHash = await bundlerClient.sendUserOperation({
+      const prepared = await bundlerClient.prepareUserOperation({
         account,
         calls,
         ...(authorization ? { authorization } : {}),
       });
-
-      const updateActivity = recordSubmission({ userOpHash });
-      const receipt = await bundlerClient.waitForUserOperationReceipt({
-        hash: userOpHash,
-        timeout: RECEIPT_WAIT_MS,
+      const signature = await account.signUserOperation(prepared);
+      const sent = await submitPreparedShieldUserOp({
+        chainId: opts.chainId, entryPointAddress: account.entryPoint.address, userOperation: { ...prepared, signature },
+        onSubmitted: opts.onSubmitted,
+        send: (operation) => bundlerClient.request({ method: "eth_sendUserOperation", params: [operation, account.entryPoint.address] }, { retryCount: 0 }),
+        wait: (hash) => bundlerClient.waitForUserOperationReceipt({ hash, timeout: RECEIPT_WAIT_MS }),
+        confirm: (hash) => opts.client.waitForTransactionReceipt({ hash, confirmations: 1 }),
       });
-
-      updateActivity({ txHash: receipt.receipt.transactionHash, status: receipt.success ? "confirmed" : "reverted" });
-      if (!receipt.success) throw new Error(`User operation reverted: ${userOpHash} (tx ${receipt.receipt.transactionHash})`);
       return {
-        userOpHash,
-        txHash: receipt.receipt.transactionHash,
+        ...sent,
         delegatedInUserOp: needsAuth,
         implementation: SIMPLE_7702_IMPLEMENTATION,
       };

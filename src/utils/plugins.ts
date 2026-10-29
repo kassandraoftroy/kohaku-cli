@@ -19,6 +19,7 @@ import {
   SecretManager as TornadoSecretManager,
   SignatureSecretManager as TornadoSignatureSecretManager,
   TornadoCashConfigs,
+  TornadoInstances,
   TornadoPaymasterConfigs,
   createTCBroadcaster,
   createTCPlugin,
@@ -855,7 +856,9 @@ export async function createProtocolPlugin(
   host: Host,
   chainId: bigint,
   scheme: NoteDerivation = "legacy",
-  excludeNewPools = false
+  excludeNewPools = false,
+  /** Operation-local deposit catalog. Callers must isolate storage writes. */
+  tornadoShieldPools?: readonly string[]
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
     return (await createRailgunPlugin(
@@ -874,7 +877,11 @@ export async function createProtocolPlugin(
     const paymasterConfig = tornadoPaymasterConfig(chainId);
     return createTCPlugin(host, {
       accountIndex: 0,
-      protocolConfig: config,
+      protocolConfig: tornadoShieldPools ? {
+        ...config,
+        instances: TornadoInstances[Number(chainId) as keyof typeof TornadoInstances].filter((pool) =>
+          tornadoShieldPools.some((address) => BigInt(address) === pool.address)),
+      } : config,
       useExtendedEthPools: !excludeNewPools,
       minExternalSyncBlocksAmount: TORNADO_MIN_EXTERNAL_SYNC_BLOCKS,
       artifactsLoader: makeTornadoArtifactsLoader(),

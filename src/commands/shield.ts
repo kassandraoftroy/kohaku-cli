@@ -1,4 +1,5 @@
-import { assertTornadoShieldNoteLimit } from "../utils/tornado-operation-limits.js";
+import { runTornadoShield } from "../lib/tornado-shield-flow.js";
+import { excludedTornadoDenominations, requireTornadoShieldPlan, tornadoShieldPlans, tornadoShieldChoices, tornadoShieldPlanLabel, type TornadoShieldPlan } from "../utils/tornado-shield-plans.js";
 import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
@@ -104,9 +105,8 @@ import {
   shieldMaxFeeReserveWei,
 } from "../utils/shield-max.js";
 import {
-  assertTornadoDepositAmount,
   assertTornadoTokenSupported,
-  tornadoMinDenomination,
+  tornadoPoolsForAsset,
 } from "../utils/tornado-pools.js";
 
 type ShieldOpts = {
@@ -121,6 +121,8 @@ type ShieldOpts = {
   amountFormatted?: string;
   amountMax?: boolean;
   excludeNewPools?: boolean;
+  excludeDenomination?: string[];
+  disallowMultipleUserops?: boolean;
   rpcUrl?: string;
   baseFeeGwei?: string;
   priorityFeeGwei?: string;
@@ -289,7 +291,7 @@ export function registerShieldCommand(program: Command): void {
   program
     .command("shield")
     .description(
-      "Shield public funds into a privacy protocol (2+ calls → one EIP-7702 UserOp via Pimlico)"
+      "Shield public funds (Tornado supports sequential EIP-7702 UserOps via Pimlico)"
     )
     .option(
       "--protocol <protocol>",
@@ -308,13 +310,15 @@ export function registerShieldCommand(program: Command): void {
     )
     .option(
       "--broadcast",
-      "Sign and submit on-chain (one EOA tx, or one EIP-7702 UserOp when 2+ calls)"
+      "Sign and submit on-chain; Tornado may use multiple sequential transactions"
     )
     .option(
       "--skip-sim",
       "Skip on-chain simulation and fee estimates (dry-run only; not allowed with --broadcast)"
     )
     .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
+    .option("--exclude-denomination <amount>", "Tornado only: exclude this pool denomination in token units (repeatable)", (value: string, values: string[]) => [...values, value], [])
+    .option("--disallow-multiple-userops", "Tornado only: fail before preparation unless the packing fits within four deposit notes")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
@@ -339,8 +343,8 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
       const protocol = resolvedProtocol.protocol;
-      if (opts.excludeNewPools && protocol !== "tornado") {
-        cliError("--exclude-new-pools is only supported with --protocol tornado.");
+      if ((opts.excludeNewPools || opts.excludeDenomination?.length || opts.disallowMultipleUserops) && protocol !== "tornado") {
+        cliError("Pool exclusions and --disallow-multiple-userops are only supported with --protocol tornado.");
         return;
       }
 
@@ -414,6 +418,14 @@ export function registerShieldCommand(program: Command): void {
         return;
       }
 
+      const catalogPools = protocol === "tornado" ? tornadoPoolsForAsset(chainId, tokenMeta) : [];
+      let exclusions: bigint[] = [];
+      try { exclusions = excludedTornadoDenominations(opts.excludeDenomination ?? [], tokenMeta.decimals, catalogPools); }
+      catch (error) { cliErrorFromCaught(error); return; }
+      const allowedTornadoPools = catalogPools.filter((pool) => (!opts.excludeNewPools || !pool.isNew) && !exclusions.includes(pool.denomination));
+      if (protocol === "tornado" && !allowedTornadoPools.length) { cliError("No Tornado denominations remain after pool exclusions."); return; }
+      let tornadoPlan: TornadoShieldPlan | undefined;
+      const validateTornadoPacking = (value: bigint) => requireTornadoShieldPlan(value, allowedTornadoPools, opts.disallowMultipleUserops);
       let ppAssetConfig: PrivacyPoolsAssetConfig | undefined;
       if (protocol === "privacy-pools") {
         try {
@@ -468,13 +480,7 @@ export function registerShieldCommand(program: Command): void {
       if (amount !== null && (protocol === "tornado" || protocol === "privacy-pools")) {
         try {
           if (protocol === "tornado") {
-            assertTornadoDepositAmount(chainId, amount, {
-              isEth: tokenMeta.isEth,
-              tokenAddress: tokenMeta.tokenAddress,
-              symbol: tokenMeta.symbol,
-              decimals: tokenMeta.decimals,
-              excludeNewPools: opts.excludeNewPools,
-            });
+            if (opts.nonInteractive) validateTornadoPacking(amount);
           } else {
             assertPpDepositAmount(amount);
           }
@@ -522,16 +528,28 @@ export function registerShieldCommand(program: Command): void {
               `Could not find public account balance for --from ${from}.`
             );
           }
-          const gasReserveWei = await estimateShieldGasReserveWei(rpcUrl);
+          let gasReserveWei = await estimateShieldGasReserveWei(rpcUrl);
           const minDenom =
             protocol === "tornado"
-              ? tornadoMinDenomination(chainId, {
-                  isEth: tokenMeta.isEth,
-                  tokenAddress: tokenMeta.tokenAddress,
-                  symbol: tokenMeta.symbol,
-                  excludeNewPools: opts.excludeNewPools,
-                })
+              ? allowedTornadoPools.reduce((min, pool) => pool.denomination < min ? pool.denomination : min, allowedTornadoPools[0]!.denomination)
               : undefined;
+          if (protocol === "tornado") {
+            // Four native deposits can require ~4.8M total UserOp gas on Sepolia.
+            // Start at 3x the existing padded 2M reserve per planned transaction;
+            // the exact full-plan estimate is checked again before submission.
+            const perBatchReserve = gasReserveWei * 3n;
+            gasReserveWei = perBatchReserve;
+            for (let i = 0; i < 4; i++) {
+              const candidate = computeShieldMaxAmount({ isEth: tokenMeta.isEth, protocol, tokenBalance: acct.balance,
+                ethBalance: acct.ethBalance, gasReserveWei, minDenom }).amount;
+              if (candidate <= 0n) break;
+              const plan = tornadoShieldPlans(candidate, allowedTornadoPools)[0];
+              if (!plan) break;
+              const reserve = perBatchReserve * BigInt(plan.batchCount);
+              if (reserve <= gasReserveWei) break;
+              gasReserveWei = reserve;
+            }
+          }
           const { amount: maxAmount } = computeShieldMaxAmount({
             isEth: tokenMeta.isEth,
             protocol,
@@ -620,14 +638,7 @@ export function registerShieldCommand(program: Command): void {
                 const parsed = parseUnits(trimmed, tokenMeta.decimals);
                 if (parsed <= 0n) return "Amount must be greater than zero.";
                 if (protocol === "tornado") {
-                  assertTornadoDepositAmount(chainId, parsed, {
-                    isEth: tokenMeta.isEth,
-                    tokenAddress: tokenMeta.tokenAddress,
-                    symbol: tokenMeta.symbol,
-                    decimals: tokenMeta.decimals,
-                    excludeNewPools: opts.excludeNewPools,
-                  });
-                  assertTornadoShieldNoteLimit(chainId, parsed, { ...tokenMeta, excludeNewPools: opts.excludeNewPools });
+                  validateTornadoPacking(parsed);
                 }
                 assertPpDepositAmount(parsed);
               } catch (e) {
@@ -653,13 +664,7 @@ export function registerShieldCommand(program: Command): void {
               tokenMeta.decimals
             );
             if (protocol === "tornado") {
-              assertTornadoDepositAmount(chainId, amount, {
-                isEth: tokenMeta.isEth,
-                tokenAddress: tokenMeta.tokenAddress,
-                symbol: tokenMeta.symbol,
-                decimals: tokenMeta.decimals,
-                excludeNewPools: opts.excludeNewPools,
-              });
+              validateTornadoPacking(amount);
             }
             assertPpDepositAmount(amount);
           }
@@ -669,6 +674,30 @@ export function registerShieldCommand(program: Command): void {
           return;
         }
         assertPpDepositAmount(amount);
+        if (protocol === "tornado") {
+          while (true) {
+            if (opts.nonInteractive) { tornadoPlan = validateTornadoPacking(amount); break; }
+            const plans = tornadoShieldPlans(amount, allowedTornadoPools, opts.disallowMultipleUserops);
+            const choices = tornadoShieldChoices(plans);
+            if (!choices.length) log.warn(opts.disallowMultipleUserops
+              ? "No exact packing fits within four notes. Choose another amount or remove --disallow-multiple-userops."
+              : "No exact packing is possible with these pool exclusions.");
+            const index = await select<number>({ message: "Choose how to slice this Tornado shield", choices: [
+              ...choices.map((plan, index) => ({ value: index, name: tornadoShieldPlanLabel(plan, tokenMeta.decimals, tokenMeta.symbol) })),
+              { value: -1, name: "Shield a different amount" },
+              { value: -2, name: "Cancel" },
+            ] });
+            if (index === -2) return;
+            if (index >= 0) { tornadoPlan = choices[index]!; break; }
+            const next = await input({ message: `Amount to shield (${tokenMeta.symbol}, formatted):`, validate: (value) => {
+              try { validateTornadoPacking(parseUnits(value.trim(), tokenMeta.decimals)); return true; }
+              catch (error) { return error instanceof Error ? error.message : String(error); }
+            } });
+            amount = parseUnits(next.trim(), tokenMeta.decimals);
+            usedAmountMax = false;
+            amountMaxEthBalance = undefined;
+          }
+        }
 
         if (!fromValue) {
           if (opts.nonInteractive) {
@@ -766,6 +795,13 @@ export function registerShieldCommand(program: Command): void {
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
+        if (tornadoPlan) {
+          await runTornadoShield({ host, client: rpcForHost, chainId, token: tokenMeta, plan: tornadoPlan,
+            sender: senderAddress, privateKey: senderPrivateKey, password, broadcast, nonInteractive: opts.nonInteractive,
+            skipSim: opts.skipSim, ethBalance: usedAmountMax && tokenMeta.isEth ? amountMaxEthBalance : undefined,
+            ...eip7702Tor });
+          return;
+        }
         let plugin = await createProtocolPlugin(
           protocol,
           host,
@@ -792,9 +828,6 @@ export function registerShieldCommand(program: Command): void {
               }) as AssetAmount;
 
         const prepareShieldCalls = async (amt: bigint) => {
-          if (protocol === "tornado") {
-            assertTornadoShieldNoteLimit(chainId, amt, { ...tokenMeta, excludeNewPools: opts.excludeNewPools });
-          }
           const op = await prepareProtocolShield(
             plugin,
             protocol,
@@ -849,9 +882,6 @@ export function registerShieldCommand(program: Command): void {
             }
           | undefined;
         try {
-          if (protocol === "tornado") {
-            assertTornadoShieldNoteLimit(chainId, amount!, { ...tokenMeta, excludeNewPools: opts.excludeNewPools });
-          }
           if (!quiet) txSpinner.start("Syncing private state...");
           const prepared = await runWithSyncProgress(
             {
@@ -1275,7 +1305,7 @@ export function registerShieldCommand(program: Command): void {
         disposePublicClient(rpcForHost);
       }
 
-      if (!opts.nonInteractive) {
+      if (!opts.nonInteractive && !tornadoPlan) {
         if (broadcastTransactions.length > 0) {
           console.log(chalk.bold("Etherscan links:"));
           for (const tx of broadcastTransactions) {
