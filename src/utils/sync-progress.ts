@@ -5,6 +5,7 @@ import type { SupportedProtocol } from "./plugins.js";
 import {
   startProgressRenderer,
   formatProgressMetrics,
+  formatKnownWorkEta,
   type ProgressRenderer,
   type ProgressSnapshot,
 } from "./sync-progress-renderer.js";
@@ -29,6 +30,8 @@ type DeterminateRow = {
   started: number;
   updated: number;
   samples: number;
+  rateStartAt?: number;
+  rateStartDone?: number;
   range?: { from: bigint; to: bigint; covered: Array<[bigint, bigint]> };
 };
 
@@ -131,6 +134,7 @@ function summaryParts(store: SyncProgressStore): string[] {
 function formatSummary(store: SyncProgressStore, includeStale = false): string {
   const parts = summaryParts(store);
   const body = parts.length > 0 ? parts.join(" · ") : "starting";
+  const knownEta = formatKnownWorkEta(buildSnapshot(store).rows);
   const processing = store.activities.size ? ` · ${[...store.activities.values()].at(-1)}` : allComplete(store) ? " · processing / discovering next task" : "";
   const stale =
     includeStale && Date.now() - store.lastActivity >= STALE_MS ? " · still working" : "";
@@ -138,7 +142,7 @@ function formatSummary(store: SyncProgressStore, includeStale = false): string {
     store.firstRun && Date.now() - store.started >= SLOW_HINT_MS
       ? " · first run can take several minutes"
       : "";
-  return `${sourceHeader(store)} · ${body}${processing} · ${formatElapsed(Date.now() - store.started)}${stale}${slow}`;
+  return `${sourceHeader(store)} · ${body}${knownEta ? ` · ${knownEta}` : ""}${processing} · ${formatElapsed(Date.now() - store.started)}${stale}${slow}`;
 }
 
 function buildSnapshot(store: SyncProgressStore): ProgressSnapshot {
@@ -150,6 +154,8 @@ function buildSnapshot(store: SyncProgressStore): ProgressSnapshot {
       startedAt: row.started,
       updatedAt: row.updated,
       samples: row.samples,
+      rateStartAt: row.rateStartAt,
+      rateStartDone: row.rateStartDone,
       unit: row.unit,
       done: row.done,
       total: row.total,
@@ -230,8 +236,13 @@ export function addSyncUnits(kind: DeterminateSyncKind, units: number, label?: s
       if (store.closed || !Number.isFinite(by) || by <= 0) return;
       const next = Math.min(row.total, row.done + Math.floor(by));
       if (next === row.done) return;
+      const now = Date.now();
+      if (row.done === 0) {
+        row.rateStartAt = now;
+        row.rateStartDone = next;
+      }
       row.done = next;
-      row.updated = Date.now();
+      row.updated = now;
       row.samples++;
       touch(store);
       flush(store);
@@ -300,8 +311,13 @@ export function addRpcSyncRange(
     range.covered = merged;
     const done = Number(merged.reduce((sum, [a, b]) => sum + b - a + 1n, 0n));
     if (done === task.done) return;
+    const now = Date.now();
+    if (task.done === 0) {
+      task.rateStartAt = now;
+      task.rateStartDone = done;
+    }
     task.done = done;
-    task.updated = Date.now();
+    task.updated = now;
     task.samples++;
     touch(store);
     flush(store);
@@ -340,7 +356,7 @@ export function noteSyncFirstRun(firstRun: boolean): void {
  * Inclusive stealth scan window (`scanned/total` blocks). The total is fixed
  * on the first call and is not rewritten. `done` never moves backward.
  */
-export function reportSyncBlockProgress(scanned: bigint, total: bigint): void {
+export function reportSyncBlockProgress(scanned: bigint, total: bigint, label?: string): void {
   const store = currentSession;
   if (!store || store.closed || total <= 0n) return;
 
@@ -353,6 +369,7 @@ export function reportSyncBlockProgress(scanned: bigint, total: bigint): void {
       id: store.nextId++,
       kind: "rpc",
       unit: "blocks",
+      label,
       total: fixed,
       done: 0,
       started: Date.now(), updated: Date.now(), samples: 0,
@@ -361,9 +378,14 @@ export function reportSyncBlockProgress(scanned: bigint, total: bigint): void {
   }
   const next = Math.min(row.total, Math.max(row.done, Number(scanned)));
   if (!created && next === row.done) return;
+  const now = Date.now();
+  if (row.done === 0 && next > 0) {
+    row.rateStartAt = now;
+    row.rateStartDone = next;
+  }
   row.done = next;
-  row.updated = Date.now();
-  row.samples++;
+  row.updated = now;
+  if (next > 0) row.samples++;
   touch(store);
   flush(store);
 }

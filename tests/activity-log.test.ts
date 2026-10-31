@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readActivity, recordSubmission, runWithActivityLog } from "../src/utils/activity-log.js";
-import { broadcastPreparedPrivateOp } from "../src/lib/unshield-flow.js";
+import { broadcastPreparedPrivateOp, extractUnshieldExplorerHash } from "../src/lib/unshield-flow.js";
 import { sendTransactionAndWait } from "../src/utils/viem-tx.js";
 
 const hash = `0x${"a".repeat(64)}` as const;
@@ -62,22 +62,32 @@ test("wallet activity contexts remain isolated across concurrent operations", as
 
 test("Railgun activity captures the mined transaction hash separately from its UserOp hash", async () => {
   const walletDir = mkdtempSync(join(tmpdir(), "kohaku-activity-"));
-  const bundler = {
-    sendUserOperation: async () => userOpHash,
-    waitForReceipt: async () => ({ success: true, receipt: { transactionHash: hash } }),
+  const previousFetch = globalThis.fetch;
+  const methods: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { method: string; id: number };
+    methods.push(request.method);
+    const result = request.method === "eth_sendUserOperation"
+      ? userOpHash
+      : { userOpHash, success: true, receipt: { transactionHash: hash } };
+    return Response.json({ jsonrpc: "2.0", id: request.id, result });
   };
-  const plugin = { bundler, broadcast: async () => {
-    const submitted = await bundler.sendUserOperation();
-    assert.equal(submitted, userOpHash);
-    await bundler.waitForReceipt();
-  } };
   try {
     const result = await runWithActivityLog({ walletDir, password: "test-password", chainId: 1n, operation: "unshield", protocol: "railgun" }, () =>
-      broadcastPreparedPrivateOp("railgun", {} as never, plugin, {}, 1n));
+      broadcastPreparedPrivateOp("railgun", {} as never, {}, {
+        userOpHash,
+        signed: { userOp: { sender: "0x1234" }, entryPoint: "0x0000000000000000000000000000000000000001" },
+      }, 1n));
     assert.deepEqual(result, { userOpHash, txHash: hash });
+    assert.equal(extractUnshieldExplorerHash(result), hash);
+    assert.equal(extractUnshieldExplorerHash({ userOpHash }), null);
+    assert.deepEqual(methods, ["eth_sendUserOperation", "eth_getUserOperationReceipt"]);
     const [entry] = readActivity(walletDir, "test-password");
     assert.equal(entry.txHash, hash);
     assert.equal(entry.userOpHash, userOpHash);
     assert.equal(entry.status, "confirmed");
-  } finally { rmSync(walletDir, { recursive: true, force: true }); }
+  } finally {
+    globalThis.fetch = previousFetch;
+    rmSync(walletDir, { recursive: true, force: true });
+  }
 });

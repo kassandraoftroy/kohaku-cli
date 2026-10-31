@@ -20,7 +20,7 @@ function decodeValue(value: StoredValue): string {
   return gunzipSync(Buffer.from(value.data, "base64")).toString("utf8");
 }
 
-export type PluginId = "rg" | "ppv1" | "tc";
+export type PluginId = "rg" | "rg-v2" | "ppv1" | "tc";
 
 export function pluginStorePathForWallet(
   walletDir: string,

@@ -12,7 +12,7 @@ export default defineConfig({
   },
   outDir: "dist",
   external: [
-    "@kohaku-eth/railgun",
+    "kohaku-rg-js-wrapper",
     "@kohaku-eth/plugins",
     "@kohaku-eth/provider",
     "@kohaku-eth/provider/ethers",

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   createCipheriv,
@@ -136,5 +136,17 @@ export function saveStore(
   }
   const envelope = encrypt(store, password, saltRef.current);
   mkdirSync(dirname(storePath), { recursive: true });
-  writeFileSync(storePath, JSON.stringify(envelope, null, 2));
+  // A Railgun checkpoint is saved after every sync window. Never leave a
+  // truncated encrypted store if the process stops during a write.
+  const temporary = `${storePath}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(envelope, null, 2), {
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporary, storePath);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch { /* no temp file to remove */ }
+    throw error;
+  }
 }

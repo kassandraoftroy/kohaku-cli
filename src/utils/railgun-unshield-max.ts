@@ -1,4 +1,4 @@
-import { chainConfig } from "@kohaku-eth/railgun";
+import { chainConfig } from "kohaku-rg-js-wrapper";
 
 import { fetchPimlicoMaxFeePerGas } from "./pimlico-gas.js";
 import { railgunPimlicoBundlerUrl } from "./rpc.js";
@@ -20,6 +20,17 @@ export const RAILGUN_UNSHIELD_GAS_UNITS = {
 } as const;
 
 const BPS_DENOMINATOR = 10_000n;
+
+/** Match Railgun's inclusive fee: recipient gets gross - floor(gross * feeBps / 10_000). */
+export function railgunTreasuryFee(amount: bigint, feeBps: number): bigint {
+  const denominator = BPS_DENOMINATOR - BigInt(feeBps);
+  if (amount < 0n || denominator <= 0n || feeBps < 0) {
+    throw new RangeError("Invalid Railgun unshield amount or treasury fee");
+  }
+  if (amount === 0n) return 0n;
+  const gross = ((amount - 1n) * BPS_DENOMINATOR) / denominator + 1n;
+  return gross - amount;
+}
 
 /** True when this unshield spends the same asset Railgun uses to pay bundler fees (WETH). */
 export function isRailgunFeeToken(
@@ -73,8 +84,11 @@ export function railgunMaxReceivableFromBalance(
   if (balance <= reservedFeeTokenWei) return 0n;
   const afterReserve = balance - reservedFeeTokenWei;
   const feeBps = BigInt(unshieldFeeBps);
-  if (feeBps >= BPS_DENOMINATOR) return 0n;
-  return (afterReserve * (BPS_DENOMINATOR - feeBps)) / BPS_DENOMINATOR;
+  if (feeBps < 0n || feeBps >= BPS_DENOMINATOR) return 0n;
+  return (
+    (afterReserve * (BPS_DENOMINATOR - feeBps) + BPS_DENOMINATOR - 1n) /
+    BPS_DENOMINATOR
+  );
 }
 
 export function railgunUnshieldFeeBps(chainId: bigint): number {

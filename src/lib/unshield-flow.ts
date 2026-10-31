@@ -15,6 +15,11 @@ import {
 } from "../utils/privacy-pools-paymaster.js";
 import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
 import { withTor } from "../utils/tor.js";
+import {
+  sendUserOperation,
+  waitForUserOperationReceipt,
+  type PreparedUserOperation,
+} from "kohaku-rg-js-wrapper";
 import type { ResolvedTokenMeta } from "../utils/tokens-util.js";
 import {
   isPendingPrivateBalanceRow,
@@ -206,7 +211,7 @@ export async function broadcastPreparedPrivateOp(
   chainId: bigint
 ): Promise<unknown> {
   if (protocol === "railgun") {
-    return await broadcastRailgunOp(plugin, operation);
+    return await broadcastRailgunOp(operation, chainId);
   }
   if (protocol === "tornado") {
     return await broadcastTornadoPrivateOp(host, operation, chainId);
@@ -233,59 +238,23 @@ export async function broadcastPreparedPrivateOp(
   return result;
 }
 
-type RailgunBroadcastPlugin = {
-  broadcast: (op: unknown) => Promise<void>;
-  bundler?: {
-    sendUserOperation: (...args: unknown[]) => Promise<unknown>;
-    waitForReceipt?: (...args: unknown[]) => Promise<unknown>;
-  };
-};
-
-/** Railgun `broadcast()` returns void but Pimlico yields a userOpHash from `sendUserOperation`. */
+/** Submit the signed Rust operation and retain the hash across ambiguous sends. */
 async function broadcastRailgunOp(
-  plugin: unknown,
-  operation: unknown
-): Promise<{ userOpHash: string; txHash?: string } | undefined> {
-  const rg = plugin as RailgunBroadcastPlugin;
-  let userOpHash: string | undefined;
-  let txHash: string | undefined;
-  let updateActivity: ReturnType<typeof recordSubmission> | undefined;
-  const bundler = rg.bundler;
-  let restoreSend: (() => void) | undefined;
-
-  if (bundler && typeof bundler.sendUserOperation === "function") {
-    const original = bundler.sendUserOperation.bind(bundler);
-    bundler.sendUserOperation = async (...args: unknown[]) => {
-      const result = await original(...args);
-      if (typeof result === "string" && /^0x[a-fA-F0-9]{64}$/.test(result)) {
-        userOpHash = result;
-        updateActivity = recordSubmission({ userOpHash });
-      }
-      return result;
-    };
-    const originalWait = bundler.waitForReceipt?.bind(bundler);
-    if (originalWait) {
-      bundler.waitForReceipt = async (...args: unknown[]) => {
-        const receipt = await originalWait(...args) as { success?: boolean; receipt?: { transactionHash?: string } };
-        txHash = receipt.receipt?.transactionHash;
-        updateActivity?.({ txHash, status: receipt.success === false ? "reverted" : "confirmed" });
-        if (receipt.success === false) throw new Error(`User operation reverted: ${userOpHash}`);
-        return receipt;
-      };
-    }
-    restoreSend = () => {
-      bundler.sendUserOperation = original;
-      if (originalWait) bundler.waitForReceipt = originalWait;
-    };
+  operation: unknown,
+  chainId: bigint
+): Promise<{ userOpHash: string; txHash?: string }> {
+  const prepared = operation as PreparedUserOperation;
+  if (!prepared?.signed?.userOp || !prepared.userOpHash) {
+    throw new Error("Railgun operation is missing its signed UserOperation");
   }
-
-  try {
-    await rg.broadcast(operation);
-  } finally {
-    restoreSend?.();
-  }
-
-  return userOpHash ? { userOpHash, ...(txHash ? { txHash } : {}) } : undefined;
+  const transport = { url: railgunPimlicoBundlerUrl(chainId), fetch: globalThis.fetch };
+  const userOpHash = await sendUserOperation(prepared, transport);
+  const updateActivity = recordSubmission({ userOpHash });
+  const receipt = await waitForUserOperationReceipt(userOpHash, transport);
+  const txHash = receipt.receipt?.transactionHash;
+  updateActivity({ txHash, status: receipt.success ? "confirmed" : "reverted" });
+  if (!receipt.success) throw new Error(`Railgun UserOperation reverted: ${userOpHash}`);
+  return { userOpHash, ...(txHash ? { txHash } : {}) };
 }
 
 
@@ -295,22 +264,18 @@ const ON_CHAIN_TX_HASH_KEYS = [
   "transactionHash",
 ] as const;
 
-const RAILGUN_EXPLORER_HASH_KEYS = [
-  "userOpHash",
-  ...ON_CHAIN_TX_HASH_KEYS,
-] as const;
-
 function findHashDeep(
   value: unknown,
-  prioritizedKeys: readonly string[]
+  prioritizedKeys: readonly string[],
+  allowRawString = true
 ): string | null {
   if (typeof value === "string") {
-    return /^0x[a-fA-F0-9]{64}$/.test(value) ? value : null;
+    return allowRawString && /^0x[a-fA-F0-9]{64}$/.test(value) ? value : null;
   }
   if (typeof value !== "object" || value === null) return null;
   if (Array.isArray(value)) {
     for (const item of value) {
-      const hit = findHashDeep(item, prioritizedKeys);
+      const hit = findHashDeep(item, prioritizedKeys, false);
       if (hit) return hit;
     }
     return null;
@@ -318,23 +283,24 @@ function findHashDeep(
 
   const obj = value as Record<string, unknown>;
   for (const k of prioritizedKeys) {
-    const hit = findHashDeep(obj[k], prioritizedKeys);
+    const hit = findHashDeep(obj[k], prioritizedKeys, true);
     if (hit) return hit;
   }
 
   for (const v of Object.values(obj)) {
-    const hit = findHashDeep(v, prioritizedKeys);
+    if (typeof v !== "object" || v === null) continue;
+    const hit = findHashDeep(v, prioritizedKeys, false);
     if (hit) return hit;
   }
   return null;
 }
 
 /**
- * Hash suitable for an explorer `/tx/` after an ERC-4337 unshield.
- * Prefers the bundler userOpHash, then a mined transaction hash.
+ * Mined transaction hash suitable for an explorer `/tx/` link.
+ * A UserOperation hash alone is not an Etherscan transaction hash.
  */
 export function extractUnshieldExplorerHash(result: unknown): string | null {
-  return findHashDeep(result, RAILGUN_EXPLORER_HASH_KEYS);
+  return findHashDeep(result, ON_CHAIN_TX_HASH_KEYS);
 }
 
 /** Max unshield amount using the shared protocol runtime (safe to call repeatedly for Railgun). */

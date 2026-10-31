@@ -46,6 +46,7 @@ export async function withProtocolRuntime<T>(
     try {
       const host = await makeHost({
         rpc,
+        rpcUrl: ctx.rpcUrl,
         walletDir: ctx.walletDir,
         password: ctx.password,
         mnemonic: ctx.mnemonic,

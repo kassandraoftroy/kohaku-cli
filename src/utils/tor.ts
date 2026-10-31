@@ -21,10 +21,6 @@
  * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr. POST bodies are
  * logged as `post-body` lines, truncated to 4KB.
  * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps large Tor GETs.
- * Optional `KOHAKU_RAILGUN_FORCE_VALID_POI=1` (also `true` / `yes`) rewrites
- * PPOI `"Missing"` statuses to `"Valid"` so a note whose proof never reached
- * the PPOI node can still be spent. Off by default. The contract does not
- * consult PPOI; this only lifts the client-side filter.
  *
  * Ethereum RPC stays clearnet: viem http transport uses fetch (not Tor by default). Hosts
  * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
@@ -285,7 +281,7 @@ async function loggedFetch(
     let responseBytes: number | undefined;
     const cl = fetched.headers.get("content-length");
     if (cl && /^\d+$/.test(cl)) responseBytes = Number(cl);
-    const res = await maybeForceValidPoiResponse(fetched, meta.url, category);
+    const res = fetched;
     appendNetworkTraffic({
       kind: meta.category === "pimlico" ? "pimlico" : "http",
       method: method.toUpperCase(),
@@ -339,41 +335,6 @@ function withRequestUrl(res: Response, requestUrl: string): Response {
 }
 
 const POST_BODY_LOG_MAX = 4096;
-
-function forceValidPoiEnabled(): boolean {
-  const v = process.env.KOHAKU_RAILGUN_FORCE_VALID_POI?.trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes";
-}
-
-/** Replace PPOI JSON string statuses. Leaves longer tokens such as `"MissingSomething"`. */
-function rewritePoiMissingStatuses(text: string): string {
-  return text.replace(/"Missing"/g, '"Valid"');
-}
-
-/**
- * When `KOHAKU_RAILGUN_FORCE_VALID_POI` is set, rebuild an OK PPOI response so
- * `"Missing"` statuses read as `"Valid"`. The body is left unread otherwise.
- * A rebuilt response is stamped with `requestUrl` (reqwest-wasm rejects an empty URL).
- */
-export async function maybeForceValidPoiResponse(
-  res: Response,
-  requestUrl: string,
-  category: TrafficCategory
-): Promise<Response> {
-  if (!forceValidPoiEnabled() || category !== "ppoi" || !res.ok) return res;
-  const text = await res.text();
-  const headers = new Headers(res.headers);
-  headers.delete("content-length");
-  headers.delete("content-encoding");
-  return withRequestUrl(
-    new Response(rewritePoiMissingStatuses(text), {
-      status: res.status,
-      statusText: res.statusText,
-      headers,
-    }),
-    requestUrl
-  );
-}
 
 function bodyInitToUtf8(body: BodyInit): string | undefined {
   if (typeof body === "string") return body;
@@ -531,12 +492,17 @@ async function storePublicSyncResponseIfOk(
  */
 export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const category = categorizeUrl(resolveRequestUrl(input));
-  const label = category === "subsquid" ? "Subsquid history · total unavailable"
-    : category === "ppoi" ? "Railgun POI · total unavailable"
-    : category === "asp" ? "ASP lists · total unavailable" : undefined;
+  const method = resolveRequestMethod(input, init);
+  const rpcMethod = await peekPostRpcMethod(input, init, method);
+  const label = category === "subsquid" ? "Subsquid history · fetching page"
+    : category === "ppoi" && rpcMethod === "ppoi_poi_merkletree_leaves"
+      ? "Railgun PPOI list · loading leaves (size unknown)"
+    : category === "ppoi" ? "Railgun PPOI · checking list / TXIDs"
+    : category === "asp" ? "ASP lists · fetching"
+    : rpcMethod ? `RPC ${rpcMethod} · waiting for response` : undefined;
   const finish = label ? beginSyncActivity(label) : undefined;
   try {
-    return await kohakuFetchInner(input, init);
+    return await kohakuFetchInner(input, init, rpcMethod);
   } finally {
     finish?.();
   }
@@ -544,11 +510,11 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
 
 async function kohakuFetchInner(
   input: RequestInfo | URL,
-  init?: RequestInit
+  init?: RequestInit,
+  rpcMethod?: string,
 ): Promise<Response> {
   const url = resolveRequestUrl(input);
   const method = resolveRequestMethod(input, init);
-  const rpcMethod = await peekPostRpcMethod(input, init, method);
 
   // Hits to the local Pimlico proxy are logged in the proxy (upstream Tor URL).
   if (isActivePimlicoProxyUrl(url)) {

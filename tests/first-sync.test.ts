@@ -33,10 +33,18 @@ describe("isFirstProtocolSync", () => {
 
   it("is false once the protocol has storage", () => {
     const dir = walletDir();
-    writeFileSync(join(dir, "rg-storage.json"), "{}");
+    writeFileSync(join(dir, "rg-v2-storage.json"), "{}");
     assert.equal(isFirstProtocolSync(dir, "railgun"), false);
     // Storage is per protocol, so the others are untouched.
     assert.equal(isFirstProtocolSync(dir, "tornado"), true);
+  });
+
+  it("resyncs Railgun when only the legacy plugin file exists", () => {
+    const dir = walletDir();
+    writeFileSync(join(dir, "rg-storage.json"), "{}");
+    assert.equal(isFirstProtocolSync(dir, "railgun"), true);
+    writeFileSync(join(dir, "rg-v2-storage.json"), "{}");
+    assert.equal(isFirstProtocolSync(dir, "railgun"), false);
   });
 
   it("stays true when storage was seeded after the Host was built", () => {
@@ -59,9 +67,9 @@ describe("isFirstProtocolSync", () => {
   it("tracks wallets independently", () => {
     const withState = walletDir();
     const fresh = walletDir();
-    writeFileSync(join(withState, "rg-storage.json"), "{}");
-    noteProtocolStorageFreshness(withState, "rg");
-    noteProtocolStorageFreshness(fresh, "rg");
+    writeFileSync(join(withState, "rg-v2-storage.json"), "{}");
+    noteProtocolStorageFreshness(withState, "rg-v2");
+    noteProtocolStorageFreshness(fresh, "rg-v2");
     assert.equal(isFirstProtocolSync(withState, "railgun"), false);
     assert.equal(isFirstProtocolSync(fresh, "railgun"), true);
   });

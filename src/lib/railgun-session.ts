@@ -1,9 +1,8 @@
 import type { Host } from "@kohaku-eth/plugins";
-import { createRailgunPlugin } from "@kohaku-eth/railgun";
 
 import { makeHost } from "../host/makeHost.js";
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc.js";
-import { railgunPluginOptions, type AnyPlugin } from "../utils/plugins.js";
+import { createProtocolPlugin, type AnyPlugin } from "../utils/plugins.js";
 
 export type RailgunSessionKey = `${string}:${string}`;
 
@@ -20,8 +19,7 @@ type RailgunSession = {
 const sessions = new Map<RailgunSessionKey, RailgunSession>();
 
 /**
- * One Railgun plugin + host per wallet/chain in this process.
- * Avoids repeated `createRailgunPlugin()` → `initLogging()` (WASM global, single-use).
+ * One Rust Railgun wallet and encrypted checkpoint per wallet/chain in this process.
  */
 export async function acquireRailgunSession(opts: {
   rpcUrl: string;
@@ -40,15 +38,14 @@ export async function acquireRailgunSession(opts: {
   try {
     const host = await makeHost({
       rpc,
+      rpcUrl: opts.rpcUrl,
       walletDir: opts.walletDir,
       password: opts.password,
       mnemonic: opts.mnemonic,
-      pluginId: "rg",
+      pluginId: "rg-v2",
+      chainId: opts.chainId,
     });
-    const plugin = (await createRailgunPlugin(
-      host,
-      railgunPluginOptions()
-    )) as AnyPlugin;
+    const plugin = await createProtocolPlugin("railgun", host, opts.chainId);
     const session: RailgunSession = { host, plugin, rpc };
     sessions.set(key, session);
     return session;
@@ -69,12 +66,14 @@ export function disposeRailgunSession(walletDir: string, chainId: bigint): void 
   const key = railgunSessionKey(walletDir, chainId);
   const session = sessions.get(key);
   if (!session) return;
+  (session.plugin as { close?: () => void }).close?.();
   disposePublicClient(session.rpc);
   sessions.delete(key);
 }
 
 export function disposeAllRailgunSessions(): void {
   for (const session of sessions.values()) {
+    (session.plugin as { close?: () => void }).close?.();
     disposePublicClient(session.rpc);
   }
   sessions.clear();
