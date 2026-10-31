@@ -13,8 +13,9 @@ const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 
 describe("railgunMaxReceivableFromBalance", () => {
   it("subtracts the reserve then takes the treasury BPS from the remainder", () => {
-    // Recipient gets floor((balance - reserve) * (10000 - bps) / 10000).
-    assert.equal(railgunMaxReceivableFromBalance(1000n, 25, 100n), 897n);
+    // Railgun subtracts floor(gross * bps / 10000), so 900 gross delivers 898.
+    assert.equal(railgunMaxReceivableFromBalance(1000n, 25, 100n), 898n);
+    assert.equal(railgunMaxReceivableFromBalance(1n, 25, 0n), 1n);
   });
 
   it("returns 0 when the reserve consumes the whole balance", () => {
@@ -34,9 +35,25 @@ describe("railgunMaxReceivableFromBalance", () => {
 
 describe("railgunTreasuryFee", () => {
   it("matches Rust gross-up rounding for the requested net amount", () => {
-    assert.equal(railgunTreasuryFee(9_975n, 25), 25n);
-    assert.equal(railgunTreasuryFee(1n, 25), 1n);
-    assert.equal(railgunTreasuryFee(1000n, 25), 3n);
+    assert.equal(railgunTreasuryFee(9_975n, 25), 24n);
+    assert.equal(railgunTreasuryFee(1n, 25), 0n);
+    assert.equal(railgunTreasuryFee(1000n, 25), 2n);
+    // A 0.31 ETH unshield previously delivered one extra wei of WETH.
+    assert.equal(
+      railgunTreasuryFee(310_000_000_000_000_000n, 25),
+      776_942_355_889_724n
+    );
+  });
+
+  it("spends no more than the available gross and delivers the requested net", () => {
+    for (const feeBps of [0, 1, 25, 50, 500, 5000]) {
+      for (let available = 1n; available <= 1000n; available++) {
+        const requested = railgunMaxReceivableFromBalance(available, feeBps, 0n);
+        const gross = requested + railgunTreasuryFee(requested, feeBps);
+        assert.ok(gross <= available);
+        assert.equal(gross - (gross * BigInt(feeBps)) / 10_000n, requested);
+      }
+    }
   });
 });
 
