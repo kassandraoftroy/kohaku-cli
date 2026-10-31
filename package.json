@@ -1,6 +1,6 @@
 {
     "name": "kohaku-cli",
-    "version": "0.0.15",
+    "version": "0.0.16",
     "type": "module",
     "engines": {
         "node": ">=22"
@@ -22,7 +22,6 @@
         "@inquirer/prompts": "8.3.2",
         "@kohaku-eth/plugins": "0.0.1-alpha.17",
         "@kohaku-eth/privacy-pools": "0.1.0-alpha.35",
-        "@kohaku-eth/railgun": "0.0.1-alpha.30",
         "@kohaku-eth/tornado-cash": "0.1.0-alpha.32",
         "@noble/secp256k1": "2.3.0",
         "@scopelift/stealth-address-sdk": "1.0.0-beta.5",
@@ -32,6 +31,7 @@
         "eth-prices": "1.1.0",
         "eth-stealth-address-resolver": "0.2.0",
         "kohaku-artifacts": "git+https://github.com/kassandraoftroy/kohaku-artifacts.git#15c3c82989cca9f3f1562cce5111563060e2de2d",
+        "kohaku-rg-js-wrapper": "0.0.1",
         "ox": "0.12.0",
         "tor-js": "0.4.0",
         "viem": "2.55.19"

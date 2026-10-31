@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { describe, it } from "node:test";
 
 import {
   networkTrafficLogPath,
@@ -11,10 +11,8 @@ import {
 } from "../src/utils/network-traffic-log.js";
 import {
   kohakuFetch,
-  maybeForceValidPoiResponse,
 } from "../src/utils/tor.js";
 
-const POI_URL = "https://ppoi.fdi.network/pois";
 const BODY = '{"status":"Missing","note":"MissingSomething"}';
 
 function listen(handler: (body: string) => string): Promise<{ server: Server; url: string }> {
@@ -40,53 +38,16 @@ function listen(handler: (body: string) => string): Promise<{ server: Server; ur
   });
 }
 
-describe("maybeForceValidPoiResponse", { concurrency: 1 }, () => {
-  const previous = process.env.KOHAKU_RAILGUN_FORCE_VALID_POI;
-  after(() => {
-    if (previous === undefined) delete process.env.KOHAKU_RAILGUN_FORCE_VALID_POI;
-    else process.env.KOHAKU_RAILGUN_FORCE_VALID_POI = previous;
-  });
-
-  it("rewrites Missing statuses and stamps an empty Response url", async () => {
-    process.env.KOHAKU_RAILGUN_FORCE_VALID_POI = "1";
-    const res = new Response(BODY, {
-      status: 200,
-      headers: { "content-type": "application/json", "content-length": "99" },
-    });
-    const out = await maybeForceValidPoiResponse(res, POI_URL, "ppoi");
-    assert.equal(await out.text(), '{"status":"Valid","note":"MissingSomething"}');
-    assert.equal(out.url, POI_URL);
-    assert.equal(out.headers.get("content-length"), null);
-  });
-
-  it("leaves the body unread when the switch is off, the URL is not PPOI, or the response failed", async () => {
-    delete process.env.KOHAKU_RAILGUN_FORCE_VALID_POI;
-    const off = new Response(BODY, { status: 200 });
-    assert.equal(await maybeForceValidPoiResponse(off, POI_URL, "ppoi"), off);
-    assert.equal(await off.text(), BODY);
-
-    process.env.KOHAKU_RAILGUN_FORCE_VALID_POI = "yes";
-    const other = new Response(BODY, { status: 200 });
-    assert.equal(await maybeForceValidPoiResponse(other, "https://example.com/", "other"), other);
-    assert.equal(await other.text(), BODY);
-
-    const failed = new Response(BODY, { status: 500 });
-    assert.equal(await maybeForceValidPoiResponse(failed, POI_URL, "ppoi"), failed);
-    assert.equal(await failed.text(), BODY);
-  });
-
-  it("rewrites a loopback PPOI response only while the switch is set", async () => {
+describe("Railgun PPOI HTTP routing", { concurrency: 1 }, () => {
+  it("leaves PPOI Missing statuses intact even if the legacy override is set", async () => {
     const { server, url } = await listen(() => BODY);
     try {
-      delete process.env.KOHAKU_RAILGUN_FORCE_VALID_POI;
-      const plain = await kohakuFetch(url);
-      assert.equal(await plain.text(), BODY);
-
       process.env.KOHAKU_RAILGUN_FORCE_VALID_POI = "true";
-      const forced = await kohakuFetch(url);
-      assert.equal(await forced.text(), '{"status":"Valid","note":"MissingSomething"}');
-      assert.equal(forced.url, url);
+      const response = await kohakuFetch(url);
+      assert.equal(await response.text(), BODY);
+      assert.equal(response.url, url);
     } finally {
+      delete process.env.KOHAKU_RAILGUN_FORCE_VALID_POI;
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
@@ -110,7 +71,6 @@ describe("maybeForceValidPoiResponse", { concurrency: 1 }, () => {
       lines.push(args);
     };
     process.env.KOHAKU_TOR_DEBUG = "1";
-    process.env.KOHAKU_RAILGUN_FORCE_VALID_POI = "1";
     try {
       const res = await runWithTrafficLogWallet(walletDir, () =>
         kohakuFetch(url, {
@@ -119,7 +79,7 @@ describe("maybeForceValidPoiResponse", { concurrency: 1 }, () => {
           body: payload,
         })
       );
-      assert.equal(await res.text(), '{"result":"Valid"}');
+      assert.equal(await res.text(), '{"result":"Missing"}');
       const dumped = lines.find((args) => args[0] === "[kohaku-tor]" && args[1] === "post-body");
       assert.ok(dumped, "expected a post-body debug line");
       const shown = String(dumped[2]);

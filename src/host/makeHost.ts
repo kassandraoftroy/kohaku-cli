@@ -8,10 +8,12 @@ import { makeStorage, type PluginId } from "./storage";
 import { noteProtocolStorageFreshness } from "../utils/first-sync";
 import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 import { kohakuFetch } from "../utils/tor";
+import { setRailgunHostContext } from "./railgun-host-context";
 import type { KohakuPublicClient } from "../utils/rpc.js";
 
 export type MakeHostOptions = {
   rpc: KohakuPublicClient;
+  rpcUrl: string;
   walletDir: string;
   password: string;
   mnemonic: string;
@@ -55,7 +57,7 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
 
   const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const keystore =
-    pluginId === "rg"
+    pluginId === "rg" || pluginId === "rg-v2"
       ? makeRailgunKeystore(mnemonic)
       : makeKeystore(mnemonic, {
           stealthDelegatorPriv: (stealthIndex) =>
@@ -68,11 +70,13 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
       ? tornadoExternalSyncForChain(chainId, network)
       : undefined);
 
-  return {
+  const host: Host = {
     network,
     storage: makeStorage(walletDir, pluginId, password),
     keystore,
     provider,
     ...(externalSyncProvider ? { externalSyncProvider } : {}),
   };
+  setRailgunHostContext(host, options.rpcUrl, walletDir);
+  return host;
 }

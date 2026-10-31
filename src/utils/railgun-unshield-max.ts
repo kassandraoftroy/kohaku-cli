@@ -1,4 +1,4 @@
-import { chainConfig } from "@kohaku-eth/railgun";
+import { chainConfig } from "kohaku-rg-js-wrapper";
 
 import { fetchPimlicoMaxFeePerGas } from "./pimlico-gas.js";
 import { railgunPimlicoBundlerUrl } from "./rpc.js";
@@ -20,6 +20,16 @@ export const RAILGUN_UNSHIELD_GAS_UNITS = {
 } as const;
 
 const BPS_DENOMINATOR = 10_000n;
+
+/** Same rounding as the pinned Rust `gross_up`: fee is charged on the gross amount. */
+export function railgunTreasuryFee(amount: bigint, feeBps: number): bigint {
+  const denominator = BPS_DENOMINATOR - BigInt(feeBps);
+  if (amount < 0n || denominator <= 0n || feeBps < 0) {
+    throw new RangeError("Invalid Railgun unshield amount or treasury fee");
+  }
+  const gross = (amount * BPS_DENOMINATOR + denominator - 1n) / denominator;
+  return gross - amount;
+}
 
 /** True when this unshield spends the same asset Railgun uses to pay bundler fees (WETH). */
 export function isRailgunFeeToken(

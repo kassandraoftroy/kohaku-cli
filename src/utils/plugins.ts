@@ -5,14 +5,7 @@ import {
   SignatureSecretManager as PrivacyPoolsSignatureSecretManager,
   createPPv1Plugin,
 } from "@kohaku-eth/privacy-pools";
-import {
-  Bundler,
-  Signer,
-  SimpleSmartAccount,
-  chainConfig,
-  createRailgunPlugin,
-  type LogLevel,
-} from "@kohaku-eth/railgun";
+import { chainConfig } from "kohaku-rg-js-wrapper";
 import type { AssetAmount, Host, UnshieldOptions } from "@kohaku-eth/plugins";
 import {
   DepositStrategy,
@@ -44,7 +37,7 @@ import {
   encodeTornadoErc20TransferTailCall,
   type TornadoTailCall,
 } from "./tornado-tail-gas.js";
-import { RailgunEthereumProviderAdapter } from "./railgun-provider-adapter";
+import { createRailgunAdapter, type RailgunAdapter } from "../lib/railgun-adapter.js";
 import { makeTornadoArtifactsLoader } from "./proving-artifacts.js";
 import { privacyPoolsPaymasterConfig } from "./privacy-pools-paymaster.js";
 import {
@@ -57,24 +50,6 @@ import ppv1SepoliaState from "./ppv1-sepolia-state.json";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
-
-function envTruthy(value: string | undefined): boolean {
-  if (!value) return false;
-  const v = value.trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes";
-}
-
-/** Shared options for `createRailgunPlugin` (session + direct protocol runtime). */
-export function railgunPluginOptions(): {
-  rpcBatchSize: number;
-  logLevel?: LogLevel;
-} {
-  const opts: { rpcBatchSize: number; logLevel?: LogLevel } = { rpcBatchSize: 450 };
-  if (envTruthy(process.env.KOHAKU_RAILGUN_DEBUG)) {
-    opts.logLevel = "Debug";
-  }
-  return opts;
-}
 
 function oxbowAspUrlForChain(chainId: bigint): string {
   return chainId === 11155111n ? OXBOW_ASP_URL_SEPOLIA : OXBOW_ASP_URL_MAINNET;
@@ -193,12 +168,12 @@ export const SUPPORTED_PROTOCOLS_HELP = "railgun | privacy-pools | tornado";
  *
  * | `--protocol`    | pluginId | Notes                          |
  * |-----------------|----------|--------------------------------|
- * | `railgun`       | `rg`     | Railgun keystore, rg-storage   |
+ * | `railgun`       | `rg-v2`  | Railgun keystore, new Rust checkpoint |
  * | `privacy-pools` | `ppv1`   | Default keystore, ppv1-storage |
  * | `tornado`       | `tc`     | Default keystore, tc-storage   |
  */
 export function pluginIdForProtocol(protocol: SupportedProtocol): PluginId {
-  if (protocol === "railgun") return "rg";
+  if (protocol === "railgun") return "rg-v2";
   if (protocol === "tornado") return "tc";
   return "ppv1";
 }
@@ -277,14 +252,9 @@ export const ETH_AS_ERC20 = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
  */
 export const PRIVACY_POOLS_BROADCASTER_URL = "https://fastrelay.xyz/relayer";
 
-type RailgunUnshieldConfigurable = {
-  setBundler: (bundler?: Bundler) => void;
-  setSmartAccount: (smartAccount: SimpleSmartAccount, signer: Signer) => void;
-};
-
 /**
- * Railgun ETH unshield: `native` for unwrap semantics; `contract` is WETH so
- * SignerPool.drain can match shielded balance (railgun passes `tokens` to drain).
+ * Railgun ETH unshield: `native` requests WETH unwrap; the wrapped token
+ * address also identifies the private asset in balance and fee calculations.
  */
 export function railgunNativeEthAssetAmount(
   chainId: bigint,
@@ -306,8 +276,7 @@ export function railgunNativeEthAssetAmount(
 }
 
 /**
- * Railgun ERC-20 spend: lowercase `contract` so SignerPool.drain matches WASM
- * note keys (checksummed CLI addresses otherwise look like zero balance).
+ * Railgun ERC-20 spend: normalize `contract` to match the WASM note asset.
  */
 export function railgunErc20AssetAmount(
   tokenAddress: string,
@@ -380,12 +349,9 @@ export function configureRailgunForUnshield(
   smartAccountPrivateKey: `0x${string}`,
   bundlerUrl: string
 ): void {
-  const rg = plugin as RailgunUnshieldConfigurable;
-  const signer = Signer.privateKey(smartAccountPrivateKey);
-  const eip1193 = new RailgunEthereumProviderAdapter(host.provider);
-  const smartAccount = new SimpleSmartAccount(signer.address, chainId, eip1193);
-  rg.setBundler(Bundler.pimlico(bundlerUrl));
-  rg.setSmartAccount(smartAccount, signer);
+  void host;
+  void chainId;
+  (plugin as RailgunAdapter).configureSpend(smartAccountPrivateKey, bundlerUrl);
 }
 
 /** ERC-4337 paymaster settings for Tornado unshield (same Pimlico bundler as Railgun). */
@@ -415,7 +381,7 @@ export type UnshieldTailCall = TornadoTailCall;
 /**
  * Railgun unshield execution-phase tails. Unlike Tornado, do **not** bake a
  * leftover-forward ETH transfer — unshielded funds already land at `to` via the
- * privacy paymaster. Native unshield still prefixes `WETH.withdraw` in the SDK.
+ * privacy paymaster. The Rust WASM prefixes `WETH.withdraw` for native ETH.
  */
 export function railgunUnshieldOptions(
   tailCalls: readonly UnshieldTailCall[] = []
@@ -861,10 +827,7 @@ export async function createProtocolPlugin(
   tornadoShieldPools?: readonly string[]
 ): Promise<AnyPlugin> {
   if (protocol === "railgun") {
-    return (await createRailgunPlugin(
-      host,
-      railgunPluginOptions()
-    )) as AnyPlugin;
+    return await createRailgunAdapter(host, chainId) as AnyPlugin;
   }
 
   if (protocol === "tornado") {
