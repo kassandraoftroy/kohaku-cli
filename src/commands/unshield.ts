@@ -90,6 +90,7 @@ import {
 import {
   computeRailgunMaxUnshieldAmount,
   estimateRailgunBundlerFeeWei,
+  railgunTreasuryFee,
   isRailgunFeeToken,
   railgunUnshieldFeeBps,
 } from "../utils/railgun-unshield-max.js";
@@ -615,6 +616,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
 
         const host = await makeHost({
           rpc: rpcForHost,
+          rpcUrl,
           walletDir,
           password,
           mnemonic,
@@ -1394,7 +1396,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         } else {
           // railgun
           const bps = railgunUnshieldFeeBps(chainId);
-          const treasuryFee = (amountWei * BigInt(bps)) / 10_000n;
+          const treasuryFee = railgunTreasuryFee(amountWei, bps);
           const components: NonNullable<FeePreview["components"]> = [
             {
               label: `treasury (${bps} bps)`,
@@ -1541,7 +1543,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             }
             console.log(
               chalk.dim(
-                `This object is not a normal EIP-1559 transaction — submit it with the SDK ${chalk.bold("broadcast()")} method, the ${via}, or compatible tooling.`
+                protocol === "railgun"
+                  ? `This signed UserOperation is not an EIP-1559 transaction — submit it with kohaku-rg-js-wrapper's sendUserOperation(), the ${via}, or compatible tooling.`
+                  : `This object is not a normal EIP-1559 transaction — submit it with the SDK ${chalk.bold("broadcast()")} method, the ${via}, or compatible tooling.`
               )
             );
             console.log(
@@ -1688,8 +1692,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           console.log(chalk.bold("Etherscan link:"));
           console.log(chalk.cyan(`  ${etherscanTxUrl(chainId, explorerHash)}`));
         } else {
-          const noHashMsg =
-            "Bundler response did not include a userOpHash or tx hash.";
+          const noHashMsg = "No mined transaction hash is available for an Etherscan link.";
           console.log(chalk.dim(noHashMsg));
         }
           }

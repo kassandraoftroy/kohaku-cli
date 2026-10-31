@@ -789,6 +789,7 @@ export function registerShieldCommand(program: Command): void {
 
         const host = await makeHost({
           rpc: rpcForHost,
+          rpcUrl,
           walletDir,
           password,
           mnemonic,

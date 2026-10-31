@@ -2,7 +2,7 @@
  * Proving circuits for Railgun, Tornado, and Privacy Pools.
  *
  * The bytes live in the installed `kohaku-artifacts` package. WASM and plugins
- * still request the old GitHub and mirror URLs; {@link kohakuFetch} maps those
+ * request pinned GitHub or the CLI mirror URLs; {@link kohakuFetch} maps those
  * onto this package and does not download them.
  * Privacy Pools paths are `<package>/artifacts/privacy-pools/<path after packages/circuits/>`.
  */
@@ -13,7 +13,7 @@ import { dirname, join, sep } from "node:path";
 /** Mirror host. Requests here are served from the package, not fetched. */
 export const DEFAULT_ARTIFACTS_BASE_URL = "https://artifacts.0000000000.org";
 
-/** Hardcoded in `@kohaku-eth/railgun` WASM. Intercepted and served from the package. */
+/** Legacy Railgun artifact source, retained for older requests and tests. */
 const MACWHA_ARTIFACTS_BASE =
   "https://github.com/Robert-MacWha/privacy-protocol-artifacts/raw/refs/heads/main/artifacts";
 const MACWHA_ARTIFACTS_PREFIX = `${MACWHA_ARTIFACTS_BASE}/`;

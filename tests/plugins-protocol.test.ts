@@ -106,7 +106,7 @@ describe("shouldIncludeProtocol", () => {
 
 describe("pluginIdForProtocol", () => {
   it("maps CLI protocol names onto Host plugin ids", () => {
-    assert.equal(pluginIdForProtocol("railgun"), "rg");
+    assert.equal(pluginIdForProtocol("railgun"), "rg-v2");
     assert.equal(pluginIdForProtocol("tornado"), "tc");
     assert.equal(pluginIdForProtocol("privacy-pools"), "ppv1");
   });

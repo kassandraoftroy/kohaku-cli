@@ -17,7 +17,7 @@ type StorageType = (typeof STORAGE_TYPES)[number];
 const TYPE_TO_FILENAME: Record<StorageType, string> = {
   public: "public-accounts.json",
   stealth: "stealth-accounts.json",
-  railgun: "rg-storage.json",
+  railgun: "rg-v2-storage.json",
   "privacy-pools": "ppv1-storage.json",
   tornado: "tc-storage.json",
 };

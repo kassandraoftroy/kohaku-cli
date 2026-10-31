@@ -6,6 +6,7 @@ import {
   estimateRailgunBundlerFeeWei,
   isRailgunFeeToken,
   railgunMaxReceivableFromBalance,
+  railgunTreasuryFee,
 } from "../src/utils/railgun-unshield-max.js";
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
@@ -28,6 +29,14 @@ describe("railgunMaxReceivableFromBalance", () => {
 
   it("leaves the full remainder when the treasury fee is 0", () => {
     assert.equal(railgunMaxReceivableFromBalance(500n, 0, 50n), 450n);
+  });
+});
+
+describe("railgunTreasuryFee", () => {
+  it("matches Rust gross-up rounding for the requested net amount", () => {
+    assert.equal(railgunTreasuryFee(9_975n, 25), 25n);
+    assert.equal(railgunTreasuryFee(1n, 25), 1n);
+    assert.equal(railgunTreasuryFee(1000n, 25), 3n);
   });
 });
 
