@@ -119,14 +119,19 @@ test("Railgun resync checkpoints bounded windows and stops when the source lags"
     sync: async () => { throw new Error("unexpected full sync"); },
   };
   assert.equal(await syncRailgunHistory(wallet, 250_099n), true);
-  assert.deepEqual(targets, [100_099n, 200_099n, 250_099n]);
+  assert.deepEqual(targets, [5_099n, 25_099n, 55_099n, 100_099n, 200_099n, 250_099n]);
+
+  syncedBlock = 25_099n;
+  targets.length = 0;
+  assert.equal(await syncRailgunHistory(wallet, 250_099n), true);
+  assert.deepEqual(targets, [55_099n, 100_099n, 200_099n, 250_099n]);
 
   syncedBlock = 0n;
   targets.length = 0;
   wallet.syncTo = async (target) => {
     targets.push(target);
-    syncedBlock = 50_000n;
+    syncedBlock = 200n;
   };
   assert.equal(await syncRailgunHistory(wallet, 250_099n), false);
-  assert.deepEqual(targets, [100_099n]);
+  assert.deepEqual(targets, [5_099n]);
 });

@@ -13,25 +13,68 @@ export type ProgressSnapshot = {
   firstRun: boolean;
   activity?: string;
   rows: Array<{ label: string; done: number; total: number; suffix: string;
-    startedAt?: number; updatedAt?: number; samples?: number; unit?: string }>;
+    startedAt?: number; updatedAt?: number; samples?: number; unit?: string;
+    rateStartAt?: number; rateStartDone?: number }>;
 };
+
+/** Uses checkpoints after the first to avoid treating one-time setup as scan speed. */
+export function estimateTaskRemainingSeconds(row: ProgressSnapshot["rows"][number]): number | undefined {
+  if (row.done >= row.total) return 0;
+  if ((row.samples ?? 0) < 2 || row.done <= 0) return undefined;
+  const measuredDone = row.rateStartDone === undefined ? row.done : row.done - row.rateStartDone;
+  const measuredMs = (row.updatedAt ?? 0) - (row.rateStartAt ?? row.startedAt ?? 0);
+  if (measuredMs < 1000 || measuredDone <= 0) return undefined;
+  return Math.ceil((row.total - row.done) * measuredMs / (measuredDone * 1000));
+}
+
+export function formatEtaDuration(seconds: number): string {
+  return seconds < 60 ? `${seconds}s` : seconds < 3600
+    ? `${Math.ceil(seconds / 60)}m` : `${(seconds / 3600).toFixed(1)}h`;
+}
+
+/** A range for tasks already visible; later phases have no known total yet. */
+export function formatKnownWorkEta(rows: ProgressSnapshot["rows"]): string | undefined {
+  const active = rows.filter((row) => row.done < row.total);
+  if (active.length < 2) return undefined;
+  const estimates = active.map(estimateTaskRemainingSeconds);
+  if (estimates.some((value) => value === undefined)) return undefined;
+  const seconds = estimates as number[];
+  const lower = Math.max(...seconds);
+  const upper = seconds.reduce((sum, value) => sum + value, 0);
+  const range = lower === upper ? formatEtaDuration(lower)
+    : `${formatEtaDuration(lower)}-${formatEtaDuration(upper)}`;
+  return `Known steps ETA ~${range} (more may follow)`;
+}
 
 /** Shared by the worker and the fallback; estimates apply only to this task. */
 export function formatProgressMetrics(row: ProgressSnapshot["rows"][number], now: number): string {
   if (row.done >= row.total) return "task complete";
-  const percent = Math.floor(100 * row.done / row.total);
+  const share = 100 * row.done / row.total;
+  const percent = row.done === 0 ? "0%" : share < 1 ? `${share.toFixed(2)}%`
+    : share < 10 ? `${share.toFixed(1)}%` : `${Math.floor(share)}%`;
   const age = now - (row.startedAt ?? now);
-  if (age < 3000 || (row.samples ?? 0) < 3 || row.done <= 0) {
-    return `${percent}% · estimating speed / ETA`;
+  if (row.done <= 0) {
+    const seconds = Math.floor(age / 1000);
+    const spent = seconds < 60 ? `${seconds}s` : seconds < 3600
+      ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`
+      : `${(seconds / 3600).toFixed(1)}h`;
+    const unit = row.unit === "chunks" ? "chunk" : row.unit === "windows" ? "window" : "range";
+    return `${percent} · first ${unit} in progress (${spent}) · ETA after progress`;
   }
-  const rate = row.done / (age / 1000);
-  const remaining = Math.ceil((row.total - row.done) / rate);
-  const duration = remaining < 60 ? `${remaining}s` : remaining < 3600
-    ? `${Math.ceil(remaining / 60)}m` : `${(remaining / 3600).toFixed(1)}h`;
+  const remaining = estimateTaskRemainingSeconds(row);
+  if (remaining === undefined) {
+    return `${percent} · measuring speed · ETA after next update`;
+  }
+  const measuredDone = row.rateStartDone === undefined ? row.done : row.done - row.rateStartDone;
+  const measuredMs = (row.updatedAt ?? now) - (row.rateStartAt ?? row.startedAt ?? now);
+  const rate = measuredDone / (measuredMs / 1000);
+  const duration = formatEtaDuration(remaining);
   const speed = rate >= 10 ? Math.round(rate).toLocaleString("en-US") : rate.toFixed(1);
-  // Once updates stop, keep reporting throughput but stop extrapolating an ETA.
-  const eta = now - (row.updatedAt ?? now) > 15000 ? "ETA unavailable (waiting)" : `task ETA ~${duration}`;
-  return `${percent}% · ${speed} ${row.unit ?? "units"}/s · ${eta}`;
+  // Preserve the measured estimate while a long step runs, and flag it as less reliable.
+  const usualStep = ((row.updatedAt ?? now) - (row.startedAt ?? now)) / (row.samples ?? 1);
+  const slow = now - (row.updatedAt ?? now) > Math.max(30_000, 3 * usualStep);
+  const eta = slow ? `task ETA ~${duration} (current step slow)` : `task ETA ~${duration}`;
+  return `${percent} · ${speed} ${row.unit ?? "units"}/s · ${eta}`;
 }
 
 /** Return to the top of the current block, even after the terminal scrolls. */
@@ -86,6 +129,9 @@ const NL = ${JSON.stringify("\r\n")};
 const STALE_MS = 2000;
 const SLOW_HINT_MS = 8000;
 const BAR_WIDTH = 16;
+const estimateTaskRemainingSeconds = ${estimateTaskRemainingSeconds.toString()};
+const formatEtaDuration = ${formatEtaDuration.toString()};
+const formatKnownWorkEta = ${formatKnownWorkEta.toString()};
 const metrics = ${formatProgressMetrics.toString()};
 
 let snapshot = workerData.snapshot;
@@ -135,8 +181,8 @@ function draw() {
   if (snapshot.firstRun && Date.now() - startedAt >= SLOW_HINT_MS) {
     header += DOT + 'first run can take several minutes';
   }
-  if (snapshot.activity) header += DOT + snapshot.activity;
   const lines = [header];
+  if (snapshot.activity) lines.push('   Now: ' + snapshot.activity);
   const visible = snapshot.rows.slice(0, 4);
   for (const row of visible) {
     const detail = metrics(row, Date.now());
@@ -152,6 +198,8 @@ function draw() {
   if (snapshot.rows.length > visible.length) {
     lines.push('   +' + (snapshot.rows.length - visible.length) + ' other tasks');
   }
+  const knownEta = formatKnownWorkEta(snapshot.rows);
+  if (knownEta) lines.push('   ' + knownEta);
   const block = layoutBlock(lines, columns, rows);
   const previousHeight = Atomics.load(state, 2);
   write(clearBlock(previousHeight) + block.join(NL));

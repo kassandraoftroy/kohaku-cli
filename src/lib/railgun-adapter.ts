@@ -15,11 +15,15 @@ import {
 
 import { railgunHostContext } from "../host/railgun-host-context.js";
 import { DEFAULT_ARTIFACTS_BASE_URL } from "../utils/proving-artifacts.js";
-import { addSyncUnits, beginSyncActivity } from "../utils/sync-progress.js";
+import { beginSyncActivity, reportSyncBlockProgress } from "../utils/sync-progress.js";
 
 const CHECKPOINT_KEY = "railgun-rust-checkpoint";
 const MIGRATION_COMPLETE_KEY = "railgun-rust-migration-complete";
 const SYNC_WINDOW = 100_000n;
+// Stable block boundaries let wallets reuse identical cached Subsquid pages.
+// Only the first range is split further so history progress appears promptly
+// after the one-time PPOI initialization finishes.
+const FIRST_SYNC_BOUNDARIES = [5_000n, 25_000n, 55_000n, SYNC_WINDOW];
 const warnedResync = new Set<string>();
 const ERC20_ID = /^erc20:(0x[0-9a-fA-F]{40})$/;
 
@@ -98,6 +102,15 @@ type SyncableRailgunWallet = {
   sync(): Promise<void>;
 };
 
+function nextRailgunSyncEnd(from: bigint, deployment: bigint): bigint {
+  const offset = from - deployment;
+  if (offset < SYNC_WINDOW) {
+    const boundary = FIRST_SYNC_BOUNDARIES.find((value) => offset < value);
+    if (boundary !== undefined) return deployment + boundary - 1n;
+  }
+  return deployment + (offset / SYNC_WINDOW + 1n) * SYNC_WINDOW - 1n;
+}
+
 /** Returns false when the indexer source has not yet reached the RPC head. */
 export async function syncRailgunHistory(wallet: SyncableRailgunWallet, head: bigint): Promise<boolean> {
   const start = wallet.syncedBlock === 0n
@@ -108,13 +121,21 @@ export async function syncRailgunHistory(wallet: SyncableRailgunWallet, head: bi
     await wallet.sync();
     return wallet.syncedBlock >= head;
   }
-  const total = Number((head - start) / SYNC_WINDOW + 1n);
-  const progress = addSyncUnits("rpc", total, "Railgun history");
-  for (let from = start; from <= head; from += SYNC_WINDOW) {
-    const to = from + SYNC_WINDOW - 1n < head ? from + SYNC_WINDOW - 1n : head;
-    await wallet.syncTo(to);
-    if (wallet.syncedBlock < to) return false;
-    progress.advance();
+  const totalBlocks = head - start + 1n;
+  reportSyncBlockProgress(0n, totalBlocks, "Railgun history");
+  for (let from = start; from <= head;) {
+    const boundary = nextRailgunSyncEnd(from, wallet.chain.deploymentBlock);
+    const to = boundary < head ? boundary : head;
+    const finish = beginSyncActivity(`Railgun blocks ${from.toLocaleString("en-US")}-${to.toLocaleString("en-US")}`);
+    try {
+      await wallet.syncTo(to);
+    } finally {
+      finish();
+    }
+    const reached = wallet.syncedBlock < to ? wallet.syncedBlock : to;
+    if (reached >= start) reportSyncBlockProgress(reached - start + 1n, totalBlocks, "Railgun history");
+    if (reached < to) return false;
+    from = to + 1n;
   }
   return true;
 }

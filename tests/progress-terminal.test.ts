@@ -115,6 +115,7 @@ it("renders task speed and ETA from the actual worker", () => {
       spinner.start("sync");
       const renderer = startProgressRenderer({
         header: "Railgun sync", firstRun: false,
+        activity: "Railgun PPOI list · loading leaves (size unknown)",
         rows: [{ label: "RPC test", done: 450, total: 1350, suffix: "450/1350 blocks",
           unit: "blocks", samples: 3, startedAt: Date.now() - 5000, updatedAt: Date.now() }],
       }, Date.now() - 5000);
@@ -129,4 +130,5 @@ it("renders task speed and ETA from the actual worker", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /RPC test · 33% · [\d,]+ blocks\/s · task ETA ~/);
   assert.match(result.stdout, /450\/1350 blocks/);
+  assert.match(result.stdout, /Now: Railgun PPOI list · loading leaves \(size unknown\)/);
 });

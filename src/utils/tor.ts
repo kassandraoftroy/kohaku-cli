@@ -492,12 +492,17 @@ async function storePublicSyncResponseIfOk(
  */
 export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const category = categorizeUrl(resolveRequestUrl(input));
-  const label = category === "subsquid" ? "Subsquid history · total unavailable"
-    : category === "ppoi" ? "Railgun POI · total unavailable"
-    : category === "asp" ? "ASP lists · total unavailable" : undefined;
+  const method = resolveRequestMethod(input, init);
+  const rpcMethod = await peekPostRpcMethod(input, init, method);
+  const label = category === "subsquid" ? "Subsquid history · fetching page"
+    : category === "ppoi" && rpcMethod === "ppoi_poi_merkletree_leaves"
+      ? "Railgun PPOI list · loading leaves (size unknown)"
+    : category === "ppoi" ? "Railgun PPOI · checking list / TXIDs"
+    : category === "asp" ? "ASP lists · fetching"
+    : rpcMethod ? `RPC ${rpcMethod} · waiting for response` : undefined;
   const finish = label ? beginSyncActivity(label) : undefined;
   try {
-    return await kohakuFetchInner(input, init);
+    return await kohakuFetchInner(input, init, rpcMethod);
   } finally {
     finish?.();
   }
@@ -505,11 +510,11 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
 
 async function kohakuFetchInner(
   input: RequestInfo | URL,
-  init?: RequestInit
+  init?: RequestInit,
+  rpcMethod?: string,
 ): Promise<Response> {
   const url = resolveRequestUrl(input);
   const method = resolveRequestMethod(input, init);
-  const rpcMethod = await peekPostRpcMethod(input, init, method);
 
   // Hits to the local Pimlico proxy are logged in the proxy (upstream Tor URL).
   if (isActivePimlicoProxyUrl(url)) {
