@@ -85,6 +85,10 @@ function baseArgs(extra: string[]): string[] {
   return ["private-transfer", "--protocol", "tornado", "--non-interactive", ...extra];
 }
 
+function transferAliasArgs(protocol: string, extra: string[]): string[] {
+  return ["transfer", "--from", protocol, "--non-interactive", ...extra];
+}
+
 function assertNoBroadcast(output: string): void {
   assert.equal(output.includes("Broadcasting private transfer"), false);
 }
@@ -126,6 +130,46 @@ function listenChainId(): Promise<{ server: Server; url: string }> {
 }
 
 describe("private-transfer CLI wiring", () => {
+  it("routes each private protocol source through private-transfer validation", () => {
+    for (const protocol of ["railgun", "tornado", "privacy-pools"]) {
+      const flags = ["--to", PAYEE, "--amount-wei", "1", "--amount-formatted", "0.1"];
+      const direct = runCli(["private-transfer", "--protocol", protocol, "--non-interactive", ...flags]);
+      const alias = runCli(transferAliasArgs(protocol, flags));
+      assert.equal(direct.status, 1);
+      assert.equal(alias.status, direct.status);
+      assert.match(combinedOutput(alias), /Provide only one of --amount-wei or --amount-formatted/);
+      assert.equal(combinedOutput(alias), combinedOutput(direct));
+      assertNoBroadcast(combinedOutput(alias));
+    }
+  });
+
+  it("rejects public-only transfer flags with a private source", () => {
+    for (const [flag, expected] of [
+      ["--from-priv", /--from-priv is only supported for public transfers/],
+      ["--stealth", /--stealth is only supported for public transfers/],
+      ["--amount-max", /private-transfer does not support --amount-max/],
+    ] as const) {
+      const result = runCli(transferAliasArgs("tornado", [flag, "--to", PAYEE]));
+      assert.equal(result.status, 1);
+      assert.match(combinedOutput(result), expected);
+      assertNoBroadcast(combinedOutput(result));
+    }
+  });
+
+  it("supports Tornado's pool option through the alias and rejects it for other sources", () => {
+    const tornado = runCli(transferAliasArgs("tornado", ["--exclude-new-pools", "--to", PAYEE, "--amount-wei", "1"]));
+    assert.equal(tornado.status, 1);
+    assert.match(combinedOutput(tornado), /--wallet <name> is required when using --non-interactive/);
+
+    const railgun = runCli(transferAliasArgs("railgun", ["--exclude-new-pools", "--to", PAYEE, "--amount-wei", "1"]));
+    assert.equal(railgun.status, 1);
+    assert.match(combinedOutput(railgun), /--exclude-new-pools is only supported with --protocol tornado/);
+
+    const publicTransfer = runCli(["transfer", "--from", "0", "--exclude-new-pools", "--to", PAYEE, "--amount-wei", "1", "--non-interactive"]);
+    assert.equal(publicTransfer.status, 1);
+    assert.match(combinedOutput(publicTransfer), /--exclude-new-pools requires --from tornado/);
+  });
+
   it("rejects both amount flags", () => {
     const result = runCli(
       baseArgs([
@@ -212,6 +256,12 @@ describe("private-transfer CLI wiring", () => {
       assert.equal(bad.status, 1, badOutput);
       assert.match(badOutput, /is not a valid Ethereum address/);
       assertNoBroadcast(badOutput);
+
+      const alias = await runCliAsync(transferAliasArgs("tornado", ["--to", "not-an-address", ...common]));
+      const aliasOutput = combinedOutput(alias);
+      assert.equal(alias.status, bad.status, aliasOutput);
+      assert.match(aliasOutput, /is not a valid Ethereum address/);
+      assertNoBroadcast(aliasOutput);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
       await new Promise<void>((resolve, reject) => {
