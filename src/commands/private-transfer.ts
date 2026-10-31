@@ -4,6 +4,10 @@ import { runUnshield, type UnshieldOpts } from "./unshield.js";
 import { cliOptions, passwordFileOption } from "../utils/cli-command-options";
 import { SUPPORTED_PROTOCOLS_HELP } from "../utils/plugins";
 
+export function runPrivateTransfer(opts: UnshieldOpts): Promise<void> {
+  return runUnshield({ ...opts, privateTransfer: true });
+}
+
 export function registerPrivateTransferCommand(program: Command): void {
   program
     .command("private-transfer")
@@ -36,5 +40,5 @@ export function registerPrivateTransferCommand(program: Command): void {
     )
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
-    .action((opts: UnshieldOpts) => runUnshield({ ...opts, privateTransfer: true }));
+    .action(runPrivateTransfer);
 }

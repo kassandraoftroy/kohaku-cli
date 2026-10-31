@@ -356,32 +356,35 @@ kohaku balances --wallet testWallet --skip-stealth-scan
 
 ### `transfer`
 
-Transfer ETH or ERC-20 tokens from one wallet public account to any public address. By default, the command simulates the transfer and prints its transaction payload without submitting it.
+Transfer ETH or ERC-20 tokens from one wallet public account to any public address. For a public source, the command simulates the transfer and prints its transaction payload unless `--broadcast` is set. Set `--from` to `railgun`, `tornado`, or `privacy-pools` to run the same private transfer as `private-transfer --protocol <protocol>`: the recipient receives an exact amount through a fresh account.
 
 | Option | Description |
 |--------|-------------|
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
-| `--from <address-or-index>` | Sender public account address, HD index, or stealth selector (`s0`). |
+| `--from <address-or-index\|protocol>` | Public account address, HD index, stealth selector (`s0`), or private protocol (`railgun`, `tornado`, `privacy-pools`). |
 | `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
 | `--to <address>` | Recipient address. |
 | `--token <address\|symbol\|eth>` | Token address or symbol (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human-readable amount using token decimals. |
-| `--amount-max` | Send the full ERC-20 balance, or the maximum ETH balance after reserving estimated gas. |
+| `--amount-max` | Public transfer only: send the full ERC-20 balance, or the maximum ETH balance after reserving estimated gas. |
+| `--exclude-new-pools` | With `--from tornado` only, use classic Tornado pools. |
 | `--rpc-url <url>` | RPC endpoint. |
-| `--broadcast` | Sign and submit on-chain. Omit to simulate and print the transaction payload. |
+| `--broadcast` | Sign and submit. Omit to print a public transaction payload or prepared private operation. |
 | `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico UserOps, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, `--to`, and one amount flag. |
 | `--dataDir <path>` | Data root. |
 
-Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted.
+Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted. Private protocol sources accept the same options as `private-transfer`; `--from-priv`, `--stealth`, and `--amount-max` are public-transfer-only.
 
 **Examples:**
 
 ```bash
 kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --amount-formatted 0.01
 kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --token USDC --amount-max --broadcast
+kohaku transfer --wallet testWallet --from tornado --to 0xRecipient --amount-formatted 0.1 --broadcast
+kohaku transfer --wallet testWallet --from railgun --to 0xRecipient --amount-formatted 0.1 --broadcast
 ```
 
 ---
@@ -530,6 +533,7 @@ Unshield through a **fresh public account** and forward an **exact** amount to s
 | `--password <password>` / `--password-file <path>` | Unlock password. |
 | `--to <address>` | Final recipient: public address, stealth selector (`s0`), or name (`.eth` / `.gwei` / `.wei`). A stealth selector is paid by the tail call; its key is not the delegator. |
 | `--token <address\|eth>` | Token (default: `eth`). |
+| `--exclude-new-pools` | Tornado only: use classic pools. |
 | `--amount-wei <n>` | Exact amount the recipient receives, in base units. |
 | `--amount-formatted <decimal>` | Exact amount the recipient receives. |
 | `--rpc-url <url>` | RPC endpoint. |
@@ -539,6 +543,8 @@ Unshield through a **fresh public account** and forward an **exact** amount to s
 | `--dataDir <path>` | Data root. |
 
 There is no `--next`, `--tail-calls`, or `--amount-max`. The fresh account is persisted only after a successful `--broadcast`.
+
+`transfer --from railgun`, `transfer --from tornado`, and `transfer --from privacy-pools` are aliases for this command with the corresponding `--protocol` value.
 
 **Tornado:** the paymaster fee is taken from the unshielded notes, so the command unshields the smallest note sum that covers the transfer plus that fee. Sending exactly 0.1 ETH from 0.1 notes unshields 0.2. The tail pays 0.1 and the remainder stays on the fresh account. The same rule applies to tokens (`--token DAI` and the other paymaster fee-adapter tokens).
 

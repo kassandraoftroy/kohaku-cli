@@ -50,6 +50,8 @@ import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
+import { runPrivateTransfer } from "./private-transfer.js";
+import { isSupportedProtocol, SUPPORTED_PROTOCOLS_HELP } from "../utils/plugins.js";
 import {
   estimateEthTransferGasReserveWei,
   transferMaxAmountFromBalance,
@@ -71,6 +73,7 @@ type TransferOpts = {
   amountWei?: string;
   amountFormatted?: string;
   amountMax?: boolean;
+  excludeNewPools?: boolean;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -206,11 +209,11 @@ function printTransferDryRunInteractive(
 export function registerTransferCommand(program: Command): void {
   program
     .command("transfer")
-    .description("Transfer ETH or ERC-20 between public accounts")
+    .description("Transfer ETH or ERC-20 from a public account or private protocol")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
-    .option("--from <address-or-index>", "Public sender address, HD index, or stealth selector (s0)")
+    .option("--from <address-or-index|protocol>", `Public address, HD index, stealth selector (s0), or private protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
     .option(
       "--from-priv",
       "With --broadcast: derive --from index from mnemonic when missing from public accounts"
@@ -231,11 +234,48 @@ export function registerTransferCommand(program: Command): void {
       "--amount-max",
       "Transfer the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance)"
     )
+    .option("--exclude-new-pools", "Tornado private transfer only: use classic pools")
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransferOpts) => {
+      const privateProtocol = opts.from?.trim();
+      if (isSupportedProtocol(privateProtocol)) {
+        if (opts.fromPriv) {
+          cliError("--from-priv is only supported for public transfers.");
+          return;
+        }
+        if (opts.stealth) {
+          cliError("--stealth is only supported for public transfers.");
+          return;
+        }
+        if (opts.amountMax) {
+          cliError("private-transfer does not support --amount-max.");
+          return;
+        }
+        return runPrivateTransfer({
+          protocol: privateProtocol,
+          wallet: opts.wallet,
+          password: opts.password,
+          passwordFile: opts.passwordFile,
+          to: opts.to,
+          token: opts.token,
+          amountWei: opts.amountWei,
+          amountFormatted: opts.amountFormatted,
+          excludeNewPools: opts.excludeNewPools,
+          rpcUrl: opts.rpcUrl,
+          nonInteractive: opts.nonInteractive,
+          broadcast: opts.broadcast,
+          withoutTor: opts.withoutTor,
+          dataDir: opts.dataDir,
+        });
+      }
+      if (opts.excludeNewPools) {
+        cliError("--exclude-new-pools requires --from tornado.");
+        return;
+      }
+
       const amountFlags = [opts.amountWei, opts.amountFormatted, opts.amountMax].filter(
         Boolean
       ).length;
