@@ -77,7 +77,7 @@ type WalletProfile = {
   index?: number;
   account?: string;
   stealthMetaAddressURI?: string;
-  /** Show “run init-profile …” under (none). */
+  /** Whether a public profile has been initialized. */
   needsInit: boolean;
 };
 
@@ -406,13 +406,6 @@ function printHumanBalances(opts: {
         ? chalk.cyan(opts.profile.displayName)
         : chalk.dim("(none)"))
   );
-  if (opts.profile.needsInit) {
-    console.log(
-      chalk.yellow(
-        "  run init-profile command to initialize your profile"
-      )
-    );
-  }
   console.log();
 
   printAggregatedTotalsTable(opts.publicAggregated);

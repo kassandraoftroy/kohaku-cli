@@ -48,6 +48,7 @@ import {
 } from "./proving-artifacts.js";
 import { setPublicSyncCacheDataDir } from "./public-sync-cache.js";
 import { localSyncCacheV2Response } from "./sync-cache-v2.js";
+import { ppoiSyncSnapshotResponse } from "./ppoi-sync-snapshot.js";
 import { railgunSyncSnapshotResponse } from "./railgun-sync-snapshot.js";
 
 /** tor-js Arti directory cache (`createAutoStorage('tor-js')`). */
@@ -529,6 +530,20 @@ async function kohakuFetchInner(
   if (method === "POST" && categorizeUrl(url) === "subsquid") {
     const body = await requestBodyBytesForCache(input, init);
     const snapshot = railgunSyncSnapshotResponse(url, method, body);
+    if (snapshot) {
+      return loggedFetch(
+        input,
+        init,
+        { via: "clearnet", clearnetReason: "public-sync-cache", url, rpcMethod },
+        async () => snapshot
+      );
+    }
+  }
+
+  if (method === "POST" && categorizeUrl(url) === "ppoi" &&
+      rpcMethod === "ppoi_poi_merkletree_leaves") {
+    const body = await requestBodyBytesForCache(input, init);
+    const snapshot = ppoiSyncSnapshotResponse(url, method, body);
     if (snapshot) {
       return loggedFetch(
         input,

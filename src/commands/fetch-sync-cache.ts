@@ -85,8 +85,8 @@ export function registerFetchSyncCacheCommand(program: Command): void {
           onStatus: opts.nonInteractive ? undefined : (message) => console.error(chalk.dim(message)),
         }, async () => {
           const { raw, manifest } = await downloadManifest();
-          if (!manifest.sources.sagaMainnet || !manifest.sources.railgunMainnet) {
-            throw new Error("Sync-cache v2 release is incomplete: mainnet Saga and Railgun sources are both required");
+          if (!manifest.sources.sagaMainnet || !manifest.sources.railgunMainnet || !manifest.sources.ppoiMainnet) {
+            throw new Error("Sync-cache v2 release is incomplete: mainnet Saga, Railgun, and PPOI sources are required");
           }
           const totalBytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
           let completedBytes = 0;
