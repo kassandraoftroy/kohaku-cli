@@ -1,6 +1,6 @@
 {
     "name": "kohaku-cli",
-    "version": "0.0.18",
+    "version": "0.1.0",
     "type": "module",
     "engines": {
         "node": ">=22"
