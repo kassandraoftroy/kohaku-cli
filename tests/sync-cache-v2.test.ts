@@ -7,7 +7,13 @@ import { test } from "node:test";
 import { gzipSync } from "node:zlib";
 
 import { getPublicSyncCacheDataDir, setPublicSyncCacheDataDir } from "../src/utils/public-sync-cache.js";
+import { kohakuFetch } from "../src/utils/tor.js";
 import { railgunSyncSnapshotResponse } from "../src/utils/railgun-sync-snapshot.js";
+import {
+  ppoiSyncSnapshotResponse,
+  PPOI_MAINNET_ENDPOINT,
+  PPOI_ZERO_LEAF,
+} from "../src/utils/ppoi-sync-snapshot.js";
 import {
   installSyncCacheV2Manifest,
   localSyncCacheV2Source,
@@ -118,6 +124,63 @@ test("v2 Railgun cache serves bounded pages independent of requested windows", a
     assert.equal(localSyncCacheV2Source("sagaMainnet", dataDir), null);
     writeFileSync(syncCacheV2ObjectPath(fileMap.get(`${prefix}/index.json`)!, dataDir), "corrupt");
     assert.equal(request(queries.commitments, 10, 19), null);
+  } finally {
+    setPublicSyncCacheDataDir(previousDir);
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("v2 PPOI cache serves complete mainnet leaf pages and leaves validation live", async () => {
+  const previousDir = getPublicSyncCacheDataDir();
+  const dataDir = mkdtempSync(join(tmpdir(), "kohaku-v2-ppoi-test-"));
+  setPublicSyncCacheDataDir(dataDir);
+  try {
+    const listKey = "a".repeat(64);
+    const leaves = Array.from({ length: 200 }, (_, i) => `0x${(i + 1).toString(16).padStart(64, "0")}`);
+    const segment = gzipSync(Buffer.from(JSON.stringify(leaves)));
+    const index = Buffer.from(JSON.stringify({
+      schema: "kohaku-railgun-ppoi-v1", chainId: 1, endpoint: PPOI_MAINNET_ENDPOINT,
+      listKey, txidVersion: "V2_PoseidonMerkle", pageSize: 100,
+      throughLeafExclusive: 200,
+      segments: [{ fromIndex: 0, toIndexExclusive: 200, file: "leaves-0-200.json.gz" }],
+    }));
+    const files = [
+      { path: "ppoi/index.json", bytes: index.length, sha256: hash(index) },
+      { path: "ppoi/leaves-0-200.json.gz", bytes: segment.length, sha256: hash(segment) },
+    ];
+    for (const [file, bytes] of [[files[0]!, index], [files[1]!, segment]] as const) {
+      const path = syncCacheV2ObjectPath(file, dataDir);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, bytes);
+    }
+    installSyncCacheV2Manifest(JSON.stringify({
+      version: 2, createdAt: "2026-11-01T00:00:00.000Z", release: "ppoi-test",
+      sources: { ppoiMainnet: "ppoi" }, files,
+    }), dataDir);
+    const request = (startIndex: number, overrides: Record<string, unknown> = {}) => Buffer.from(JSON.stringify({
+      jsonrpc: "2.0", id: 42, method: "ppoi_poi_merkletree_leaves",
+      params: { chainType: "0", chainID: "1", txidVersion: "V2_PoseidonMerkle",
+        listKey, startIndex, endIndex: startIndex + 100, ...overrides },
+    }));
+    const first = ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", request(0));
+    assert.ok(first);
+    assert.equal(first.url, PPOI_MAINNET_ENDPOINT);
+    assert.deepEqual(await first.json(), { jsonrpc: "2.0", id: 42, result: leaves.slice(0, 100) });
+    const intercepted = await kohakuFetch(new Request(PPOI_MAINNET_ENDPOINT, {
+      method: "POST", headers: { "content-type": "application/json" }, body: request(0),
+    }));
+    assert.equal(intercepted.headers.get("x-kohaku-public-cache"), "v2-ppoi-hit");
+    assert.deepEqual((await intercepted.json()).result, leaves.slice(0, 100));
+    assert.deepEqual((await ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", request(100))?.json())?.result, leaves.slice(100));
+    assert.equal(ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", request(200)), null);
+    assert.equal(ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", request(0, { listKey: "b".repeat(64) })), null);
+    assert.equal(ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", request(0, { chainID: "11155111" })), null);
+    assert.equal(ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", Buffer.from(JSON.stringify({
+      jsonrpc: "2.0", id: 42, method: "ppoi_validate_poi_merkleroots", params: {},
+    }))), null);
+    const bad = gzipSync(Buffer.from(JSON.stringify([PPOI_ZERO_LEAF, ...leaves.slice(1)])));
+    writeFileSync(syncCacheV2ObjectPath(files[1]!, dataDir), bad);
+    assert.equal(ppoiSyncSnapshotResponse(PPOI_MAINNET_ENDPOINT, "POST", request(0)), null);
   } finally {
     setPublicSyncCacheDataDir(previousDir);
     rmSync(dataDir, { recursive: true, force: true });

@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `fetch-sync-cache` installs a mainnet v2 snapshot for Railgun history and Tornado and Privacy Pools Saga data under `<dataDir>/sync-cache-v2`. Downloads verify file sizes and SHA-256 hashes, resume after interruption, and activate only after every file verifies. A first sync still works without the snapshot by fetching history live; Sepolia continues to use its existing sync path.
+- `fetch-sync-cache` installs a mainnet v2 snapshot for Railgun history, historical PPOI list leaves, and Tornado and Privacy Pools Saga data under `<dataDir>/sync-cache-v2`. Downloads verify file sizes and SHA-256 hashes, resume after interruption, and activate only after every file verifies. PPOI Merkle-root validation, TXID status, proof submission, and the growing list tip remain live. A first sync still works without the snapshot by fetching history live; Sepolia continues to use its existing sync path.
 - Railgun private transfers to a `0zk` recipient stay inside Railgun, without an unshield or tail call. Both `private-transfer --protocol railgun` and `transfer --from railgun` use the ERC-4337 paymaster path; `eth` selects private WETH and the requested amount is delivered to the recipient.
 - `balances --include railgun` shows the full wallet `0zk` address beneath the Railgun heading and includes `railgun_address` in non-interactive JSON output.
 

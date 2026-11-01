@@ -26,6 +26,7 @@ export type SyncCacheV2Manifest = {
   sources: {
     sagaMainnet?: string;
     railgunMainnet?: string;
+    ppoiMainnet?: string;
   };
 };
 
@@ -70,9 +71,10 @@ export function parseSyncCacheV2Manifest(raw: string): SyncCacheV2Manifest {
     if (!rawFile || typeof rawFile !== "object") throw new Error("Invalid sync-cache v2 file");
     const file = rawFile as Record<string, unknown>;
     if (typeof file.path !== "string") throw new Error("Sync-cache v2 file has no path");
-    assertSafePath(file.path);
-    if (!file.path.startsWith("saga/") && !file.path.startsWith("railgun/")) {
-      throw new Error(`Sync-cache v2 file is outside the protocol directories: ${file.path}`);
+    const path = file.path;
+    assertSafePath(path);
+    if (!["saga/", "railgun/", "ppoi/"].some((prefix) => path.startsWith(prefix))) {
+      throw new Error(`Sync-cache v2 file is outside the protocol directories: ${path}`);
     }
     if (seen.has(file.path)) throw new Error(`Duplicate sync-cache v2 file ${file.path}`);
     seen.add(file.path);
@@ -89,12 +91,13 @@ export function parseSyncCacheV2Manifest(raw: string): SyncCacheV2Manifest {
   }
   const sourceValues = m.sources as Record<string, unknown>;
   const sources: SyncCacheV2Manifest["sources"] = {};
-  for (const name of ["sagaMainnet", "railgunMainnet"] as const) {
+  for (const name of ["sagaMainnet", "railgunMainnet", "ppoiMainnet"] as const) {
     const prefix = sourceValues[name];
     if (prefix === undefined) continue;
     if (typeof prefix !== "string") throw new Error(`Invalid ${name} source`);
     assertSafePath(prefix);
-    if (prefix !== (name === "sagaMainnet" ? "saga" : "railgun") || !seen.has(`${prefix}/index.json`)) {
+    const expected = name === "sagaMainnet" ? "saga" : name === "railgunMainnet" ? "railgun" : "ppoi";
+    if (prefix !== expected || !seen.has(`${prefix}/index.json`)) {
       throw new Error(`Source ${name} has no index.json in this release`);
     }
     sources[name] = prefix;
