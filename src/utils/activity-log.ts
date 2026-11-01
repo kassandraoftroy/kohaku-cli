@@ -10,6 +10,8 @@ export type ActivityContext = {
   chainId: bigint;
   operation: string;
   protocol?: string;
+  from?: string;
+  to?: string;
 };
 export type ActivityEntry = {
   version: 1;
@@ -22,6 +24,8 @@ export type ActivityEntry = {
   status: "submitted" | "confirmed" | "reverted";
   txHash?: string;
   userOpHash?: string;
+  from?: string;
+  to?: string;
 };
 const context = new AsyncLocalStorage<ActivityContext>();
 
@@ -32,6 +36,15 @@ export function startActivityLog(value: ActivityContext): void {
 
 export function runWithActivityLog<T>(value: ActivityContext, fn: () => T): T {
   return context.run(value, fn);
+}
+
+/** Attach the private sender and final recipient to an outgoing Railgun submission. */
+export function setRailgunActivityParticipants(from: string, to: string): void {
+  const ctx = context.getStore();
+  if (ctx?.protocol === "railgun") {
+    ctx.from = from;
+    ctx.to = to;
+  }
 }
 
 function persist(ctx: ActivityContext, entry: ActivityEntry): void {
@@ -54,6 +67,7 @@ export function recordSubmission(hashes: { txHash?: string; userOpHash?: string 
     version: 1, id: randomUUID(), timestamp, updatedAt: timestamp,
     operation: ctx.operation, protocol: ctx.protocol,
     chainId: ctx.chainId.toString(), status: "submitted", ...hashes,
+    ...(ctx.protocol === "railgun" && ctx.from && ctx.to ? { from: ctx.from, to: ctx.to } : {}),
   };
   const save = () => {
     try { persist(ctx, entry); }

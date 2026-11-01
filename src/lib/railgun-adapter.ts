@@ -9,7 +9,9 @@ import {
   type PoiProcessReport,
   type PreparedUserOperation,
   type RailgunBalance,
+  type RailgunAddress,
   type RailgunNote,
+  type TransferOptions as RailgunTransferOptions,
   type UnshieldOptions as RailgunUnshieldOptions,
 } from "kohaku-rg-js-wrapper";
 
@@ -56,6 +58,20 @@ export function railgunUnshieldInput(
     amount: BigInt(asset.amount),
     unwrapNative: (asset.asset as { __type?: string }).__type === "native",
     tailCalls: calls.map((call) => ({ target: call.to, value: call.value, data: call.data })),
+    ...spend,
+  };
+}
+
+export function railgunTransferInput(
+  asset: AssetAmount,
+  recipient: RailgunAddress,
+  wrappedBaseToken: Hex,
+  spend: { accountPrivateKey: Hex; bundlerUrl: string },
+): RailgunTransferOptions {
+  return {
+    recipient,
+    token: assetAddress(asset.asset, wrappedBaseToken),
+    amount: BigInt(asset.amount),
     ...spend,
   };
 }
@@ -267,6 +283,12 @@ export class RailgunAdapter {
     const calls = await options?.tailCalls?.() ?? [];
     return this.wallet.prepareUnshield(railgunUnshieldInput(
       asset, recipient, calls, this.wallet.chain.wrappedBaseToken, this.spendConfig(),
+    ));
+  }
+
+  async prepareTransfer(asset: AssetAmount, recipient: RailgunAddress): Promise<PreparedUserOperation> {
+    return this.wallet.prepareTransfer(railgunTransferInput(
+      asset, recipient, this.wallet.chain.wrappedBaseToken, this.spendConfig(),
     ));
   }
 

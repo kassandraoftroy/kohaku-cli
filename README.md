@@ -356,7 +356,7 @@ kohaku balances --wallet testWallet --skip-stealth-scan
 
 ### `transfer`
 
-Transfer ETH or ERC-20 tokens from one wallet public account to any public address. For a public source, the command simulates the transfer and prints its transaction payload unless `--broadcast` is set. Set `--from` to `railgun`, `tornado`, or `privacy-pools` to run the same private transfer as `private-transfer --protocol <protocol>`: the recipient receives an exact amount through a fresh account.
+Transfer ETH or ERC-20 tokens from one wallet public account to any public address. For a public source, the command simulates the transfer and prints its transaction payload unless `--broadcast` is set. Set `--from` to `railgun`, `tornado`, or `privacy-pools` to run the same private transfer as `private-transfer --protocol <protocol>`. A Railgun `--to 0zk…` recipient receives an internal private transfer without unshielding; public recipients receive an exact amount through a fresh account.
 
 | Option | Description |
 |--------|-------------|
@@ -524,14 +524,14 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted
 
 ### `private-transfer`
 
-Unshield through a **fresh public account** and forward an **exact** amount to someone else. This is `unshield --next` plus one tail call. `--to` is only the final recipient. The fresh account is the EIP-7702 delegator, runs the tail call, and keeps anything that is not the exact transfer.
+Send an **exact** private amount to someone else. For a public recipient, this unshields through a fresh public account and forwards the amount with a tail call. For a Railgun `0zk` recipient, the transfer stays inside Railgun and does not unshield. The 4337 paymaster gas is paid from private WETH.
 
 | Option | Description |
 |--------|-------------|
 | `--protocol <railgun\|privacy-pools\|tornado>` | Required unless `DEFAULT_PRIVACY_PROTOCOL` is set. |
 | `--wallet <name>` | Wallet. |
 | `--password <password>` / `--password-file <path>` | Unlock password. |
-| `--to <address>` | Final recipient: public address, stealth selector (`s0`), or name (`.eth` / `.gwei` / `.wei`). A stealth selector is paid by the tail call; its key is not the delegator. |
+| `--to <address>` | Final recipient: public address, Railgun `0zk` address, stealth selector (`s0`), or name (`.eth` / `.gwei` / `.wei`). A stealth selector is paid by the tail call; its key is not the delegator. |
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--exclude-new-pools` | Tornado only: use classic pools. |
 | `--amount-wei <n>` | Exact amount the recipient receives, in base units. |
@@ -542,7 +542,7 @@ Unshield through a **fresh public account** and forward an **exact** amount to s
 | `--non-interactive` | JSON; requires `--wallet`, `--password` or `--password-file`, `--to`, and `--amount-wei` or `--amount-formatted`. |
 | `--dataDir <path>` | Data root. |
 
-There is no `--next`, `--tail-calls`, or `--amount-max`. The fresh account is persisted only after a successful `--broadcast`.
+There is no `--next`, `--tail-calls`, or `--amount-max`. For public recipients, the fresh account is persisted only after a successful `--broadcast`. Railgun internal transfers use a fresh wallet-owned 4337 executor, persisted after broadcast, but do not create a fresh receiving account or unshield funds to it.
 
 `transfer --from railgun`, `transfer --from tornado`, and `transfer --from privacy-pools` are aliases for this command with the corresponding `--protocol` value.
 
@@ -550,11 +550,14 @@ There is no `--next`, `--tail-calls`, or `--amount-max`. The fresh account is pe
 
 **Railgun and Privacy Pools:** the unshield net equals the transfer amount, so the tail can drain the fresh account to zero. Railgun's treasury fee is added on top of that amount. Railgun bundler gas is paid from shielded WETH. The Privacy Pools paymaster fee is paid from the private balance on top of the net. On Privacy Pools the fresh account is the delegate and the refund recipient — `--to` is not. Unused-gas change stays on the fresh account and is not forwarded.
 
+**Railgun 0zk recipient:** `private-transfer --protocol railgun` and `transfer --from railgun` prepare a direct Railgun transfer with no unshield or tail call. The amount is the exact private token amount delivered; `eth` selects private WETH. The signed operation still uses the ERC-4337 paymaster, which charges private WETH for gas. The CLI activity log records the sending 0zk address, receiving 0zk address, UserOp hash, and mined transaction hash when available.
+
 **Examples:**
 
 ```bash
 kohaku private-transfer --protocol tornado --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
 kohaku private-transfer --protocol railgun --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
+kohaku private-transfer --protocol railgun --wallet testWallet --to 0zk1... --amount-formatted 0.1 --broadcast
 kohaku private-transfer --protocol privacy-pools --wallet testWallet --to 0xFriend --amount-formatted 0.1 --broadcast
 kohaku private-transfer --protocol tornado --wallet testWallet --to 0xFriend --token DAI --amount-formatted 50 --broadcast
 ```
@@ -896,7 +899,7 @@ Tornado SDK alpha.32 includes new direct-paymaster deployments for both mainnet 
 
 `kohaku activity --wallet my-wallet` shows transactions submitted by this CLI, newest first. Add `--non-interactive` for versioned JSON. It uses the wallet password (`--password-file` is supported) and requires no RPC or protocol sync.
 
-The encrypted local log covers shield, unshield, public/stealth/private transfers, raw transactions, ragequit, and name/profile transactions. Each submission records its operation, protocol when applicable, chain, time, UserOp hash when applicable, and actual transaction hash once a receipt is available. Reverted operations are marked reverted. A receipt timeout leaves the submission recorded as submitted; activity does not poll or refresh its later status. Dry runs and cancelled commands do not create entries. The log starts with v0.0.12 and does not reconstruct earlier transactions or activity from other tools. Back up the wallet's `activity/` directory along with the rest of the wallet.
+The encrypted local log covers shield, unshield, public/stealth/private transfers, raw transactions, ragequit, and name/profile transactions. Each submission records its operation, protocol when applicable, chain, time, UserOp hash when applicable, and actual transaction hash once a receipt is available. Railgun outgoing operations also record the sending 0zk address and final receiving 0x or 0zk address. Reverted operations are marked reverted. A receipt timeout leaves the submission recorded as submitted; activity does not poll or refresh its later status. Dry runs and cancelled commands do not create entries. The log starts with v0.0.12 and does not reconstruct earlier transactions or activity from other tools. Back up the wallet's `activity/` directory along with the rest of the wallet.
 
 ## Privacy Pools ragequit
 
