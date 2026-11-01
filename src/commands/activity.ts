@@ -34,7 +34,9 @@ export function registerActivityCommand(program: Command): void {
         if (entries.length === 0) console.log("No CLI activity recorded yet.");
         for (const entry of entries) {
           console.log(`${entry.timestamp}  ${entry.operation}${entry.protocol ? ` (${entry.protocol})` : ""}  chain ${entry.chainId}  ${entry.status}`);
-          if (entry.txHash) console.log(`  tx: ${entry.txHash}`);
+          if (entry.from) console.log(`  from: ${entry.from}`);
+          if (entry.to) console.log(`  to: ${entry.to}`);
+          if (entry.txHash) console.log(`  ${entry.protocol === "railgun" ? "bundle tx" : "tx"}: ${entry.txHash}`);
           if (entry.userOpHash) console.log(`  userOp: ${entry.userOpHash}`);
         }
       } catch (error) { cliErrorFromCaught(error); }

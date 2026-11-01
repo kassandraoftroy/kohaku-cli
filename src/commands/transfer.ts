@@ -218,7 +218,7 @@ export function registerTransferCommand(program: Command): void {
       "--from-priv",
       "With --broadcast: derive --from index from mnemonic when missing from public accounts"
     )
-    .option("--to <address>", "Recipient address, name (.eth/.gwei/.wei), or stealth meta-address")
+    .option("--to <address>", "Recipient address, Railgun 0zk address, name (.eth/.gwei/.wei), or stealth meta-address")
     .option(
       "--stealth",
       "Send via EIP-5564: resolve scheme-1 meta from --to (meta URI, name text record, or ERC-6538 registry)"

@@ -12,7 +12,7 @@ export function registerPrivateTransferCommand(program: Command): void {
   program
     .command("private-transfer")
     .description(
-      "Unshield to a fresh account and forward an exact amount to another address"
+      "Send an exact private amount (Railgun 0zk recipients stay inside Railgun)"
     )
     .option(
       "--protocol <protocol>",
@@ -23,7 +23,7 @@ export function registerPrivateTransferCommand(program: Command): void {
     .addOption(passwordFileOption())
     .option(
       "--to <address>",
-      "Final recipient: public address, stealth selector (s0), or name (.eth/.gwei/.wei). Not the EIP-7702 delegator"
+      "Final recipient: public address, Railgun 0zk address, stealth selector (s0), or name (.eth/.gwei/.wei)"
     )
     .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")

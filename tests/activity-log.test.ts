@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readActivity, recordSubmission, runWithActivityLog } from "../src/utils/activity-log.js";
+import { readActivity, recordSubmission, runWithActivityLog, setRailgunActivityParticipants } from "../src/utils/activity-log.js";
 import { broadcastPreparedPrivateOp, extractUnshieldExplorerHash } from "../src/lib/unshield-flow.js";
 import { sendTransactionAndWait } from "../src/utils/viem-tx.js";
 
@@ -73,11 +73,15 @@ test("Railgun activity captures the mined transaction hash separately from its U
     return Response.json({ jsonrpc: "2.0", id: request.id, result });
   };
   try {
-    const result = await runWithActivityLog({ walletDir, password: "test-password", chainId: 1n, operation: "unshield", protocol: "railgun" }, () =>
-      broadcastPreparedPrivateOp("railgun", {} as never, {}, {
+    const from = "0zk1sender";
+    const to = "0x0000000000000000000000000000000000000002";
+    const result = await runWithActivityLog({ walletDir, password: "test-password", chainId: 1n, operation: "unshield", protocol: "railgun" }, () => {
+      setRailgunActivityParticipants(from, to);
+      return broadcastPreparedPrivateOp("railgun", {} as never, {}, {
         userOpHash,
         signed: { userOp: { sender: "0x1234" }, entryPoint: "0x0000000000000000000000000000000000000001" },
-      }, 1n));
+      }, 1n);
+    });
     assert.deepEqual(result, { userOpHash, txHash: hash });
     assert.equal(extractUnshieldExplorerHash(result), hash);
     assert.equal(extractUnshieldExplorerHash({ userOpHash }), null);
@@ -85,9 +89,27 @@ test("Railgun activity captures the mined transaction hash separately from its U
     const [entry] = readActivity(walletDir, "test-password");
     assert.equal(entry.txHash, hash);
     assert.equal(entry.userOpHash, userOpHash);
+    assert.equal(entry.from, from);
+    assert.equal(entry.to, to);
     assert.equal(entry.status, "confirmed");
+    const encrypted = readFileSync(join(walletDir, "activity", readdirSync(join(walletDir, "activity"))[0]!), "utf8");
+    assert.ok(!encrypted.includes(from) && !encrypted.includes(to));
   } finally {
     globalThis.fetch = previousFetch;
     rmSync(walletDir, { recursive: true, force: true });
   }
+});
+
+test("Railgun internal transfer activity records a 0zk recipient", () => {
+  const walletDir = mkdtempSync(join(tmpdir(), "kohaku-activity-"));
+  try {
+    runWithActivityLog({ walletDir, password: "test-password", chainId: 1n, operation: "private-transfer", protocol: "railgun" }, () => {
+      setRailgunActivityParticipants("0zk1sender", "0zk1recipient");
+      recordSubmission({ userOpHash });
+    });
+    const [entry] = readActivity(walletDir, "test-password");
+    assert.equal(entry.from, "0zk1sender");
+    assert.equal(entry.to, "0zk1recipient");
+    assert.equal(entry.userOpHash, userOpHash);
+  } finally { rmSync(walletDir, { recursive: true, force: true }); }
 });

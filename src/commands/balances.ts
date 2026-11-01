@@ -336,10 +336,11 @@ function printBalanceItemRows(
 function printPrivateProtocolSection(
   title: string,
   rows: BalanceItem[],
-  opts?: { status?: boolean }
+  opts?: { status?: boolean; subtitle?: string }
 ): void {
   console.log();
   console.log(chalk.bold(`  ■ ${title}`));
+  if (opts?.subtitle) console.log(`  ${opts.subtitle}`);
   console.log(chalk.dim(`  ${THIN}`));
   printBalanceItemRows(rows, opts);
 }
@@ -382,6 +383,7 @@ function printHumanBalances(opts: {
   publicAccountIndexByAddress?: Record<string, number>;
   stealthAccountIndexByAddress?: Record<string, number>;
   privateRailgun: BalanceItem[];
+  railgunAddress?: string;
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
   includeProtocols: SupportedProtocol[];
@@ -427,6 +429,8 @@ function printHumanBalances(opts: {
   if (shouldIncludeProtocol("railgun", opts.includeProtocols)) {
     printPrivateProtocolSection("Private — Railgun", opts.privateRailgun, {
       status: true,
+      subtitle: chalk.dim("0zk address: ") +
+        (opts.railgunAddress ? chalk.cyan(opts.railgunAddress) : chalk.dim("(unavailable)")),
     });
   }
 
@@ -714,6 +718,9 @@ export function registerBalancesCommand(program: Command): void {
               public_balances_aggregated: snap.publicAggregated,
               public_balances_by_address: snap.publicByAddress,
               private_balances: privateBalances,
+              ...(shouldIncludeProtocol("railgun", includeProtocols)
+                ? { railgun_address: snap.railgunAddress ?? null }
+                : {}),
               ...(Object.keys(privateBalancesLegacy).length > 0
                 ? { private_balances_legacy: privateBalancesLegacy }
                 : {}),
@@ -751,6 +758,7 @@ export function registerBalancesCommand(program: Command): void {
                 publicAccountIndexByAddress: snap.publicAccountIndexByAddress,
                 stealthAccountIndexByAddress: snap.stealthAccountIndexByAddress,
                 privateRailgun: snap.privateRailgun,
+                railgunAddress: snap.railgunAddress,
                 privatePrivacyPools: snap.privatePrivacyPools,
                 privateTornado: snap.privateTornado,
                 includeProtocols,

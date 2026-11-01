@@ -19,6 +19,7 @@ export function parseRequiredWalletName(wallet: string | undefined): string | nu
 export const RESERVED_WALLET_DIR_NAMES = [
   "proving-artifacts",
   "public-sync-cache",
+  "sync-cache-v2",
 ] as const;
 
 function isReservedWalletDirName(name: string): boolean {

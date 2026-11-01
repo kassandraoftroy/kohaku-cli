@@ -2,15 +2,17 @@ import { preflightTornadoUnshield } from "../utils/tornado-unshield-preflight.js
 import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
 import { tornadoPreparedFee, tornadoPreparedSender, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
 import { tornadoUnavailableAmountMessage, tornadoNearestAmounts, tornadoAlternativeLabel } from "../utils/tornado-operation-limits.js";
-import { startActivityLog } from "../utils/activity-log.js";
+import { setRailgunActivityParticipants, startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import type { Command } from "commander";
+import type { RailgunAddress } from "kohaku-rg-js-wrapper";
 import { formatUnits, getAddress, isAddress, parseUnits } from "viem";
 
 import { makeHost } from "../host/makeHost";
+import type { RailgunAdapter } from "../lib/railgun-adapter.js";
 import {
   exactTransferTailCall,
   planNonTornadoPrivateTransfer,
@@ -195,6 +197,150 @@ function railgunSmartAccountPrivateKey(
   return as0xPrivateKey(takeNextFreshPublicAccount(storage).priv);
 }
 
+function looksLikeRailgunRecipient(value: string): boolean {
+  // The wrapper's WASM parser validates the full Bech32m address before proving.
+  return value.toLowerCase().startsWith("0zk");
+}
+
+async function runRailgunInternalTransfer(args: {
+  opts: UnshieldOpts;
+  recipient: RailgunAddress;
+  rpcUrl: string;
+  walletDir: string;
+  password: string;
+  mnemonic: string;
+  chainId: bigint;
+  tokenMeta: Awaited<ReturnType<typeof resolveTokenMeta>>;
+}): Promise<void> {
+  const { opts, recipient, rpcUrl, walletDir, password, mnemonic, chainId, tokenMeta } = args;
+  const quiet = quietNonInteractive(opts.nonInteractive);
+  const spin = manageSpinner(spinner(), quiet);
+  const feeNote = "ERC-4337 paymaster gas is paid from private Railgun WETH; no unshield occurs.";
+  let rpcForHost: Awaited<ReturnType<typeof makePublicClient>> | undefined;
+  try {
+    const client = await makePublicClient(rpcUrl);
+    rpcForHost = client;
+    await withTor(!opts.withoutTor, {
+      rpcUrl, walletDir, onStatus: (message) => spin.start(message),
+    }, async () => {
+      if (spin.active) spin.stop("Tor ready.");
+      const host = await makeHost({
+        rpc: client, rpcUrl, walletDir, password, mnemonic,
+        pluginId: pluginIdForProtocol("railgun"), chainId,
+      });
+      const plugins = await createSchemedPlugins("railgun", host, chainId);
+      const plugin = plugins.signature as RailgunAdapter;
+      const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+      const { account: executor, skipped } = await selectNextUnusedPublicAccount(
+        publicStorage, (address) => isAddressUsed(address, client),
+      );
+      for (const used of skipped) {
+        log.warn(`Public account [${used.index}] ${used.address} was already used. Saved it and advanced to the next index.`);
+      }
+      plugin.configureSpend(
+        as0xPrivateKey(executor.priv),
+        railgunPimlicoBundlerUrl(chainId),
+      );
+      const from = plugin.wallet.address;
+      setRailgunActivityParticipants(from, recipient);
+      await runWithSyncProgress({
+        source: "railgun",
+        firstRun: isFirstProtocolSync(walletDir, "railgun"),
+        onUpdate: quiet ? undefined : (message) => spin.start(message),
+      }, () => syncPluginWithProgress(plugin, "railgun"));
+      if (spin.active) spin.stop("Private state synced.");
+
+      let amountWei: bigint;
+      if (opts.amountWei !== undefined) amountWei = BigInt(opts.amountWei);
+      else if (opts.amountFormatted !== undefined) amountWei = parseUnits(opts.amountFormatted, tokenMeta.decimals);
+      else {
+        const raw = await input({
+          message: `Exact private amount to send (${tokenMeta.isEth ? "WETH" : tokenMeta.symbol}):`,
+          validate: (value) => {
+            try {
+              return parseUnits(value.trim(), tokenMeta.decimals) > 0n || "Amount must be greater than zero.";
+            } catch (error) {
+              return error instanceof Error ? error.message : String(error);
+            }
+          },
+        });
+        amountWei = parseUnits(raw.trim(), tokenMeta.decimals);
+      }
+      if (amountWei <= 0n) {
+        cliError("Amount must be greater than zero.");
+        return;
+      }
+      const asset = privateUnshieldAsset("railgun", chainId, tokenMeta, amountWei);
+      const privateOp = await runQuietSpinner(
+        quiet, spin,
+        { start: "Building Railgun internal transfer (proof + 4337 paymaster)", failure: "Prepare failed." },
+        () => plugin.prepareTransfer(asset, recipient),
+        () => "Railgun internal transfer prepared.",
+      );
+      const symbol = tokenMeta.isEth ? "WETH" : tokenMeta.symbol;
+      const amountLabel = `${formatUnits(amountWei, tokenMeta.decimals)} ${symbol}`;
+      const fields = {
+        protocol: "railgun" as const,
+        from,
+        to: recipient,
+        executor: executor.address,
+        token: symbol,
+        transferAmountWei: amountWei.toString(),
+        transferAmountFormatted: formatUnits(amountWei, tokenMeta.decimals),
+        feeNote,
+      };
+      if (!opts.broadcast) {
+        if (opts.nonInteractive) logCliJson({ mode: "prepare", ...fields, privateOperation: privateOp });
+        else {
+          console.log(chalk.bold("Prepared Railgun internal transfer (not broadcast)"));
+          console.log(`  From: ${from}\n  To: ${recipient}\n  4337 executor: ${executor.address}\n  Amount: ${amountLabel}`);
+          console.log(chalk.dim(`  ${feeNote}`));
+          console.log(chalk.bold("JSON (pipe or save for tooling):"));
+          logCliJson({ ...fields, privateOperation: privateOp }, 2);
+          console.log(chalk.green("✔ Private transfer dry run complete."));
+        }
+        return;
+      }
+      if (!opts.nonInteractive) {
+        const ok = await confirm({
+          message: `Broadcast this Railgun internal transfer via ERC-4337?\n` +
+            `  From: ${from}\n  To: ${recipient}\n  4337 executor: ${executor.address}\n  Amount: ${amountLabel}\n` +
+            `  ${feeNote}\nThis submits the operation to the network and may be irreversible.`,
+          default: false,
+        });
+        if (!ok) {
+          log.warn("Cancelled.");
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const relay = await runQuietSpinner(
+        quiet, spin,
+        { start: "Broadcasting Railgun internal transfer", failure: "Broadcast failed." },
+        () => broadcastPreparedPrivateOp("railgun", host, plugin, privateOp, chainId),
+        () => "Railgun internal transfer broadcast complete.",
+      );
+      publicStorage.addNextAccounts(1);
+      const explorerHash = extractUnshieldExplorerHash(relay);
+      if (opts.nonInteractive) {
+        logCliJson({
+          mode: "broadcast", ...fields, relay,
+          explorerHash, explorerUrl: explorerHash ? etherscanTxUrl(chainId, explorerHash) : null,
+        });
+      } else {
+        console.log(chalk.green("✔ Railgun internal transfer completed."));
+        console.log(`  From: ${from}\n  To: ${recipient}`);
+        if (explorerHash) console.log(chalk.cyan(`  ${etherscanTxUrl(chainId, explorerHash)}`));
+      }
+    });
+  } catch (error) {
+    if (spin.active) spin.stop("Failed.", 1);
+    cliErrorFromCaught(error);
+  } finally {
+    if (rpcForHost) disposePublicClient(rpcForHost);
+  }
+}
+
 /** Shared unshield flow. `private-transfer` calls this with `privateTransfer`. */
 export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       const resolvedProtocol = resolveProtocolOption(opts.protocol);
@@ -374,12 +520,14 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       let forwardLeftover = true;
       let transferAmountWei: bigint | undefined;
       let estimatedLeftoverWei = 0n;
-      const freshnessClient = await makePublicClient(rpcUrl);
       const assignNextFreshPublicAccount = async (): Promise<boolean> => {
+        let freshnessClient: Awaited<ReturnType<typeof makePublicClient>> | undefined;
         try {
+          const client = await makePublicClient(rpcUrl);
+          freshnessClient = client;
           const { account, skipped } = await selectNextUnusedPublicAccount(
             publicStorage,
-            (address) => isAddressUsed(address, freshnessClient)
+            (address) => isAddressUsed(address, client)
           );
           for (const used of skipped) {
             log.warn(
@@ -394,6 +542,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         } catch (e) {
           cliErrorFromCaught(e);
           return false;
+        } finally {
+          if (freshnessClient) disposePublicClient(freshnessClient);
         }
       };
 
@@ -443,22 +593,36 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
 
       if (privateTransfer) {
         try {
+          let rawPayee: string;
           if (hasTo) {
-            payee = await resolvePayee(opts.to!.trim());
+            rawPayee = opts.to!.trim();
           } else {
             const addr = await input({
               message:
-                "Recipient (address, name .eth/.gwei/.wei, or stealth selector sN). Funds are forwarded here; this account is not the delegator:",
+                protocol === "railgun"
+                  ? "Recipient (0x address, 0zk address, name, or stealth selector sN):"
+                  : "Recipient (address, name .eth/.gwei/.wei, or stealth selector sN). Funds are forwarded here; this account is not the delegator:",
               validate: (value) => {
                 const v = value.trim();
-                if (!isAddress(v) && !looksLikeName(v) && parseStealthIndex(v) === null) {
-                  return "Enter an Ethereum address, a name ending in .eth, .gwei, or .wei, or a stealth selector like s0.";
+                if (!isAddress(v) && !looksLikeName(v) && parseStealthIndex(v) === null &&
+                    !(protocol === "railgun" && looksLikeRailgunRecipient(v))) {
+                  return protocol === "railgun"
+                    ? "Enter a 0x or 0zk address, a name ending in .eth, .gwei, or .wei, or a stealth selector like s0."
+                    : "Enter an Ethereum address, a name ending in .eth, .gwei, or .wei, or a stealth selector like s0.";
                 }
                 return true;
               },
             });
-            payee = await resolvePayee(addr.trim());
+            rawPayee = addr.trim();
           }
+          if (protocol === "railgun" && looksLikeRailgunRecipient(rawPayee)) {
+            await runRailgunInternalTransfer({
+              opts, recipient: rawPayee as RailgunAddress,
+              rpcUrl, walletDir, password, mnemonic, chainId, tokenMeta,
+            });
+            return;
+          }
+          payee = await resolvePayee(rawPayee);
         } catch (e) {
           cliErrorFromCaught(e);
           return;
@@ -633,6 +797,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             chainId,
             railgunSmartAccountPrivateKey(recipientPriv, publicStorage),
             railgunPimlicoBundlerUrl(chainId)
+          );
+          setRailgunActivityParticipants(
+            (plugin as RailgunAdapter).wallet.address,
+            privateTransfer ? payee! : recipient,
           );
         }
 

@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Host } from "@kohaku-eth/plugins";
+import { deriveRailgunAddress } from "kohaku-rg-js-wrapper";
 
 import { setRailgunHostContext } from "../src/host/railgun-host-context.js";
 import { makeStorage } from "../src/host/storage.js";
 import {
+  RailgunAdapter,
   createRailgunAdapter,
   railgunBalanceForCli,
   railgunNoteForCli,
+  railgunTransferInput,
   railgunUnshieldInput,
   syncRailgunHistory,
 } from "../src/lib/railgun-adapter.js";
@@ -104,6 +107,30 @@ test("Railgun native unwrap and user tail calls reach Rust in the requested orde
   );
   assert.equal(erc20.token, "0x0000000000000000000000000000000000000006");
   assert.equal(erc20.unwrapNative, false);
+});
+
+test("Railgun private recipient uses internal transfer preparation without an unshield", async () => {
+  const recipient = deriveRailgunAddress(spendingKey, viewingKey, 1n);
+  assert.match(recipient, /^0zk1/);
+  const wrapped = "0x0000000000000000000000000000000000000003";
+  const spend = { accountPrivateKey: `0x${"01".repeat(32)}` as const, bundlerUrl: "https://bundler.invalid" };
+  const asset = { asset: { __type: "native" as const }, amount: 10n };
+  const input = railgunTransferInput(asset, recipient, wrapped, spend);
+  assert.deepEqual(input, { recipient, token: wrapped, amount: 10n, ...spend });
+  assert.equal("unwrapNative" in input, false);
+  assert.equal("tailCalls" in input, false);
+
+  let calls = 0;
+  const prepared = { userOpHash: "0x1234", signed: { userOp: {}, entryPoint: wrapped } };
+  const adapter = Object.create(RailgunAdapter.prototype) as RailgunAdapter;
+  Object.assign(adapter, { wallet: {
+    chain: { wrappedBaseToken: wrapped },
+    prepareTransfer: async (options: unknown) => { calls++; assert.deepEqual(options, input); return prepared; },
+    prepareUnshield: () => { throw new Error("unshield must not run"); },
+  } });
+  adapter.configureSpend(spend.accountPrivateKey, spend.bundlerUrl);
+  assert.equal(await adapter.prepareTransfer(asset, recipient), prepared);
+  assert.equal(calls, 1);
 });
 
 test("Railgun resync checkpoints bounded windows and stops when the source lags", async () => {

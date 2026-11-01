@@ -11,6 +11,7 @@ import type { Host } from "@kohaku-eth/plugins";
 import { DataService } from "@kohaku-eth/privacy-pools";
 import { Client, HttpStore, isEntityRecord, type CanonicalEvent, type CanonicalRecord } from "@saga-sync/client";
 import { addSyncUnits } from "./sync-progress.js";
+import { localSyncCacheV2Source } from "./sync-cache-v2.js";
 import {
   decodeEventLog,
   encodeAbiParameters,
@@ -244,7 +245,7 @@ export function createPrivacyPoolsSagaDataService(opts: {
   provider: Host["provider"];
   chainId: bigint;
 }): DataService {
-  const sourceUrl = privacyPoolsSagaSourceUrl(opts.chainId);
+  const sourceUrl = (opts.chainId === 1n ? localSyncCacheV2Source("sagaMainnet") : null) ?? privacyPoolsSagaSourceUrl(opts.chainId);
   if (!sourceUrl) {
     throw new Error(
       "Privacy Pools saga CDN is not available on this chain; sync from eth_getLogs."

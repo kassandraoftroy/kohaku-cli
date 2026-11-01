@@ -7,6 +7,7 @@ import { runWithSyncProgress } from "../utils/sync-progress.js";
 import { isFirstProtocolSync } from "../utils/first-sync.js";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
+import type { RailgunAdapter } from "./railgun-adapter";
 import {
   ERC20_ABI,
   isPrivateBalanceNativeEth,
@@ -69,6 +70,7 @@ export type BalancesSnapshot = {
   /** Stealth local index (`sN`) by address. */
   stealthAccountIndexByAddress: Record<string, number>;
   privateRailgun: BalanceItem[];
+  railgunAddress?: string;
   privatePrivacyPools: BalanceItem[];
   privateTornado: BalanceItem[];
   legacyPrivacyPools: BalanceItem[];
@@ -143,6 +145,7 @@ function mapProtocolNotes(
 
 type ProtocolPrivateLoad = {
   balances: AssetAmount[];
+  railgunAddress?: string;
   /** Legacy-scheme rows only. Omitted for Railgun. */
   legacyBalances?: AssetAmount[];
   rawNotes?: unknown[];
@@ -232,12 +235,13 @@ async function loadPrivateProtocolData(
             return plugin.notes(undefined, false);
           };
           if (protocol === "railgun") {
+            const railgunAddress = (plugins.signature as RailgunAdapter).wallet.address;
             const balances = await plugins.signature.balance(undefined);
-            if (!includeNotes) return { balances };
+            if (!includeNotes) return { balances, railgunAddress };
             try {
-              return { balances, rawNotes: await readNotes(plugins.signature) };
+              return { balances, railgunAddress, rawNotes: await readNotes(plugins.signature) };
             } catch (e) {
-              return { balances, notesError: e };
+              return { balances, railgunAddress, notesError: e };
             }
           }
 
@@ -350,6 +354,7 @@ export type PrivateBalancesSnapshot = {
 };
 
 type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
+  railgunAddress?: string;
   erc20FromPrivate: `0x${string}`[];
   protocolAvailable: Partial<Record<SupportedProtocol, boolean>>;
   rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>>;
@@ -391,6 +396,7 @@ async function resolvePrivateBalanceItems(
   const chainIdString = chainId.toString();
 
   let rgRows: AssetAmount[] = [];
+  let railgunAddress: string | undefined;
   let ppRows: AssetAmount[] = [];
   let tcRows: AssetAmount[] = [];
   let ppLegacyRows: AssetAmount[] = [];
@@ -417,7 +423,9 @@ async function resolvePrivateBalanceItems(
 
   if (shouldIncludeProtocol("railgun", includeProtocols)) {
     try {
-      rgRows = (await loadOne("railgun")).balances;
+      const loaded = await loadOne("railgun");
+      rgRows = loaded.balances;
+      railgunAddress = loaded.railgunAddress;
       protocolAvailable.railgun = true;
     } catch (e) {
       onWarning?.(
@@ -486,6 +494,7 @@ async function resolvePrivateBalanceItems(
       privateRailgun: filterNonZeroBalanceItems(
         mapPrivateBalanceRows(rgRows, tokenMeta)
       ),
+      railgunAddress,
       privatePrivacyPools: annotateLegacyHoldings(
         filterNonZeroBalanceItems(mapPrivateBalanceRows(ppRows, tokenMeta)),
         legacyPrivacyPools
@@ -594,6 +603,7 @@ async function loadBalancesSnapshotInner(
 
   const {
     privateRailgun,
+    railgunAddress,
     privatePrivacyPools,
     privateTornado,
     legacyPrivacyPools,
@@ -973,6 +983,7 @@ async function loadBalancesSnapshotInner(
     publicAccountIndexByAddress,
     stealthAccountIndexByAddress,
     privateRailgun: pricedPrivate[0]!,
+    railgunAddress,
     privatePrivacyPools: pricedPrivate[1]!,
     privateTornado: pricedPrivate[2]!,
     legacyPrivacyPools: pricedPrivate[3]!,
