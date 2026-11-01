@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-11-01
+
+### Added
+
+- `fetch-sync-cache` installs a mainnet v2 snapshot for Railgun history and Tornado and Privacy Pools Saga data under `<dataDir>/sync-cache-v2`. Downloads verify file sizes and SHA-256 hashes, resume after interruption, and activate only after every file verifies. A first sync still works without the snapshot by fetching history live; Sepolia continues to use its existing sync path.
+- Railgun private transfers to a `0zk` recipient stay inside Railgun, without an unshield or tail call. Both `private-transfer --protocol railgun` and `transfer --from railgun` use the ERC-4337 paymaster path; `eth` selects private WETH and the requested amount is delivered to the recipient.
+- `balances --include railgun` shows the full wallet `0zk` address beneath the Railgun heading and includes `railgun_address` in non-interactive JSON output.
+
+### Changed
+
+- The v2 cache replaces v1 downloads for this CLI version. Existing `<dataDir>/public-sync-cache` data is left on disk but is no longer read. `clear-tor-cache --public-sync` removes both cache directories.
+- Railgun activity entries record the sending `0zk` address and final `0x` or `0zk` recipient. Human output identifies the mined transaction as the bundle transaction and also shows the UserOp hash when available.
+
+## [0.0.17] - 2026-10-31
+
+### Added
+
+- `transfer --from railgun`, `--from tornado`, and `--from privacy-pools` run the corresponding `private-transfer --protocol` flow. Public addresses, HD indexes, and stealth selectors retain the public transfer flow. Tornado's `--exclude-new-pools` option is available through the alias.
+
+## [0.0.16] - 2026-10-31
+
+### Changed
+
+- Railgun uses `kohaku-rg-js-wrapper@0.0.2` and the Rust/WASM Railgun wallet in place of `@kohaku-eth/railgun`. Shields, unshields, tail calls, balance and note reads, and ERC-4337 paymaster submissions use the new adapter.
+- Existing Railgun wallets rebuild their history into a separate encrypted checkpoint. The previous `rg-storage.json` is preserved, completed sync windows are saved for resumption, and first-sync progress shows the current Railgun work. Progress output for protocol syncs gives clearer early-stage status and task-level ETA estimates after enough samples.
+- Railgun sync attempts to submit recoverable PPOI for past private transactions whose proofs are missing, reports pending and failed submissions, and refreshes status on later syncs. Notes still require valid PPOI before spending. The `KOHAKU_RAILGUN_FORCE_VALID_POI` status override was removed.
+
+### Fixed
+
+- Railgun unshield treasury-fee previews and maximum-withdrawable calculations use the protocol's inclusive rounding, avoiding a one-wei discrepancy for exact amounts.
+
 ## [0.0.15] - 2026-10-29
 
 ### Added
