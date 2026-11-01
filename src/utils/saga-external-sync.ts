@@ -10,6 +10,7 @@ import type {
 } from "@kohaku-eth/plugins";
 
 import { addSyncUnits } from "./sync-progress.js";
+import { localSyncCacheV2Source } from "./sync-cache-v2.js";
 
 type Hex = `0x${string}`;
 
@@ -223,7 +224,7 @@ export function tornadoExternalSyncForChain(
   firstCoveredBlock(params: ExternalSyncPoolId): Promise<Hex>;
 } {
   return createSagaExternalSyncProvider({
-    baseUrl: sagaBaseUrlForChain(chainId),
+    baseUrl: (chainId === 1n ? localSyncCacheV2Source("sagaMainnet") : null) ?? sagaBaseUrlForChain(chainId),
     network,
   });
 }

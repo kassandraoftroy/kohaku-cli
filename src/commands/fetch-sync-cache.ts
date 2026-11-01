@@ -1,211 +1,72 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
 import chalk from "chalk";
 import type { Command } from "commander";
 
 import { cliOptions } from "../utils/cli-command-options.js";
 import { cliErrorFromCaught } from "../utils/cli-errors.js";
 import { logCliJson } from "../utils/cli-quiet.js";
-import {
-  countPublicSyncCacheEntries,
-  DEFAULT_CHUNK_BYTES,
-  installPublicSyncCacheChunk,
-  packPublicSyncCacheChunks,
-  parseSyncCacheManifest,
-  publicSyncCacheDir,
-  publicSyncCacheHasAllKeys,
-  resolveSyncCacheBaseUrl,
-  resolveSyncCacheChunkTimeoutMs,
-  setPublicSyncCacheDataDir,
-  syncCacheChunkUrl,
-  syncCacheManifestUrl,
-  type SyncCacheChunk,
-  type SyncCacheManifest,
-} from "../utils/public-sync-cache.js";
+import { setPublicSyncCacheDataDir } from "../utils/public-sync-cache.js";
 import { DEFAULT_DATA_DIR } from "../utils/rpc.js";
+import {
+  downloadSyncCacheV2File,
+  installSyncCacheV2Manifest,
+  parseSyncCacheV2Manifest,
+  syncCacheV2BaseUrl,
+  syncCacheV2Dir,
+  type SyncCacheV2Manifest,
+} from "../utils/sync-cache-v2.js";
 import { ensureKohakuFetchPatch, withTor } from "../utils/tor.js";
 
 const MANIFEST_TIMEOUT_MS = 60_000;
-const CHUNK_ATTEMPTS = 3;
+const FILE_ATTEMPTS = 3;
+const DOWNLOAD_CONCURRENCY = 4;
 
 type Opts = {
-  pack?: string;
-  chunkBytes?: string;
   force?: boolean;
   withoutTor?: boolean;
   dataDir?: string;
   nonInteractive?: boolean;
 };
 
-type ChunkOutcome = {
-  name: string;
-  status: "installed" | "skipped" | "failed";
-  installed: number;
-  error?: string;
-};
-
 function formatMib(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function parseChunkBytes(raw: string | undefined): number {
-  if (raw === undefined) return DEFAULT_CHUNK_BYTES;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1024) {
-    throw new Error(
-      `--chunk-bytes must be an integer of at least 1024 (got ${JSON.stringify(raw)})`
-    );
-  }
-  return n;
-}
-
-/**
- * The chunk URLs sit outside the proving-artifact routing, so `kohakuFetch`
- * applies no timeout of its own and this budget is the only bound.
- */
-async function fetchWithTimeout(
-  url: string,
-  timeoutMs: number
-): Promise<Buffer> {
+async function downloadManifest(): Promise<{ raw: string; manifest: SyncCacheV2Manifest }> {
+  const url = `${syncCacheV2BaseUrl()}/manifest.json`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return Buffer.from(await res.arrayBuffer());
-  } catch (e) {
-    if (controller.signal.aborted) {
-      throw new Error(`timed out after ${timeoutMs}ms`);
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > 2 * 1024 * 1024) {
+      throw new Error("Manifest exceeds 2 MiB");
     }
-    throw e;
+    if (!response.body) throw new Error("Manifest has no body");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 2 * 1024 * 1024) throw new Error("Manifest exceeds 2 MiB");
+      chunks.push(value);
+    }
+    const raw = Buffer.concat(chunks).toString("utf8");
+    return { raw, manifest: parseSyncCacheV2Manifest(raw) };
+  } catch (error) {
+    throw new Error(`Sync-cache v2 manifest fetch failed from ${url}: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function downloadManifest(
-  nonInteractive: boolean
-): Promise<SyncCacheManifest> {
-  const url = syncCacheManifestUrl();
-  if (!nonInteractive) {
-    console.error(chalk.dim(`Manifest: ${url}`));
-  }
-  let raw: Buffer;
-  try {
-    raw = await fetchWithTimeout(url, MANIFEST_TIMEOUT_MS);
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    throw new Error(
-      `Sync-cache manifest fetch failed (${message}) from ${url}. Override the location with KOHAKU_SYNC_CACHE_BASE_URL.`
-    );
-  }
-  return parseSyncCacheManifest(raw.toString("utf8"));
-}
-
-async function installChunk(opts: {
-  chunk: SyncCacheChunk;
-  dataDir: string;
-  tmpRoot: string;
-  timeoutMs: number;
-}): Promise<number> {
-  const { chunk, dataDir, tmpRoot, timeoutMs } = opts;
-  const url = syncCacheChunkUrl(chunk.name);
-  const archivePath = join(tmpRoot, chunk.name);
-  let lastError = "";
-
-  for (let attempt = 1; attempt <= CHUNK_ATTEMPTS; attempt++) {
-    try {
-      writeFileSync(archivePath, await fetchWithTimeout(url, timeoutMs));
-      const { installed } = installPublicSyncCacheChunk({
-        dataDir,
-        archivePath,
-        chunk,
-      });
-      return installed;
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
-      if (attempt < CHUNK_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, 1000 * attempt));
-      }
-    } finally {
-      rmSync(archivePath, { force: true });
-    }
-  }
-  throw new Error(lastError);
-}
-
-async function downloadChunks(opts: {
-  manifest: SyncCacheManifest;
-  dataDir: string;
-  force: boolean;
-  nonInteractive: boolean;
-}): Promise<ChunkOutcome[]> {
-  const { manifest, dataDir, force, nonInteractive } = opts;
-  const timeoutMs = resolveSyncCacheChunkTimeoutMs();
-  const tmpRoot = mkdtempSync(join(tmpdir(), "kohaku-sync-cache-"));
-  const outcomes: ChunkOutcome[] = [];
-  const total = manifest.chunks.length;
-
-  try {
-    for (let i = 0; i < total; i++) {
-      const chunk = manifest.chunks[i]!;
-      const label = `[${i + 1}/${total}] ${chunk.name}`;
-
-      if (!force && publicSyncCacheHasAllKeys(chunk.keys, dataDir)) {
-        outcomes.push({ name: chunk.name, status: "skipped", installed: 0 });
-        if (!nonInteractive) {
-          console.error(chalk.dim(`${label} skip (${chunk.keys.length} entries cached)`));
-        }
-        continue;
-      }
-
-      if (!nonInteractive) {
-        console.error(chalk.dim(`${label} fetch ${formatMib(chunk.bytes)}`));
-      }
-      try {
-        const installed = await installChunk({
-          chunk,
-          dataDir,
-          tmpRoot,
-          timeoutMs,
-        });
-        outcomes.push({ name: chunk.name, status: "installed", installed });
-        if (!nonInteractive) {
-          console.error(chalk.dim(`  ok (${installed} entries)`));
-        }
-      } catch (e) {
-        const error = e instanceof Error ? e.message : String(e);
-        outcomes.push({ name: chunk.name, status: "failed", installed: 0, error });
-        if (!nonInteractive) {
-          console.error(chalk.red(`  failed: ${error}`));
-        }
-      }
-    }
-  } finally {
-    rmSync(tmpRoot, { recursive: true, force: true });
-  }
-  return outcomes;
-}
-
 export function registerFetchSyncCacheCommand(program: Command): void {
   program
     .command("fetch-sync-cache")
-    .description(
-      "Download the public-sync snapshot in verifiable chunks into <dataDir>/public-sync-cache (or --pack a new one)"
-    )
-    .option(
-      "--pack <dir>",
-      "Publisher mode: pack <dataDir>/public-sync-cache into chunk-NNN.tar.gz + manifest.json in <dir>"
-    )
-    .option(
-      "--chunk-bytes <n>",
-      `Target compressed bytes per chunk with --pack (default: ${DEFAULT_CHUNK_BYTES})`
-    )
-    .option(
-      "--force",
-      "Re-download chunks whose entries are already present in the local cache"
-    )
+    .description("Download and verify the mainnet protocol sync snapshot in <dataDir>/sync-cache-v2")
+    .option("--force", "Re-download files already present in the local cache")
     .option("--without-tor", cliOptions.withoutTorSyncCacheFetch)
     .option("--dataDir <path>", cliOptions.dataDir)
     .option("--non-interactive", cliOptions.nonInteractiveListWallets)
@@ -214,109 +75,73 @@ export function registerFetchSyncCacheCommand(program: Command): void {
         const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
         setPublicSyncCacheDataDir(dataDir);
         ensureKohakuFetchPatch();
-
-        if (opts.pack) {
-          const { outputDir, manifest } = packPublicSyncCacheChunks({
-            dataDir,
-            outputDir: resolve(opts.pack),
-            chunkBytes: parseChunkBytes(opts.chunkBytes),
-          });
-          const packedBytes = manifest.chunks.reduce((n, c) => n + c.bytes, 0);
-          if (opts.nonInteractive) {
-            logCliJson({ packed: true, outputDir, manifest });
-          } else {
-            console.log(
-              chalk.green(
-                `Packed ${manifest.entries} entries into ${manifest.chunks.length} chunks (${formatMib(packedBytes)} from ${formatMib(manifest.rawBytes)} raw)`
-              )
-            );
-            console.log(chalk.dim(`Output: ${outputDir}`));
-            console.log(
-              chalk.dim(
-                `Publish these files (including manifest.json) at ${resolveSyncCacheBaseUrl()}/`
-              )
-            );
-          }
-          return;
-        }
-
         const useTor = !opts.withoutTor;
-        const cacheDir = publicSyncCacheDir(dataDir);
+        const cacheDir = syncCacheV2Dir(dataDir);
         if (!opts.nonInteractive) {
-          console.error(
-            chalk.dim(
-              `Public-sync cache: ${cacheDir}\nBase URL: ${resolveSyncCacheBaseUrl()}\nRoute: ${useTor ? "Tor" : "clearnet (--without-tor)"}`
-            )
-          );
+          console.error(chalk.dim(`Sync cache: ${cacheDir}\nBase URL: ${syncCacheV2BaseUrl()}\nRoute: ${useTor ? "Tor" : "clearnet (--without-tor)"}`));
         }
 
-        const outcomes = await withTor(
-          useTor,
-          {
-            onStatus: opts.nonInteractive
-              ? undefined
-              : (m) => console.error(chalk.dim(m)),
-          },
-          async () => {
-            const manifest = await downloadManifest(!!opts.nonInteractive);
-            if (!opts.nonInteractive) {
-              console.error(
-                chalk.dim(
-                  `Snapshot: ${manifest.entries} entries in ${manifest.chunks.length} chunks`
-                )
-              );
+        const result = await withTor(useTor, {
+          onStatus: opts.nonInteractive ? undefined : (message) => console.error(chalk.dim(message)),
+        }, async () => {
+          const { raw, manifest } = await downloadManifest();
+          if (!manifest.sources.sagaMainnet || !manifest.sources.railgunMainnet) {
+            throw new Error("Sync-cache v2 release is incomplete: mainnet Saga and Railgun sources are both required");
+          }
+          const totalBytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
+          let completedBytes = 0;
+          let transferredBytes = 0;
+          let installed = 0;
+          let skipped = 0;
+          const started = Date.now();
+          if (!opts.nonInteractive) {
+            console.error(chalk.dim(`Release ${manifest.release}: ${manifest.files.length} files, ${formatMib(totalBytes)}`));
+          }
+          let next = 0;
+          let completed = 0;
+          const failures: string[] = [];
+          const worker = async () => {
+            while (next < manifest.files.length) {
+              const file = manifest.files[next++]!;
+              let status: "installed" | "skipped" | "failed" = "failed";
+              for (let attempt = 1; attempt <= FILE_ATTEMPTS; attempt++) {
+                try {
+                  status = await downloadSyncCacheV2File(file, { dataDir, force: opts.force });
+                  break;
+                } catch (error) {
+                  if (attempt === FILE_ATTEMPTS) {
+                    failures.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+                  } else {
+                    await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+                  }
+                }
+              }
+              if (status === "installed") {
+                installed++;
+                transferredBytes += file.bytes;
+              }
+              if (status === "skipped") skipped++;
+              completed++;
+              if (status !== "failed") completedBytes += file.bytes;
+              if (!opts.nonInteractive) {
+                const elapsed = (Date.now() - started) / 1000;
+                const etaMinutes = elapsed > 5 && transferredBytes > 1024 * 1024 && completedBytes < totalBytes
+                  ? Math.ceil(elapsed * (totalBytes - completedBytes) / transferredBytes / 60)
+                  : null;
+                const eta = etaMinutes === null ? "" : ` · ~${etaMinutes}m remaining`;
+                console.error(chalk.dim(`[${completed}/${manifest.files.length}] ${Math.round(100 * completedBytes / totalBytes)}% · ${formatMib(completedBytes)} / ${formatMib(totalBytes)} · ${status}${eta}`));
+              }
             }
-            return downloadChunks({
-              manifest,
-              dataDir,
-              force: !!opts.force,
-              nonInteractive: !!opts.nonInteractive,
-            });
-          }
-        );
-
-        const installed = outcomes.filter((o) => o.status === "installed");
-        const skipped = outcomes.filter((o) => o.status === "skipped");
-        const failed = outcomes.filter((o) => o.status === "failed");
-        const entriesInstalled = installed.reduce((n, o) => n + o.installed, 0);
-        const result = {
-          cacheDir,
-          baseUrl: resolveSyncCacheBaseUrl(),
-          via: useTor ? ("tor" as const) : ("clearnet" as const),
-          chunks: outcomes.length,
-          chunksInstalled: installed.length,
-          chunksSkipped: skipped.length,
-          chunksFailed: failed.length,
-          entriesInstalled,
-          entries: countPublicSyncCacheEntries(dataDir),
-          errors: failed.map((o) => ({ chunk: o.name, error: o.error ?? "" })),
-        };
-
-        if (opts.nonInteractive) {
-          logCliJson(result);
-        } else {
-          console.log(
-            chalk.green(
-              `Sync cache: ${entriesInstalled} entries from ${installed.length} chunks, ${skipped.length} chunks already present, ${failed.length} failed`
-            )
-          );
-          console.log(
-            chalk.dim(`Cache: ${cacheDir} (${result.entries} entries total)`)
-          );
-          if (failed.length > 0) {
-            console.log(
-              chalk.yellow(
-                "Partial snapshot installed. Re-run to retry the failed chunks; anything still missing is fetched live during sync."
-              )
-            );
-          }
-        }
-
-        if (failed.length > 0) {
-          process.exitCode = 1;
-        }
-      } catch (e) {
-        cliErrorFromCaught(e);
+          };
+          await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, manifest.files.length) }, () => worker()));
+          if (failures.length > 0) throw new Error(`${failures.length} sync-cache v2 file(s) failed; rerun to resume. First failure: ${failures[0]}`);
+          installSyncCacheV2Manifest(raw, dataDir);
+          return { cacheDir, release: manifest.release, files: manifest.files.length, installed, skipped, bytes: totalBytes, via: useTor ? "tor" : "clearnet" };
+        });
+        if (opts.nonInteractive) logCliJson(result);
+        else console.log(chalk.green(`Sync cache v2 ready: release ${result.release}, ${result.files} verified files (${formatMib(result.bytes)}).`));
+      } catch (error) {
+        cliErrorFromCaught(error);
         process.exitCode = 1;
       }
     });

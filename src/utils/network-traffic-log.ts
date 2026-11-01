@@ -33,7 +33,7 @@ export type TrafficClearnetReason =
   | "rpc"
   /** Served from the kohaku-artifacts package (no network). */
   | "local-artifact"
-  /** Served from <dataDir>/public-sync-cache (Subsquid / saga). */
+  /** Served from the installed <dataDir>/sync-cache-v2 snapshot. */
   | "public-sync-cache"
   /** @deprecated Legacy log rows only — clearnet artifact fallback removed. */
   | "artifact-fallback"

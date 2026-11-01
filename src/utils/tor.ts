@@ -14,8 +14,8 @@
  * SDK requests for the old GitHub and mirror URLs are answered from that
  * package and are not downloaded.
  * Saga CDN (Tornado event sync): Tor-or-fail (no clearnet fallback).
- * Subsquid GraphQL and saga CDN responses are also stored under
- * `<dataDir>/public-sync-cache` so later wallets reuse public Railgun/Tornado pages.
+ * An installed `<dataDir>/sync-cache-v2` serves public mainnet Railgun,
+ * Tornado, and Privacy Pools history locally; live sources cover the tail.
  * Artifacts are for prove/unshield, not pool-event sync.
  *
  * Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs on stderr. POST bodies are
@@ -46,14 +46,9 @@ import {
   buildLocalArtifactResponse,
   readPackagedArtifactOrThrow,
 } from "./proving-artifacts.js";
-import {
-  buildCachedPublicSyncResponse,
-  cachePublicSyncNetworkResponse,
-  isPublicSyncCacheableRequest,
-  isImmutableSubsquidRequest,
-  readPublicSyncCache,
-  setPublicSyncCacheDataDir,
-} from "./public-sync-cache.js";
+import { setPublicSyncCacheDataDir } from "./public-sync-cache.js";
+import { localSyncCacheV2Response } from "./sync-cache-v2.js";
+import { railgunSyncSnapshotResponse } from "./railgun-sync-snapshot.js";
 
 /** tor-js Arti directory cache (`createAutoStorage('tor-js')`). */
 export function torJsCacheDir(): string {
@@ -458,30 +453,6 @@ async function requestBodyBytesForCache(
   return Buffer.alloc(0);
 }
 
-async function storePublicSyncResponseIfOk(
-  url: string,
-  method: string,
-  reqBody: Buffer,
-  cacheable: boolean,
-  res: Response
-): Promise<Response> {
-  if (!cacheable || res.status !== 200) return res;
-  const buf = Buffer.from(await res.arrayBuffer());
-  cachePublicSyncNetworkResponse({
-    method,
-    url,
-    body: reqBody,
-    status: 200,
-    responseBody: buf,
-    contentType: res.headers.get("content-type"),
-  });
-  return buildCachedPublicSyncResponse(
-    url,
-    buf,
-    res.headers.get("content-type")
-  );
-}
-
 /**
  * Fetch that uses Tor when a session is active (except loopback / allowlisted
  * RPC hosts). Safe to bind as `Host.network.fetch` — always checks live session.
@@ -542,32 +513,31 @@ async function kohakuFetchInner(
     );
   }
 
-  const candidate = isPublicSyncCacheableRequest(url, method);
-  const reqBody = candidate
-    ? await requestBodyBytesForCache(input, init)
-    : Buffer.alloc(0);
-  const cacheable = candidate && (categorizeUrl(url) !== "subsquid" ||
-    (method === "POST" && isImmutableSubsquidRequest(reqBody)));
-  if (cacheable) {
-    const cached = readPublicSyncCache({ method, url, body: reqBody });
-    if (cached) {
+  if ((method === "GET" || method === "HEAD") &&
+      new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("x-kohaku-sync-cache-refresh") !== "1") {
+    const snapshot = localSyncCacheV2Response(url);
+    if (snapshot) {
       return loggedFetch(
         input,
         init,
-        {
-          via: "clearnet",
-          clearnetReason: "public-sync-cache",
-          url,
-          rpcMethod,
-        },
-        async () =>
-          buildCachedPublicSyncResponse(url, cached.body, cached.contentType)
+        { via: "clearnet", clearnetReason: "public-sync-cache", url, rpcMethod },
+        async () => snapshot
       );
     }
   }
 
-  const wrapStore = (inner: () => Promise<Response>) => async () =>
-    storePublicSyncResponseIfOk(url, method, reqBody, cacheable, await inner());
+  if (method === "POST" && categorizeUrl(url) === "subsquid") {
+    const body = await requestBodyBytesForCache(input, init);
+    const snapshot = railgunSyncSnapshotResponse(url, method, body);
+    if (snapshot) {
+      return loggedFetch(
+        input,
+        init,
+        { via: "clearnet", clearnetReason: "public-sync-cache", url, rpcMethod },
+        async () => snapshot
+      );
+    }
+  }
 
   const decision = shouldUseClearnet(url);
   if (decision.clearnet) {
@@ -580,7 +550,7 @@ async function kohakuFetchInner(
         url,
         rpcMethod,
       },
-      wrapStore(() => clearnetFetch(input, init))
+      () => clearnetFetch(input, init)
     );
   }
 
@@ -599,9 +569,7 @@ async function kohakuFetchInner(
         requestBytes,
         rpcMethod,
       },
-      wrapStore(async () =>
-        withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
-      )
+      async () => withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
     );
   }
 
@@ -620,9 +588,7 @@ async function kohakuFetchInner(
             requestBytes,
             rpcMethod,
           },
-          wrapStore(async () =>
-            withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
-          )
+          async () => withRequestUrl(await activeSession!.client.fetch(url, torInit), url)
         ),
       timeoutMs
     );

@@ -159,7 +159,7 @@ Global behavior:
 | **`--password <password>`** | Legacy wallet unlock input. A literal string or existing file path is accepted for compatibility; prefer the unambiguous `--password-file` form in scripts. |
 | **`--without-tor`** | Disable Tor for non-RPC HTTP (default: Tor on for private-protocol and Pimlico-backed commands, including `transfer` / `transact-raw` / names). Or set `KOHAKU_WITHOUT_TOR=1`. Ethereum RPC stays clearnet. Review contacts with `view-network-traffic`. |
 | **Proving artifacts** | Railgun, Tornado, and Privacy Pools circuits ship in the `kohaku-artifacts` package installed with this CLI. Prove and unshield read that package. They are not downloaded. |
-| **Public-sync cache** | Shared **Railgun Subsquid** and saga HTTP pages live under `<dataDir>/public-sync-cache` and speed up those syncs (`balances`, `shield`, `unshield`). Prefetch with `fetch-sync-cache`. Snapshot base: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v1`). Snapshot is historical; live HTTP still fills anything newer. Sealed saga chunks are cached; `index.json` and hot heads are always fetched live. Never evicts — at `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new pages stop being stored instead. Privacy Pools **mainnet** history comes from the saga CDN (`saga-pp-state.global.ssl.fastly.net`) with only the tip from `eth_getLogs`. Sepolia Privacy Pools has no saga stream, so it stays on bundled state plus `eth_getLogs`. Wipe with `kohaku clear-tor-cache --public-sync`. |
+| **Public-sync cache** | `kohaku fetch-sync-cache` installs a verified mainnet snapshot for Railgun, Tornado, and Privacy Pools under `<dataDir>/sync-cache-v2`. The snapshot covers historical blocks; live Subsquid or RPC covers later blocks. Sepolia keeps its existing live sync. Existing `<dataDir>/public-sync-cache` files from older versions are left alone and are not used by 0.0.18. Wipe both directories with `kohaku clear-tor-cache --public-sync`. |
 
 `--password-file` removes one trailing line ending and otherwise preserves password whitespace. When unlocking an existing wallet, it also retries the fully trimmed value for compatibility with the legacy `--password <existing-file>` behavior. New wallets created with `--password-file` use the preserved value exactly.
 
@@ -167,7 +167,7 @@ Global behavior:
 
 ### `create-wallet <name>`
 
-Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single token (no spaces) and cannot be `proving-artifacts` or `public-sync-cache` (`public-sync-cache` is a cache directory under `--dataDir`; `proving-artifacts` stays reserved so an older cache directory is not treated as a wallet).
+Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single token (no spaces) and cannot be `proving-artifacts`, `public-sync-cache`, or `sync-cache-v2` (these are reserved data directories under `--dataDir`).
 
 **New seed:** records the current chain tip in `.stealth-start-block` so later `balances` stealth scans do not walk announcement history from before the wallet existed. Uses `--rpc-url` / `RPC_URL` when set; otherwise a public RPC for mainnet or Sepolia (`--testnet`).
 
@@ -752,25 +752,21 @@ kohaku set-name-reverse-record --wallet testWallet --name alice.eth --broadcast
 
 ### `fetch-sync-cache`
 
-Download a published snapshot of public protocol-sync HTTP pages into `<dataDir>/public-sync-cache`, so a fresh wallet's first `balances` / `shield` / `unshield` replays **Railgun Subsquid** and **Tornado saga** history from disk instead of paging it over Tor. Anything newer than the snapshot is still fetched live and written through, so the cache stays current as you use it.
+Download the mainnet public sync snapshot into `<dataDir>/sync-cache-v2`. It contains bounded Railgun Subsquid records and frozen Tornado and Privacy Pools Saga history. A fresh wallet reads those blocks locally, then uses live Subsquid or RPC for blocks after the snapshot. Railgun PPOI remains live. Sepolia keeps its existing sync path and does not use this snapshot.
 
-Privacy Pools mainnet history is fetched live from its saga CDN (sealed chunks are cached on the way). Sepolia Privacy Pools is not in that CDN, so its sync stays bundled state JSON plus `eth_getLogs`.
-
-The snapshot ships as a **manifest plus ~8 MiB chunks** rather than one large archive. Each chunk is fetched one at a time, checked against the `sha256` in the manifest, and extracted on arrival, so a dropped Tor circuit costs one chunk instead of the whole transfer. Re-running skips chunks whose entries are already on disk, which makes an interrupted download resumable and a partial cache repairable.
+Each file is checked against its size and SHA-256 in the snapshot manifest. Public files live directly under `sync-cache/v2/saga/` and `sync-cache/v2/railgun/`; verified downloads are stored by hash under `<dataDir>/sync-cache-v2/objects/`. An interrupted download can be resumed; the CLI activates a snapshot only when every file is present and verified. The previous active v2 snapshot remains usable while a new one downloads. Older `<dataDir>/public-sync-cache` files are not read by this version.
 
 | Option | Description |
 |--------|-------------|
-| *(none)* | Fetch the manifest, then download and install every chunk not already present. |
-| `--force` | Re-download chunks even when all of their entries are already cached. |
-| `--pack <dir>` | Publisher mode: pack `<dataDir>/public-sync-cache` into `chunk-NNN.tar.gz` + `manifest.json` in `<dir>`. |
-| `--chunk-bytes <n>` | Target compressed bytes per chunk with `--pack` (default `8388608`). |
+| *(none)* | Fetch the snapshot manifest, then install files not already verified on disk. |
+| `--force` | Re-download files even when they already verify locally. |
 | `--without-tor` | Download over clearnet. Much faster, and reveals only that this IP fetched public pool data. Or set `KOHAKU_WITHOUT_TOR=1`. |
-| `--dataDir <path>` | Data root (cache lives at `<dataDir>/public-sync-cache`). |
+| `--dataDir <path>` | Data root (cache lives at `<dataDir>/sync-cache-v2`). |
 | `--non-interactive` | JSON summary only. |
 
-Snapshot base URL: env `KOHAKU_SYNC_CACHE_BASE_URL` (default: `https://artifacts.0000000000.org/sync-cache/v1`, a versioned prefix so a newer snapshot cannot break clients pinned to an older manifest). Per-chunk time budget: env `KOHAKU_SYNC_CACHE_CHUNK_TIMEOUT_MS` (default `300000`); each chunk gets 3 attempts. Chunk URLs are excluded from proving-artifact routing, so the 45 s `KOHAKU_TOR_CDN_TIMEOUT_MS` cap does not apply to them.
+Snapshot base URL: `KOHAKU_SYNC_CACHE_BASE_URL` (default `https://artifacts.0000000000.org/sync-cache/v2`). Each file has a five-minute download budget and three attempts.
 
-Exits non-zero if any chunk ultimately failed. The entries that did land are still valid and usable — re-run to retry the rest.
+The command exits nonzero if a file fails. Re-run it to resume; partial snapshots are not used for sync.
 
 **Examples:**
 
@@ -779,15 +775,12 @@ Exits non-zero if any chunk ultimately failed. The entries that did land are sti
 kohaku fetch-sync-cache
 kohaku fetch-sync-cache --without-tor
 
-# Publisher: sync the protocols you want covered on each network first, then pack
-RPC_URL=https://mainnet-rpc kohaku balances --wallet snap-main --include railgun,tornado --without-tor
-RPC_URL=https://sepolia-rpc kohaku balances --wallet snap-sep --include railgun,tornado --without-tor
-kohaku fetch-sync-cache --pack ./sync-cache-v1
+# Publisher: build a mainnet snapshot from the live public sources
+npx tsx scripts/build-sync-cache-v2-saga.ts ./sync-cache-v2-publish 2026-10-31-a
+npx tsx scripts/build-sync-cache-v2-railgun.ts ./sync-cache-v2-publish 2026-10-31-a
 ```
 
-Then upload everything in `./sync-cache-v1` (chunks **and** `manifest.json`) to `artifacts.0000000000.org/sync-cache/v1/`, serving chunks as `application/gzip` and the manifest as `application/json`. To stage a snapshot before publishing, point `KOHAKU_SYNC_CACHE_BASE_URL` at any host that serves those files.
-
-The cache never evicts: once it reaches `KOHAKU_PUBLIC_SYNC_CACHE_MAX_BYTES` (default 1 GiB) new responses simply stop being stored, so an installed snapshot is never cannibalised to make room for fresher pages. When filling a cache you intend to publish, raise that ceiling for the *sync* runs so later pages are still captured rather than silently dropped.
+The Railgun builder reads GraphQL queries from a clean local `../kohaku-rs` checkout at commit `357104d3be2e06d91f532563f09c5a9804be088e`, matching the pinned WASM package. It can take a while; completed segment files are reused on rerun. The Saga builder verifies the source digest of every sealed and hot chunk before freezing it. Use a fresh output directory for each new snapshot. Build on a trusted connection, inspect the output, then run `npx tsx scripts/verify-sync-cache-v2.ts ./sync-cache-v2-publish`. Upload `saga/` and `railgun/` from that directory to the R2 `sync-cache/v2/` prefix. Upload `manifest.json` **last** to activate the snapshot. During an update, a download that encounters an old manifest with newly replaced public files will fail verification and can be retried after the new manifest is live. For staging, point `KOHAKU_SYNC_CACHE_BASE_URL` at a host serving that directory and run `kohaku fetch-sync-cache --without-tor --dataDir <scratch-dir>` before updating the public manifest.
 
 ---
 
@@ -827,7 +820,7 @@ Delete the on-disk [tor-js](https://github.com/privacy-ethereum/tor-js) Arti cac
 
 | Option | Description |
 |--------|-------------|
-| `--public-sync` | Also delete `<dataDir>/public-sync-cache` (Railgun Subsquid / Tornado saga HTTP cache). |
+| `--public-sync` | Also delete `<dataDir>/sync-cache-v2` and old `<dataDir>/public-sync-cache` files. |
 | `--non-interactive` | Print JSON `{ cleared, path }` instead of a human message. |
 
 **Examples:**
@@ -881,7 +874,7 @@ Railgun now uses [`kohaku-rg-js-wrapper`](https://github.com/kassandraoftroy/koh
 Sync checks historical private transactions for missing PPOI and attempts to submit recoverable proofs. The CLI reports submissions, waits, and failures. A submitted proof remains pending until a later PPOI list sync reports it as `Valid`; missing or unavailable notes cannot be spent. Repeat `balances --include railgun` later to refresh status and retry pending proof submissions. A blocked shield requires a valid shield POI source and cannot be repaired by submitting its dependent proof alone.
 
 - **Dry run vs broadcast:** `transfer`, `transact-raw`, `shield`, `unshield`, `init-profile`, and the name commands default to *prepare or simulate only*. Always read the printed transaction data before adding `--broadcast`.
-- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN is Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). Protocol sync shows task-level progress: RPC scans track unique blocks covered per contract/event stream toward the head observed during this sync, across the SDK’s own batches; saga downloads have fixed chunk totals per pool; stealth scans track blocks. Separate tasks keep separate denominators. Speed and approximate remaining time appear after several samples and refer to the current task, not the entire protocol sync. ETA is withdrawn while progress is stalled. Subsquid history, Railgun POI, and ASP requests show activity with “total unavailable” because the SDK exposes no reliable work total for them. Completed downloads remain labelled as tasks while processing or discovery continues. The elapsed clock keeps moving during synchronous processing. Sync does not download proving keys. Circuits come from the `kohaku-artifacts` dependency installed with the CLI and are not fetched at prove time. Prefetch historical Subsquid/saga pages with `kohaku fetch-sync-cache`, which pulls a chunked, `sha256`-verified snapshot one piece at a time. After Tor bootstrap corruption, run `kohaku clear-tor-cache`. Bounded historical Railgun Subsquid queries and sealed Tornado saga files are reused from `<dataDir>/public-sync-cache` (wipe with `kohaku clear-tor-cache --public-sync`); Subsquid head/count queries, Saga manifests/hot heads, Privacy Pools ASP, and RPC are always live. Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
+- **Tor (all-but-RPC):** Non-RPC HTTP (Pimlico, Railgun Subsquid/PPOI, Tornado saga/artifacts, Privacy Pools ASP, …) goes through [tor-js](https://github.com/privacy-ethereum/tor-js) by default on `balances` (when syncing private protocols), `shield`, `unshield`, Tornado note import/export, `transfer`, `transact-raw`, and name commands. Ethereum RPC stays clearnet. Use `--without-tor` or `KOHAKU_WITHOUT_TOR=1` to skip. **Saga CDN is Tor-or-fail** (no clearnet fallback; large GETs time out after `KOHAKU_TOR_CDN_TIMEOUT_MS`, default 45s). Protocol sync shows task-level progress: RPC scans track unique blocks covered per contract/event stream toward the head observed during this sync, across the SDK’s own batches; saga downloads have fixed chunk totals per pool; stealth scans track blocks. Separate tasks keep separate denominators. Speed and approximate remaining time appear after several samples and refer to the current task, not the entire protocol sync. ETA is withdrawn while progress is stalled. Subsquid history, Railgun POI, and ASP requests show activity with “total unavailable” because the SDK exposes no reliable work total for them. Completed downloads remain labelled as tasks while processing or discovery continues. The elapsed clock keeps moving during synchronous processing. Sync does not download proving keys. Circuits come from the `kohaku-artifacts` dependency installed with the CLI and are not fetched at prove time. Prefetch mainnet protocol history with `kohaku fetch-sync-cache`, which verifies a snapshot under `<dataDir>/sync-cache-v2`. Railgun bounded historical queries and frozen Tornado and Privacy Pools Saga files are served locally; Subsquid head queries, Railgun POI, Privacy Pools ASP, and RPC remain live. After Tor bootstrap corruption, run `kohaku clear-tor-cache`. Set `KOHAKU_TOR_DEBUG=1` for per-request Tor logs. A keyed RPC URL still identifies you to that provider regardless of Tor. Review with `view-network-traffic --wallet <name>`.
 - **Fresh addresses:** Use `next-fresh-address` before funding, and `unshield --next` when you want withdrawals to land on a new public key that was not your shield source. Use `next-fresh-address --peek` to see the next address without persisting it (e.g. when building `--tail-calls` for a later `unshield --next`). Do not pass a peeked address as Tornado `--to` together with `--tail-calls` — peeked addresses are not stored, so the CLI will refuse rather than 7702 a note-derived key.
 - **Profile / stealth:** Prefer `init-profile` to publish ERC-6538 keys (and optionally a name). Unshield to stored stealth accounts with `--to s0`. Print the meta URI with `see-stealth-meta-address`. New wallets and imports store `.stealth-start-block` at the current chain tip so first `balances` stealth scans skip pre-wallet announcer history. Pass `create-wallet --import --stealth-start-block` (bare) for the Kohaku-schema floor (mainnet `25700000` / Sepolia `11455454`), or an explicit block. Later `balances --stealth-start-block` can still back-date below the file.
 - **Tornado notes:** Use `export-tornado-note` / `import-tornado-note` to move legacy note secrets between wallets for testing or recovery.

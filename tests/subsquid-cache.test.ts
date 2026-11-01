@@ -8,7 +8,7 @@ import { it } from "node:test";
 import { kohakuFetch } from "../src/utils/tor.js";
 import { getPublicSyncCacheDataDir, setPublicSyncCacheDataDir, writePublicSyncCache } from "../src/utils/public-sync-cache.js";
 
-it("bypasses an imported stale Subsquid head while reusing bounded history", async () => {
+it("ignores legacy v1 Subsquid pages after upgrading to v2", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kohaku-live-squid-"));
   const previousDir = getPublicSyncCacheDataDir();
   let requests = 0;
@@ -38,8 +38,8 @@ it("bypasses an imported stale Subsquid head while reusing bounded history", asy
     }
     assert.equal(requests, 2, "head queries must hit the live indexer every time");
     const response = await kohakuFetch(url, { method: "POST", body: history });
-    assert.equal((await response.json()).data.transactions[0].blockNumber, "25832229");
-    assert.equal(requests, 2, "bounded historical pages should stay cached");
+    assert.equal((await response.json()).data.transactions[0].blockNumber, "26253987");
+    assert.equal(requests, 3, "legacy v1 history must not be read by the v2 runtime");
   } finally {
     setPublicSyncCacheDataDir(previousDir);
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
