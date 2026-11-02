@@ -8,7 +8,7 @@ import {
   type Chain,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { privateKeyToAccount, type LocalAccount } from "viem/accounts";
 
 import type { KohakuPublicClient } from "./rpc.js";
 
@@ -24,11 +24,14 @@ export function addressFromPrivateKey(priv: string): Address {
 }
 
 export function makeWalletClient(
-  priv: string,
+  signer: string | LocalAccount,
   publicClient: KohakuPublicClient,
   rpcUrl: string
 ): KohakuWalletClient {
-  const account = privateKeyToAccount(normalizePrivateKey(priv));
+  const account =
+    typeof signer === "string"
+      ? privateKeyToAccount(normalizePrivateKey(signer))
+      : signer;
   return createWalletClient({
     account,
     chain: publicClient.chain as Chain,
