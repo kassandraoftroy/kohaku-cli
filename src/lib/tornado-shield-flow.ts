@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { confirm } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
+import chalk from "chalk";
 import { formatUnits, erc20Abi } from "viem";
 import type { Host } from "@kohaku-eth/plugins";
 import { createProtocolPlugin, ETH_AS_ERC20, prepareProtocolShield } from "../utils/plugins.js";
@@ -134,7 +135,17 @@ export async function runTornadoShield(opts: {
     : {};
   if (opts.nonInteractive) logCliJson({ ...summary, ...singleResult, status: run.status, shieldedAmount: shielded.toString(), unconfirmedAmount: (run.amount - shielded).toString(),
     batches: run.batches, ...(run.error ? { error: run.error } : {}), ...(unknown ? { warning: "A submitted operation has an unresolved receipt. Check its hash before retrying; do not repeat the original shield amount." } : {}) });
-  if (!opts.nonInteractive && run.status === "complete") console.log(`Shield complete: ${fmt(shielded)} across ${batches.length} transaction(s).`);
+  if (!opts.nonInteractive && run.status === "complete" && !run.error) {
+    console.log(`Shield complete: ${fmt(shielded)} across ${batches.length} transaction(s).`);
+    console.log(chalk.bold("Etherscan links:"));
+    const explorerHost = opts.chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
+    for (const [index, batch] of run.batches.entries()) {
+      if (batch.userOpHash) console.log(chalk.dim(`  userOpHash: ${batch.userOpHash}`));
+      const label = batches.length === 1 ? "shield" : `shield ${index + 1}`;
+      console.log(chalk.cyan(`  ${label}: https://${explorerHost}/tx/${batch.txHash}`));
+    }
+    console.log(chalk.green("✔ Shield flow completed."));
+  }
   if (run.error) console.error(run.error);
   if (run.status !== "complete" || run.error) {
     process.exitCode = 1;

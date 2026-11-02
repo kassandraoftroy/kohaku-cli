@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-02
+
+### Fixed
+
+- Successful Tornado shields using the packing and batch flow now finish with Etherscan links for every transaction and `✔ Shield flow completed.`, including single-transaction plans. Sepolia shields link to Sepolia Etherscan.
+
 ## [0.1.1] - 2026-11-02
 
 ### Changed
