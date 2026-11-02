@@ -221,6 +221,90 @@ function feeFromPreparedUserOp(prepared: {
  * Pimlico bundler HTTP goes through Tor unless `withoutTor` / KOHAKU_WITHOUT_TOR.
  * Nested `withTor` reuses an existing session (no double bootstrap).
  */
+/**
+ * Sign an explicitly specified EIP-7702 UserOperation offline.
+ *
+ * No RPC or bundler preparation is performed. Nonce and gas values
+ * must be supplied by the caller. This is not a submission-ready
+ * estimation or an on-chain delegation check.
+ */
+export async function signOfflineEip7702BatchUserOperation(opts: {
+  client: KohakuPublicClient;
+  owner: LocalAccount;
+  senderAddress: Address;
+  chainId: number;
+  calls: readonly Eip7702BatchCall[];
+  nonce: bigint;
+  callGasLimit: bigint;
+  verificationGasLimit: bigint;
+  preVerificationGas: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+}) {
+  if (
+    !Number.isSafeInteger(opts.chainId) ||
+    opts.chainId <= 0 ||
+    opts.chainId !== opts.client.chain.id
+  ) {
+    throw new Error("Offline UserOperation chain ID mismatch.");
+  }
+
+  if (opts.calls.length === 0) {
+    throw new Error("Offline UserOperation requires calls.");
+  }
+
+  if (
+    opts.nonce < 0n ||
+    opts.callGasLimit <= 0n ||
+    opts.verificationGasLimit <= 0n ||
+    opts.preVerificationGas <= 0n ||
+    opts.maxFeePerGas < 0n ||
+    opts.maxPriorityFeePerGas < 0n ||
+    opts.maxPriorityFeePerGas > opts.maxFeePerGas
+  ) {
+    throw new Error("Invalid offline UserOperation parameters.");
+  }
+
+  const owner = resolveEip7702Owner({
+    owner: opts.owner,
+    senderAddress: opts.senderAddress,
+  });
+
+  const account = await toSimple7702SmartAccount({
+    client: opts.client,
+    owner: toViem7702Owner(owner),
+    implementation: SIMPLE_7702_IMPLEMENTATION,
+  });
+
+  const sender = await account.getAddress();
+  const callData = await account.encodeCalls(toCalls(opts.calls));
+
+  const unsigned = {
+    sender,
+    nonce: opts.nonce,
+    callData,
+    callGasLimit: opts.callGasLimit,
+    verificationGasLimit: opts.verificationGasLimit,
+    preVerificationGas: opts.preVerificationGas,
+    maxFeePerGas: opts.maxFeePerGas,
+    maxPriorityFeePerGas: opts.maxPriorityFeePerGas,
+  };
+
+  const signature = await account.signUserOperation({
+    ...unsigned,
+    signature: "0x",
+    chainId: opts.chainId,
+  });
+
+  return {
+    entryPointAddress: account.entryPoint.address,
+    userOperation: {
+      ...unsigned,
+      signature,
+    },
+  };
+}
+
 export async function estimateEip7702BatchUserOpFee(
   opts: {
     client: KohakuPublicClient;
