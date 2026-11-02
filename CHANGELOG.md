@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-02
+
+### Changed
+
+- Tornado Cash SDK to `0.1.0-alpha.34` and Privacy Pools SDK to `0.1.0-alpha.37`.
+
+### Fixed
+
+- Tornado balances, shields, and ERC-4337 paymaster withdrawals no longer query traditional TORN-staked relayers, avoiding failures caused by unrelated ENS records. Traditional relayer withdrawals discover relayers on demand and isolate broken ENS URL lookups so one invalid entry cannot block the other relayers. Failed relayer reads retain their sync cursor for retry.
+
 ## [0.1.0] - 2026-11-01
 
 First minor version release; no functional changes from 0.0.18.
