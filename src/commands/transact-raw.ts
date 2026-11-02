@@ -1,3 +1,5 @@
+import { createPublicClient, custom } from "viem";
+import { foundry } from "viem/chains";
 import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, select } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
@@ -25,6 +27,7 @@ import { logCliJson, quietNonInteractive, runQuietSpinner } from "../utils/cli-q
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
   estimateEip7702BatchUserOpFee,
+  signOfflineEip7702BatchUserOperation,
   needsSimple7702Authorization,
   sendEip7702BatchUserOperation,
 } from "../utils/eip7702-batch-userop.js";
@@ -57,6 +60,10 @@ import {
 
 type TransactRawOpts = {
   signer?: string;
+  keycardUserop?: boolean;
+  callGasLimit?: string;
+  verificationGasLimit?: string;
+  preVerificationGas?: string;
   keycardCli?: string;
   keycardPath?: string;
   chainId?: string;
@@ -252,6 +259,10 @@ export function registerTransactRawCommand(program: Command): void {
     .option("--signer <backend>", "Signer backend: software or keycard", "software")
     .option("--keycard-cli <path>", "Patched Keycard CLI binary")
     .option("--keycard-path <path>", "Keycard derivation path")
+    .option("--keycard-userop", "Sign an offline Keycard Simple7702 batch")
+    .option("--call-gas-limit <gas>", "Offline UserOperation call gas")
+    .option("--verification-gas-limit <gas>", "Offline verification gas")
+    .option("--pre-verification-gas <gas>", "Offline pre-verification gas")
     .option("--chain-id <id>", "Offline hardware transaction chain ID")
     .option("--nonce <nonce>", "Offline hardware transaction nonce")
     .option("--gas <units>", "Offline hardware transaction gas limit")
@@ -289,6 +300,11 @@ export function registerTransactRawCommand(program: Command): void {
         return;
       }
 
+      if (opts.signer === "software" && opts.keycardUserop) {
+        cliError("--keycard-userop requires --signer keycard.");
+        return;
+      }
+
       if (opts.signer === "keycard") {
         try {
           if (opts.broadcast) {
@@ -305,7 +321,13 @@ export function registerTransactRawCommand(program: Command): void {
               "Offline Keycard signing does not use wallet, password, or RPC options."
             );
           }
-          if (targets.length !== 1) {
+          if (opts.keycardUserop) {
+            if (targets.length < 2) {
+              throw new Error(
+                "Keycard UserOperation requires at least two calls."
+              );
+            }
+          } else if (targets.length !== 1) {
             throw new Error(
               "Keycard prototype supports exactly one transaction."
             );
@@ -348,8 +370,6 @@ export function registerTransactRawCommand(program: Command): void {
             );
           }
 
-          const nonce = integer(opts.nonce, "--nonce", 0);
-          const gas = amount(opts.gas, "--gas", 1n);
           const maxFeePerGas = amount(
             opts.maxFeePerGas, "--max-fee-per-gas", 0n
           );
@@ -360,6 +380,29 @@ export function registerTransactRawCommand(program: Command): void {
 
           if (maxPriorityFeePerGas > maxFeePerGas) {
             throw new Error("Priority fee exceeds maximum fee.");
+          }
+
+          const userOpFields = opts.keycardUserop
+            ? {
+                nonce: amount(opts.nonce, "--nonce", 0n),
+                callGasLimit: amount(
+                  opts.callGasLimit, "--call-gas-limit", 1n
+                ),
+                verificationGasLimit: amount(
+                  opts.verificationGasLimit,
+                  "--verification-gas-limit", 1n
+                ),
+                preVerificationGas: amount(
+                  opts.preVerificationGas,
+                  "--pre-verification-gas", 1n
+                ),
+              }
+            : undefined;
+
+          if (userOpFields && opts.gas !== undefined) {
+            throw new Error(
+              "Use --call-gas-limit instead of --gas for UserOperations."
+            );
           }
 
           const binary =
@@ -383,6 +426,73 @@ export function registerTransactRawCommand(program: Command): void {
           ) {
             throw new Error("--from does not match Keycard address.");
           }
+
+          if (userOpFields) {
+            let rpcCalls = 0;
+            const offlineClient = createPublicClient({
+              chain: foundry,
+              transport: custom({
+                async request({ method }) {
+                  rpcCalls++;
+                  throw new Error(
+                    `Offline Keycard mode prohibits RPC: ${method}`
+                  );
+                },
+              }),
+            });
+
+            const calls = buildRawTransactions(
+              targets, payloads, values
+            ).map((call) => ({
+              to: getAddress(call.to),
+              data: call.data as `0x${string}`,
+              value: call.value,
+            }));
+
+            const result =
+              await signOfflineEip7702BatchUserOperation({
+                client: offlineClient,
+                owner: account,
+                senderAddress: account.address,
+                chainId,
+                calls,
+                ...userOpFields,
+                maxFeePerGas,
+                maxPriorityFeePerGas,
+              });
+
+            if (
+              rpcCalls !== 0 ||
+              !isAddressEqual(
+                result.userOperation.sender,
+                account.address
+              )
+            ) {
+              throw new Error(
+                "Offline UserOperation validation failed."
+              );
+            }
+
+            console.log(JSON.stringify({
+              mode: "keycard-offline-eip7702-userop",
+              broadcast: false,
+              submissionReady: false,
+              from: account.address,
+              chainId,
+              entryPointAddress: result.entryPointAddress,
+              implementation: SIMPLE_7702_IMPLEMENTATION,
+              calls,
+              userOperation: result.userOperation,
+            }, (_, value) =>
+              typeof value === "bigint"
+                ? value.toString()
+                : value,
+            2));
+            return;
+          }
+
+          const nonce = integer(opts.nonce, "--nonce", 0);
+          const gas = amount(opts.gas, "--gas", 1n);
 
           const tx = buildRawTransactions(
             targets, payloads, values
