@@ -11,12 +11,12 @@ import {
 } from "./sync-progress-renderer.js";
 
 /** Privacy-protocol sync, or ERC-5564 stealth announcement scan. */
-export type SyncProgressSource = SupportedProtocol | "stealth";
+export type SyncProgressSource = SupportedProtocol | "stealth" | "private";
 
 /** A step whose size is known: saga chunks or RPC windows. */
 export type DeterminateSyncKind = "saga" | "rpc";
 
-type DeterminateUnit = "chunks" | "windows" | "blocks";
+type DeterminateUnit = "chunks" | "windows" | "blocks" | "leaves";
 
 type DeterminateRow = {
   id: number;
@@ -37,7 +37,7 @@ type DeterminateRow = {
 
 type SyncProgressStore = {
   source: SyncProgressSource;
-  activities: Map<symbol, string>;
+  activities: Map<symbol, { label: string; priority: number }>;
   rpcHead?: bigint;
   firstRun: boolean;
   started: number;
@@ -69,6 +69,7 @@ const SOURCE_LABEL: Record<SyncProgressSource, string> = {
   "privacy-pools": "Privacy Pools",
   tornado: "Tornado Cash",
   stealth: "Stealth",
+  private: "Private balances",
 };
 
 const COALESCE_MS = 250;
@@ -111,6 +112,7 @@ function visibleRows(store: SyncProgressStore): DeterminateRow[] {
   // beside its next pass makes the same stream appear to run twice.
   const active = store.rows.filter((row) => !rowComplete(row));
   if (active.length > 0) return active;
+  if (store.activities.size > 0) return [];
   const last = store.rows.filter(rowComplete).at(-1);
   return last ? [last] : [];
 }
@@ -133,16 +135,21 @@ function summaryParts(store: SyncProgressStore): string[] {
 /** One line for a non-TTY sink or the spinner that resumes after the worker. */
 function formatSummary(store: SyncProgressStore, includeStale = false): string {
   const parts = summaryParts(store);
-  const body = parts.length > 0 ? parts.join(" · ") : "starting";
+  const activity = currentActivity(store);
+  const body = parts.length > 0 ? parts.join(" · ") : activity ?? "starting";
   const knownEta = formatKnownWorkEta(buildSnapshot(store).rows);
-  const processing = store.activities.size ? ` · ${[...store.activities.values()].at(-1)}` : allComplete(store) ? " · processing / discovering next task" : "";
+  const processing = activity && parts.length > 0 ? ` · ${activity}` : "";
   const stale =
     includeStale && Date.now() - store.lastActivity >= STALE_MS ? " · still working" : "";
-  const slow =
-    store.firstRun && Date.now() - store.started >= SLOW_HINT_MS
-      ? " · first run can take several minutes"
-      : "";
-  return `${sourceHeader(store)} · ${body}${knownEta ? ` · ${knownEta}` : ""}${processing} · ${formatElapsed(Date.now() - store.started)}${stale}${slow}`;
+  return `${sourceHeader(store)} · ${body}${knownEta ? ` · ${knownEta}` : ""}${processing} · ${formatElapsed(Date.now() - store.started)}${stale}`;
+}
+
+function currentActivity(store: SyncProgressStore): string | undefined {
+  let current: { label: string; priority: number } | undefined;
+  for (const activity of store.activities.values()) {
+    if (!current || activity.priority >= current.priority) current = activity;
+  }
+  return current?.label;
 }
 
 function buildSnapshot(store: SyncProgressStore): ProgressSnapshot {
@@ -163,7 +170,7 @@ function buildSnapshot(store: SyncProgressStore): ProgressSnapshot {
     });
   }
   return { header: sourceHeader(store), firstRun: store.firstRun, rows,
-    activity: [...store.activities.values()].at(-1) ?? (allComplete(store) ? "processing / discovering next task" : undefined) };
+    activity: currentActivity(store) };
 }
 
 function flush(store: SyncProgressStore, force = false, includeStale = false): void {
@@ -220,7 +227,7 @@ function findRow(
 
 /** Register one task with a fixed total, independent of other pools/streams. */
 export function addSyncUnits(kind: DeterminateSyncKind, units: number, label?: string): SyncUnitTicket {
-  const store = currentSession;
+  const store = als.getStore() ?? currentSession;
   if (!store || store.closed || !Number.isFinite(units) || units < 1) return NO_TICKET;
   const row: DeterminateRow = {
     id: store.nextId++, kind, unit: kind === "saga" ? "chunks" : "windows",
@@ -252,12 +259,13 @@ export function addSyncUnits(kind: DeterminateSyncKind, units: number, label?: s
 
 /** Whether the active sync still needs a target for SDK-batched log scans. */
 export function needsSyncHead(): boolean {
-  return !!currentSession && !currentSession.closed && currentSession.rpcHead === undefined;
+  const store = als.getStore() ?? currentSession;
+  return !!store && !store.closed && store.rpcHead === undefined;
 }
 
 /** Freeze the observed head for this sync session, not for the provider lifetime. */
 export function noteSyncHead(head: bigint): void {
-  const store = currentSession;
+  const store = als.getStore() ?? currentSession;
   if (store && !store.closed && store.rpcHead === undefined) store.rpcHead = head;
 }
 
@@ -270,7 +278,19 @@ export function noteSyncHead(head: bigint): void {
 export function addRpcSyncRange(
   key: string, label: string, from: bigint, to: bigint, toHead = false
 ): { complete(from: bigint, to: bigint): void } {
-  const store = currentSession;
+  return addSyncRange(key, label, from, to, "blocks", toHead);
+}
+
+/** Progress for the bounded cached portion, followed by live status validation. */
+export function reportCachedPoiLeaves(from: number, toExclusive: number, through: number, key: string): void {
+  const range = addSyncRange(`ppoi:${key}`, "Cached PPOI leaves", BigInt(from), BigInt(through - 1), "leaves");
+  range.complete(BigInt(from), BigInt(toExclusive - 1));
+}
+
+function addSyncRange(
+  key: string, label: string, from: bigint, to: bigint, unit: "blocks" | "leaves", toHead = false,
+): { complete(from: bigint, to: bigint): void } {
+  const store = als.getStore() ?? currentSession;
   if (!store || store.closed || from > to) return { complete() {} };
   const target = toHead && store.rpcHead !== undefined && store.rpcHead > to
     ? store.rpcHead : to;
@@ -282,7 +302,7 @@ export function addRpcSyncRange(
   // still reported only after the request succeeds.
   if (!row) {
     row = {
-      id: store.nextId++, kind: "rpc", unit: "blocks", key, label,
+      id: store.nextId++, kind: "rpc", unit, key, label,
       pass: store.rows.filter((r) => r.key === key).length + 1,
       total: Number(target - from + 1n), done: 0,
       started: Date.now(), updated: Date.now(), samples: 0,
@@ -325,14 +345,20 @@ export function addRpcSyncRange(
 }
 
 /** Activity without a measurable total must not pretend to be a progress bar. */
-export function beginSyncActivity(activity: string): () => void {
-  const store = currentSession;
+export function beginSyncActivity(activity: string, opts: { priority?: number; delayMs?: number } = {}): () => void {
+  const store = als.getStore() ?? currentSession;
   if (!store || store.closed) return () => {};
   const token = Symbol();
-  store.activities.set(token, activity);
-  touch(store);
-  flush(store);
+  const show = () => {
+    if (store.closed) return;
+    store.activities.set(token, { label: activity, priority: opts.priority ?? 0 });
+    touch(store);
+    flush(store);
+  };
+  const timer = opts.delayMs ? setTimeout(show, opts.delayMs) : undefined;
+  if (!timer) show();
   return () => {
+    if (timer) clearTimeout(timer);
     if (store.closed) return;
     store.activities.delete(token);
     touch(store);
@@ -345,7 +371,7 @@ export function beginSyncActivity(activity: string): () => void {
  * it after opening their own storage (the stealth scan).
  */
 export function noteSyncFirstRun(firstRun: boolean): void {
-  const store = currentSession;
+  const store = als.getStore() ?? currentSession;
   if (!store || store.closed || store.firstRun === firstRun) return;
   store.firstRun = firstRun;
   touch(store);
@@ -357,10 +383,10 @@ export function noteSyncFirstRun(firstRun: boolean): void {
  * on the first call and is not rewritten. `done` never moves backward.
  */
 export function reportSyncBlockProgress(scanned: bigint, total: bigint, label?: string): void {
-  const store = currentSession;
+  const store = als.getStore() ?? currentSession;
   if (!store || store.closed || total <= 0n) return;
 
-  let row = findRow(store, "rpc", "blocks");
+  let row = store.rows.find((r) => r.kind === "rpc" && r.unit === "blocks" && r.label === label);
   const created = !row;
   if (!row) {
     if (allComplete(store)) store.rows = [];
@@ -446,6 +472,7 @@ export async function runWithSyncProgress<T>(
       ? setInterval(() => flush(store, true, true), TICK_MS)
       : undefined;
 
+  const previous = currentSession;
   currentSession = store;
   try {
     return await als.run(store, async () => {
@@ -453,7 +480,7 @@ export async function runWithSyncProgress<T>(
       return fn();
     });
   } finally {
-    currentSession = null;
+    currentSession = previous?.closed ? null : previous;
     if (tick) clearInterval(tick);
     if (store.emitTimer) {
       clearTimeout(store.emitTimer);

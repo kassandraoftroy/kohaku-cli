@@ -25,6 +25,7 @@ type Index = {
 const MAX_DECODED_CACHE_BYTES = 96 * 1024 * 1024;
 const decoded = new Map<string, { rows: Row[]; bytes: number }>();
 let decodedBytes = 0;
+const indexes = new WeakMap<SyncCacheV2Manifest, Index>();
 
 function sha256(data: Uint8Array | string): string {
   return createHash("sha256").update(data).digest("hex");
@@ -40,6 +41,8 @@ function loadIndex(manifest: SyncCacheV2Manifest): Index | null {
   const relative = `${prefix}/index.json`;
   const file = manifest.files.find((entry) => entry.path === relative);
   if (!file || !hasLocalSyncCacheV2File(file)) return null;
+  const cached = indexes.get(manifest);
+  if (cached) return cached;
   let index: Index;
   try {
     index = JSON.parse(readFileSync(syncCacheV2ObjectPath(file), "utf8")) as Index;
@@ -63,22 +66,24 @@ function loadIndex(manifest: SyncCacheV2Manifest): Index | null {
     }
     if (next !== index.throughBlock + 1) return null;
   }
+  indexes.set(manifest, index);
   return index;
 }
 
 function readRows(manifest: SyncCacheV2Manifest, relative: string): Row[] {
   const file = manifest.files.find((entry) => entry.path === relative);
-  if (!file) throw new Error(`Missing Railgun snapshot segment: ${relative}`);
+  if (!file || !hasLocalSyncCacheV2File(file)) throw new Error(`Missing Railgun snapshot segment: ${relative}`);
   const cached = decoded.get(file.sha256);
   if (cached) {
     decoded.delete(file.sha256);
     decoded.set(file.sha256, cached);
     return cached.rows;
   }
-  if (!hasLocalSyncCacheV2File(file)) throw new Error(`Missing Railgun snapshot segment: ${relative}`);
   const raw = gunzipSync(readFileSync(syncCacheV2ObjectPath(file)));
   const rows = JSON.parse(raw.toString("utf8")) as Row[];
-  if (!Array.isArray(rows)) throw new Error(`Invalid Railgun snapshot segment: ${relative}`);
+  if (!Array.isArray(rows) || !rows.every((row) => row && typeof row.id === "string" &&
+      validInteger(Number(row.blockNumber)))) throw new Error(`Invalid Railgun snapshot segment: ${relative}`);
+  rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const bytes = raw.byteLength;
   while (decodedBytes + bytes > MAX_DECODED_CACHE_BYTES && decoded.size > 0) {
     const oldest = decoded.keys().next().value as string;
@@ -123,9 +128,22 @@ export function railgunSyncSnapshotResponse(url: string, method: string, body: U
     const rows: Row[] = [];
     for (const segment of index.segments[kind]) {
       if (segment.toBlock < from || segment.fromBlock > to) continue;
-      for (const row of readRows(manifest, `${manifest.sources.railgunMainnet}/${segment.file}`)) {
+      const segmentRows = readRows(manifest, `${manifest.sources.railgunMainnet}/${segment.file}`);
+      let low = 0;
+      let high = segmentRows.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (segmentRows[mid]!.id <= idGt) low = mid + 1;
+        else high = mid;
+      }
+      let added = 0;
+      for (let i = low; i < segmentRows.length; i++) {
+        const row = segmentRows[i]!;
         const block = Number(row.blockNumber);
-        if (block >= from && block <= to && row.id > idGt) rows.push(row);
+        if (block >= from && block <= to) {
+          rows.push(row);
+          if (++added >= limit) break;
+        }
       }
     }
     rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

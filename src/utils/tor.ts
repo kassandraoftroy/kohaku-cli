@@ -50,6 +50,7 @@ import { setPublicSyncCacheDataDir } from "./public-sync-cache.js";
 import { localSyncCacheV2Response } from "./sync-cache-v2.js";
 import { ppoiSyncSnapshotResponse } from "./ppoi-sync-snapshot.js";
 import { railgunSyncSnapshotResponse } from "./railgun-sync-snapshot.js";
+import { railgunLiveCacheResponse, cacheRailgunLiveResponse } from "./railgun-live-cache.js";
 
 /** tor-js Arti directory cache (`createAutoStorage('tor-js')`). */
 export function torJsCacheDir(): string {
@@ -472,9 +473,16 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
     : category === "ppoi" ? "Railgun PPOI · checking list / TXIDs"
     : category === "asp" ? "ASP lists · fetching"
     : rpcMethod ? `RPC ${rpcMethod} · waiting for response` : undefined;
-  const finish = label ? beginSyncActivity(label) : undefined;
+  // Local hits and brief requests should not replace stable protocol phases.
+  const finish = label ? beginSyncActivity(label, { priority: -1, delayMs: 1500 }) : undefined;
   try {
-    return await kohakuFetchInner(input, init, rpcMethod);
+    const response = await kohakuFetchInner(input, init, rpcMethod);
+    if (method === "POST" && (category === "subsquid" || category === "ppoi") &&
+        !response.headers.has("x-kohaku-public-cache")) {
+      const body = await requestBodyBytesForCache(input, init);
+      await cacheRailgunLiveResponse(resolveRequestUrl(input), body, response.clone());
+    }
+    return response;
   } finally {
     finish?.();
   }
@@ -552,6 +560,12 @@ async function kohakuFetchInner(
         async () => snapshot
       );
     }
+  }
+
+  if (method === "POST" && ["subsquid", "ppoi"].includes(categorizeUrl(url))) {
+    const cached = await railgunLiveCacheResponse(url, await requestBodyBytesForCache(input, init));
+    if (cached) return loggedFetch(input, init,
+      { via: "clearnet", clearnetReason: "public-sync-cache", url, rpcMethod }, async () => cached);
   }
 
   const decision = shouldUseClearnet(url);

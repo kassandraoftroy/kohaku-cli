@@ -33,17 +33,19 @@ export function formatEtaDuration(seconds: number): string {
 }
 
 /** A range for tasks already visible; later phases have no known total yet. */
-export function formatKnownWorkEta(rows: ProgressSnapshot["rows"]): string | undefined {
+export function formatKnownWorkEta(rows: ProgressSnapshot["rows"], now = Date.now()): string | undefined {
   const active = rows.filter((row) => row.done < row.total);
   if (active.length < 2) return undefined;
   const estimates = active.map(estimateTaskRemainingSeconds);
   if (estimates.some((value) => value === undefined)) return undefined;
-  const seconds = estimates as number[];
+  if (active.some((row, i) => now - (row.updatedAt ?? now) > estimates[i]! * 1000 + 5000)) return undefined;
+  const seconds = (estimates as number[]).map((estimate, i) =>
+    Math.max(1, estimate - Math.floor((now - (active[i]!.updatedAt ?? now)) / 1000)));
   const lower = Math.max(...seconds);
   const upper = seconds.reduce((sum, value) => sum + value, 0);
   const range = lower === upper ? formatEtaDuration(lower)
     : `${formatEtaDuration(lower)}-${formatEtaDuration(upper)}`;
-  return `Known steps ETA ~${range} (more may follow)`;
+  return `Current steps ~${range} remaining`;
 }
 
 /** Shared by the worker and the fallback; estimates apply only to this task. */
@@ -59,22 +61,17 @@ export function formatProgressMetrics(row: ProgressSnapshot["rows"][number], now
       ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`
       : `${(seconds / 3600).toFixed(1)}h`;
     const unit = row.unit === "chunks" ? "chunk" : row.unit === "windows" ? "window" : "range";
-    return `${percent} · first ${unit} in progress (${spent}) · ETA after progress`;
+    return `Waiting for first ${unit} (${spent}) · estimating time`;
   }
   const remaining = estimateTaskRemainingSeconds(row);
   if (remaining === undefined) {
-    return `${percent} · measuring speed · ETA after next update`;
+    return `${percent} · estimating time`;
   }
-  const measuredDone = row.rateStartDone === undefined ? row.done : row.done - row.rateStartDone;
-  const measuredMs = (row.updatedAt ?? now) - (row.rateStartAt ?? row.startedAt ?? now);
-  const rate = measuredDone / (measuredMs / 1000);
-  const duration = formatEtaDuration(remaining);
-  const speed = rate >= 10 ? Math.round(rate).toLocaleString("en-US") : rate.toFixed(1);
-  // Preserve the measured estimate while a long step runs, and flag it as less reliable.
+  const sinceUpdate = Math.max(0, now - (row.updatedAt ?? now));
+  const duration = formatEtaDuration(Math.max(1, remaining - Math.floor(sinceUpdate / 1000)));
   const usualStep = ((row.updatedAt ?? now) - (row.startedAt ?? now)) / (row.samples ?? 1);
-  const slow = now - (row.updatedAt ?? now) > Math.max(30_000, 3 * usualStep);
-  const eta = slow ? `task ETA ~${duration} (current step slow)` : `task ETA ~${duration}`;
-  return `${percent} · ${speed} ${row.unit ?? "units"}/s · ${eta}`;
+  const slow = sinceUpdate > Math.max(30_000, 3 * usualStep) || sinceUpdate > remaining * 1000 + 5000;
+  return slow ? `${percent} · taking longer than estimated` : `${percent} · ~${duration} remaining`;
 }
 
 /** Return to the top of the current block, even after the terminal scrolls. */
@@ -175,15 +172,12 @@ function render() {
 function draw() {
   const glyph = FRAMES[frame++ % FRAMES.length];
   let header = glyph + '  ' + snapshot.header + DOT + elapsed();
-  if (Date.now() - lastUpdate > STALE_MS) {
+  if (!snapshot.activity && Date.now() - lastUpdate > STALE_MS) {
     header += DOT + 'still working';
-  }
-  if (snapshot.firstRun && Date.now() - startedAt >= SLOW_HINT_MS) {
-    header += DOT + 'first run can take several minutes';
   }
   const lines = [header];
   if (snapshot.activity) lines.push('   Now: ' + snapshot.activity);
-  const visible = snapshot.rows.slice(0, 4);
+  const visible = snapshot.rows.slice(0, 3);
   for (const row of visible) {
     const detail = metrics(row, Date.now());
     const title = '   ' + row.label;
@@ -207,7 +201,7 @@ function draw() {
   Atomics.store(state, 2, block.length);
 }
 
-const timer = setInterval(render, 120);
+const timer = setInterval(render, 250);
 render();
 
 parentPort.on('message', (msg) => {
