@@ -39,6 +39,9 @@ test("shared live cache reuses complete PPOI pages with the current request ID, 
     assert.equal(readdirSync(liveDir).length, 1);
     writeFileSync(join(liveDir, file!), "corrupt gzip");
     assert.equal(await railgunLiveCacheResponse(PPOI_MAINNET_ENDPOINT, encode(page(0))), null);
+    const consumed = Response.json({ jsonrpc: "2.0", id: 1, result: leaves });
+    await consumed.text();
+    await assert.doesNotReject(cacheRailgunLiveResponse(PPOI_MAINNET_ENDPOINT, encode(page(200)), consumed));
   } finally { setPublicSyncCacheDataDir(previous); rmSync(dir, { recursive: true, force: true }); }
 });
 
