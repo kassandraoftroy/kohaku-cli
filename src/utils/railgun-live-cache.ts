@@ -105,9 +105,9 @@ export async function cacheRailgunLiveResponse(url: string, body: Uint8Array, re
   const req = request(url, body);
   if (!isHead && !req) return;
   if (Number(response.headers.get("content-length")) > MAX_ENTRY) return;
-  const reader = response.clone().body?.getReader();
-  if (!reader) return;
   try {
+    const reader = response.clone().body?.getReader();
+    if (!reader) return;
     const chunks: Uint8Array[] = [];
     let size = 0;
     while (true) {

@@ -15,11 +15,11 @@ const macrotask = () => new Promise((r) => setTimeout(r, 0));
 
 async function capture(
   opts: Parameters<typeof runWithSyncProgress>[0],
-  body: () => Promise<void> | void
+  body: (messages: string[]) => Promise<void> | void
 ): Promise<string[]> {
   const messages: string[] = [];
   await runWithSyncProgress({ ...opts, onUpdate: (m) => messages.push(m) }, async () => {
-    await body();
+    await body(messages);
     await settle();
   });
   return messages;
@@ -216,13 +216,13 @@ describe("sync progress emission", () => {
 
 describe("sync activities", () => {
   it("keeps the protocol phase stable and hides completed history during PPOI refresh", async () => {
-    const messages = await capture({ source: "railgun" }, async () => {
+    const messages = await capture({ source: "railgun" }, async (updates) => {
       reportSyncBlockProgress(100n, 100n, "Railgun history");
       const phase = beginSyncActivity("Railgun · refreshing PPOI lists / TXIDs", { priority: 1 });
       const request = beginSyncActivity("low-level request", { priority: -1 });
       await settle();
-      assert.match(messages.at(-1)!, /refreshing PPOI/);
-      assert.doesNotMatch(messages.at(-1)!, /low-level|Railgun history|discovering/);
+      assert.match(updates.at(-1)!, /refreshing PPOI/);
+      assert.doesNotMatch(updates.at(-1)!, /low-level|Railgun history|discovering/);
       request();
       phase();
     });

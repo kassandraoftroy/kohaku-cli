@@ -467,6 +467,9 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
   const category = categorizeUrl(resolveRequestUrl(input));
   const method = resolveRequestMethod(input, init);
   const rpcMethod = await peekPostRpcMethod(input, init, method);
+  // A Request body is consumed by fetch; retain the cache key before sending it.
+  const cacheBody = method === "POST" && (category === "subsquid" || category === "ppoi")
+    ? await requestBodyBytesForCache(input, init) : undefined;
   const label = category === "subsquid" ? "Subsquid history · fetching page"
     : category === "ppoi" && rpcMethod === "ppoi_poi_merkletree_leaves"
       ? "Railgun PPOI list · loading leaves (size unknown)"
@@ -476,11 +479,10 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
   // Local hits and brief requests should not replace stable protocol phases.
   const finish = label ? beginSyncActivity(label, { priority: -1, delayMs: 1500 }) : undefined;
   try {
-    const response = await kohakuFetchInner(input, init, rpcMethod);
-    if (method === "POST" && (category === "subsquid" || category === "ppoi") &&
+    const response = await kohakuFetchInner(input, init, rpcMethod, cacheBody);
+    if (cacheBody &&
         !response.headers.has("x-kohaku-public-cache")) {
-      const body = await requestBodyBytesForCache(input, init);
-      await cacheRailgunLiveResponse(resolveRequestUrl(input), body, response);
+      await cacheRailgunLiveResponse(resolveRequestUrl(input), cacheBody, response);
     }
     return response;
   } finally {
@@ -492,6 +494,7 @@ async function kohakuFetchInner(
   input: RequestInfo | URL,
   init?: RequestInit,
   rpcMethod?: string,
+  cacheBody?: Buffer,
 ): Promise<Response> {
   const url = resolveRequestUrl(input);
   const method = resolveRequestMethod(input, init);
@@ -536,7 +539,7 @@ async function kohakuFetchInner(
   }
 
   if (method === "POST" && categorizeUrl(url) === "subsquid") {
-    const body = await requestBodyBytesForCache(input, init);
+    const body = cacheBody ?? await requestBodyBytesForCache(input, init);
     const snapshot = railgunSyncSnapshotResponse(url, method, body);
     if (snapshot) {
       return loggedFetch(
@@ -550,7 +553,7 @@ async function kohakuFetchInner(
 
   if (method === "POST" && categorizeUrl(url) === "ppoi" &&
       rpcMethod === "ppoi_poi_merkletree_leaves") {
-    const body = await requestBodyBytesForCache(input, init);
+    const body = cacheBody ?? await requestBodyBytesForCache(input, init);
     const snapshot = ppoiSyncSnapshotResponse(url, method, body);
     if (snapshot) {
       return loggedFetch(
@@ -563,7 +566,7 @@ async function kohakuFetchInner(
   }
 
   if (method === "POST" && ["subsquid", "ppoi"].includes(categorizeUrl(url))) {
-    const cached = await railgunLiveCacheResponse(url, await requestBodyBytesForCache(input, init));
+    const cached = await railgunLiveCacheResponse(url, cacheBody ?? await requestBodyBytesForCache(input, init));
     if (cached) return loggedFetch(input, init,
       { via: "clearnet", clearnetReason: "public-sync-cache", url, rpcMethod }, async () => cached);
   }
