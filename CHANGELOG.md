@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
+### Changed
+
+- Railgun uses `kohaku-rg-js-wrapper` `0.0.3`, pinned to kohaku-rs `be8862740832a7bac9325270c5b8f8066e32e1d5`. Wallet hashing, tree restoration and proving run in a worker; network requests and encrypted persistence remain controlled by the CLI. Checkpoints retain computed Merkle nodes, with a one-time rebuild for older checkpoints.
+- Railgun catches up history in bounded windows and refreshes PPOI/TXIDs once afterward. Larger history windows, asynchronous checkpoint compression and skipping unchanged writes reduce repeated checkpoint work. PPOI validation, historical missing-proof recovery and save-before-return behavior are retained.
+- Balances sync independent private protocols concurrently while keeping each protocol's legacy and signature writes ordered. Privacy Pools verbose note reads reuse the balance sync.
+- `balances` can reuse successful encrypted private balance checks for up to one minute, displays their age, and includes `private_balance_freshness` in JSON. `--refresh` forces a new check. Wallet identity, protocol storage and operation activity changes invalidate cached views; spending flows do not use them. When every requested private view is recent, the command skips private wallet initialization and Tor bootstrap.
+- Public snapshot indexes and file integrity checks are reused only while their files remain unchanged. Railgun snapshot pagination avoids repeated full sorting. Complete PPOI leaf pages and confirmed historical indexer responses fetched live are shared across wallets in `sync-cache-v2/live`, capped at 256 MiB. Heads, the recent indexer tip, incomplete PPOI pages, root validation, status and submissions remain live.
+- Sync progress shows stable phases and cached PPOI leaf progress, with fewer redraws and shorter remaining-time estimates. Estimates count down between updates and report when work takes longer than expected. Completed history bars are hidden during later phases.
+- Tornado shield confirmations omit the pool contract address listing.
+
 ## [0.1.2] - 2026-11-02
 
 ### Fixed
