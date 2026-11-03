@@ -480,7 +480,7 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
     if (method === "POST" && (category === "subsquid" || category === "ppoi") &&
         !response.headers.has("x-kohaku-public-cache")) {
       const body = await requestBodyBytesForCache(input, init);
-      await cacheRailgunLiveResponse(resolveRequestUrl(input), body, response.clone());
+      await cacheRailgunLiveResponse(resolveRequestUrl(input), body, response);
     }
     return response;
   } finally {

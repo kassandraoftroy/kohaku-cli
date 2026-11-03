@@ -124,7 +124,6 @@ const FULL = ${JSON.stringify(FULL)};
 const EMPTY = ${JSON.stringify(EMPTY)};
 const NL = ${JSON.stringify("\r\n")};
 const STALE_MS = 2000;
-const SLOW_HINT_MS = 8000;
 const BAR_WIDTH = 16;
 const estimateTaskRemainingSeconds = ${estimateTaskRemainingSeconds.toString()};
 const formatEtaDuration = ${formatEtaDuration.toString()};

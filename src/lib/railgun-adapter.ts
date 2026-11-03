@@ -180,37 +180,37 @@ export class RailgunAdapter {
   static async open(host: Host, chainId: bigint): Promise<RailgunAdapter> {
     const finish = beginSyncActivity("Railgun · opening wallet checkpoint", { priority: 1 });
     try {
-    const { rpcUrl, walletDir } = railgunHostContext(host);
-    const checkpointJson = await host.storage.get(CHECKPOINT_KEY);
-    const migratingOldFile = existsSync(join(walletDir, "rg-storage.json")) &&
-      await host.storage.get(MIGRATION_COMPLETE_KEY) !== "true";
-    if (migratingOldFile &&
-        !warnedResync.has(walletDir)) {
-      warnedResync.add(walletDir);
-      console.error(checkpointJson
-        ? "Railgun v0.0.16: resuming the history resync from the saved Rust checkpoint. The old Railgun wallet file is preserved."
-        : "Railgun v0.0.16: resyncing from chain history into a new encrypted checkpoint. The old Railgun wallet file is preserved. This may take several minutes and can resume after interruption.");
-    }
-    const paths = railgunKeyPaths(0);
-    const [spendingKey, viewingKey] = await Promise.all([
-      host.keystore.deriveAt(paths.spending),
-      host.keystore.deriveAt(paths.viewing),
-    ]);
-    const wallet = await RailgunWorkerWallet.open({
-      chainId,
-      rpcUrl,
-      spendingKey: spendingKey as Hex,
-      viewingKey: viewingKey as Hex,
-      checkpointJson,
-      artifactBaseUrl: DEFAULT_ARTIFACTS_BASE_URL,
-      fetch: host.network?.fetch ?? globalThis.fetch,
-      persistCheckpoint: async (json) => {
-        const saved = beginSyncActivity("Railgun · saving encrypted checkpoint", { priority: 2 });
-        try { await host.storage.set(CHECKPOINT_KEY, json); }
-        finally { saved(); }
-      },
-    });
-    return new RailgunAdapter(wallet, rpcUrl, host.storage, migratingOldFile);
+      const { rpcUrl, walletDir } = railgunHostContext(host);
+      const checkpointJson = await host.storage.get(CHECKPOINT_KEY);
+      const migratingOldFile = existsSync(join(walletDir, "rg-storage.json")) &&
+        await host.storage.get(MIGRATION_COMPLETE_KEY) !== "true";
+      if (migratingOldFile &&
+          !warnedResync.has(walletDir)) {
+        warnedResync.add(walletDir);
+        console.error(checkpointJson
+          ? "Railgun v0.0.16: resuming the history resync from the saved Rust checkpoint. The old Railgun wallet file is preserved."
+          : "Railgun v0.0.16: resyncing from chain history into a new encrypted checkpoint. The old Railgun wallet file is preserved. This may take several minutes and can resume after interruption.");
+      }
+      const paths = railgunKeyPaths(0);
+      const [spendingKey, viewingKey] = await Promise.all([
+        host.keystore.deriveAt(paths.spending),
+        host.keystore.deriveAt(paths.viewing),
+      ]);
+      const wallet = await RailgunWorkerWallet.open({
+        chainId,
+        rpcUrl,
+        spendingKey: spendingKey as Hex,
+        viewingKey: viewingKey as Hex,
+        checkpointJson,
+        artifactBaseUrl: DEFAULT_ARTIFACTS_BASE_URL,
+        fetch: host.network?.fetch ?? globalThis.fetch,
+        persistCheckpoint: async (json) => {
+          const saved = beginSyncActivity("Railgun · saving encrypted checkpoint", { priority: 2 });
+          try { await host.storage.set(CHECKPOINT_KEY, json); }
+          finally { saved(); }
+        },
+      });
+      return new RailgunAdapter(wallet, rpcUrl, host.storage, migratingOldFile);
     } finally { finish(); }
   }
 

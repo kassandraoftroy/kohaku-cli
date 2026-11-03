@@ -68,3 +68,22 @@ it("does not replace a stored value when saving to disk fails", async () => {
     assert.equal(await storage.get("new"), null);
   } finally { fixture.cleanup(); }
 });
+
+it("serializes concurrent compressed writes and skips identical persisted values", async () => {
+  const fixture = temporaryStore();
+  try {
+    const storage = makeStorage(fixture.dir, "tc", "pw");
+    const state = "large fixture state".repeat(10000);
+    await Promise.all([
+      storage.set("legacy-state", state),
+      storage.set("sig:state", state + "newer"),
+    ]);
+    const before = readFileSync(fixture.path);
+    assert.equal(await storage.get("legacy-state"), state);
+    await storage.set("legacy-state", state);
+    assert.deepEqual(readFileSync(fixture.path), before, "identical state should not be re-encrypted");
+    const reopened = makeStorage(fixture.dir, "tc", "pw");
+    assert.equal(await reopened.get("legacy-state"), state);
+    assert.equal(await reopened.get("sig:state"), state + "newer");
+  } finally { fixture.cleanup(); }
+});

@@ -372,13 +372,6 @@ type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
   notesErrors: Partial<Record<SupportedProtocol, unknown>>;
 };
 
-function willSyncPrivateProtocols(
-  includeProtocols: SupportedProtocol[] | null
-): boolean {
-  // null = sync all private protocols (TUI / callers that omit the filter)
-  return includeProtocols === null || includeProtocols.length > 0;
-}
-
 async function resolvePrivateBalanceItems(
   opts: Pick<
     LoadBalancesSnapshotOptions,
@@ -420,6 +413,7 @@ async function resolvePrivateBalanceItems(
   const rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>> = {};
   const notesErrors: Partial<Record<SupportedProtocol, unknown>> = {};
   const privateBalanceFreshness: Partial<Record<SupportedProtocol, PrivateBalanceFreshness>> = {};
+  const warnings: string[] = [];
   const selected = ALL_PRIVATE_PROTOCOLS.filter((protocol) => shouldIncludeProtocol(protocol, includeProtocols));
   const cache = opts.recentPrivateBalances ? privateBalanceCache(opts) : undefined;
   const cached = new Map(selected.flatMap((protocol) => {
@@ -453,47 +447,24 @@ async function resolvePrivateBalanceItems(
   };
 
   const loadAll = async () => Promise.all(selected.map(async (protocol) => {
-  if (protocol === "railgun") {
     try {
-      const loaded = await loadOne("railgun");
-      rgRows = loaded.balances;
-      railgunAddress = loaded.railgunAddress;
-      protocolAvailable.railgun = true;
+      const loaded = await loadOne(protocol);
+      protocolAvailable[protocol] = true;
+      if (protocol === "railgun") {
+        rgRows = loaded.balances;
+        railgunAddress = loaded.railgunAddress;
+      } else if (protocol === "privacy-pools") {
+        ppRows = loaded.balances;
+        ppLegacyRows = loaded.legacyBalances ?? [];
+      } else {
+        tcRows = loaded.balances;
+        tcLegacyRows = loaded.legacyBalances ?? [];
+      }
     } catch (e) {
-      onWarning?.(
-        `Railgun private balances unavailable: ${formatCaughtError(e)}`
-      );
-      protocolAvailable.railgun = false;
+      const name = protocol === "railgun" ? "Railgun" : protocol === "tornado" ? "Tornado Cash" : "Privacy pools";
+      warnings.push(`${name} private balances unavailable: ${formatCaughtError(e)}`);
+      protocolAvailable[protocol] = false;
     }
-  }
-
-  if (protocol === "privacy-pools") {
-    try {
-      const loaded = await loadOne("privacy-pools");
-      ppRows = loaded.balances;
-      ppLegacyRows = loaded.legacyBalances ?? [];
-      protocolAvailable["privacy-pools"] = true;
-    } catch (e) {
-      onWarning?.(
-        `Privacy pools private balances unavailable: ${formatCaughtError(e)}`
-      );
-      protocolAvailable["privacy-pools"] = false;
-    }
-  }
-
-  if (protocol === "tornado") {
-    try {
-      const loaded = await loadOne("tornado");
-      tcRows = loaded.balances;
-      tcLegacyRows = loaded.legacyBalances ?? [];
-      protocolAvailable.tornado = true;
-    } catch (e) {
-      onWarning?.(
-        `Tornado Cash private balances unavailable: ${formatCaughtError(e)}`
-      );
-      protocolAvailable.tornado = false;
-    }
-  }
   }));
   if (selected.length > 0) {
     // Each protocol has its own store. Its legacy/signature writes remain
@@ -506,6 +477,7 @@ async function resolvePrivateBalanceItems(
         onUpdate: onSyncProgress,
       }, loadAll));
   }
+  for (const warning of warnings) onWarning?.(warning);
   const erc20FromPrivate = [
     ...collectErc20AddressesFromPrivateBalances(rgRows),
     ...collectErc20AddressesFromPrivateBalances(ppRows),

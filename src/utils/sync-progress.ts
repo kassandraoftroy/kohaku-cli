@@ -79,7 +79,6 @@ const COALESCE_MS = 250;
  */
 const TICK_MS = 1_000;
 const STALE_MS = 2_000;
-const SLOW_HINT_MS = 8_000;
 
 const NO_TICKET: SyncUnitTicket = { advance() {} };
 
@@ -217,14 +216,6 @@ function allComplete(store: SyncProgressStore): boolean {
   return store.rows.length > 0 && store.rows.every(rowComplete);
 }
 
-function findRow(
-  store: SyncProgressStore,
-  kind: DeterminateSyncKind,
-  unit: DeterminateUnit
-): DeterminateRow | undefined {
-  return store.rows.find((row) => row.kind === kind && row.unit === unit);
-}
-
 /** Register one task with a fixed total, independent of other pools/streams. */
 export function addSyncUnits(kind: DeterminateSyncKind, units: number, label?: string): SyncUnitTicket {
   const store = als.getStore() ?? currentSession;
@@ -349,6 +340,7 @@ export function beginSyncActivity(activity: string, opts: { priority?: number; d
   const store = als.getStore() ?? currentSession;
   if (!store || store.closed) return () => {};
   const token = Symbol();
+  let ended = false;
   const show = () => {
     if (store.closed) return;
     store.activities.set(token, { label: activity, priority: opts.priority ?? 0 });
@@ -358,6 +350,8 @@ export function beginSyncActivity(activity: string, opts: { priority?: number; d
   const timer = opts.delayMs ? setTimeout(show, opts.delayMs) : undefined;
   if (!timer) show();
   return () => {
+    if (ended) return;
+    ended = true;
     if (timer) clearTimeout(timer);
     if (store.closed) return;
     store.activities.delete(token);

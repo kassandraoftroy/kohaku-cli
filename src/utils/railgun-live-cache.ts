@@ -68,7 +68,9 @@ export async function railgunLiveCacheResponse(url: string, body: Uint8Array): P
   const req = request(url, body);
   if (!req) return null;
   try {
-    const raw = await decompress(readFileSync(join(syncCacheV2Dir(), "live", `${req.key}.json.gz`)), { maxOutputLength: MAX_ENTRY });
+    const path = join(syncCacheV2Dir(), "live", `${req.key}.json.gz`);
+    if (statSync(path).size > MAX_ENTRY) return null;
+    const raw = await decompress(readFileSync(path), { maxOutputLength: MAX_ENTRY });
     const entry = JSON.parse(raw.toString("utf8"));
     if (entry.version !== 1 || !validData(req, entry.data)) return null;
     const response = Response.json(req.kind === "ppoi"
@@ -103,7 +105,7 @@ export async function cacheRailgunLiveResponse(url: string, body: Uint8Array, re
   const req = request(url, body);
   if (!isHead && !req) return;
   if (Number(response.headers.get("content-length")) > MAX_ENTRY) return;
-  const reader = response.body?.getReader();
+  const reader = response.clone().body?.getReader();
   if (!reader) return;
   try {
     const chunks: Uint8Array[] = [];
