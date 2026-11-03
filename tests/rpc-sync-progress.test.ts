@@ -131,26 +131,27 @@ describe("task throughput and ETA", () => {
   const row = { label: "RPC", done: 500, total: 1000, suffix: "", unit: "blocks",
     startedAt: 0, updatedAt: 5000, samples: 3 };
   it("waits for a meaningful sample", () => {
-    assert.match(formatProgressMetrics({ ...row, samples: 1 }, 5000), /measuring speed/);
+    assert.match(formatProgressMetrics({ ...row, samples: 1 }, 5000), /estimating time/);
   });
   it("estimates the remaining task from its own elapsed time", () => {
-    assert.equal(formatProgressMetrics(row, 5000), "50% · 100 blocks/s · task ETA ~5s");
+    assert.equal(formatProgressMetrics(row, 5000), "50% · ~5s remaining");
+    assert.equal(formatProgressMetrics(row, 7000), "50% · ~3s remaining");
   });
   it("marks a slow current step without hiding the task estimate", () => {
-    assert.match(formatProgressMetrics(row, 40000), /task ETA ~5s \(current step slow\)/);
+    assert.match(formatProgressMetrics(row, 40000), /taking longer than estimated/);
     assert.equal(formatProgressMetrics({ ...row, done: 1000 }, 21000), "task complete");
   });
   it("shows elapsed time before the first update and precise early percentages", () => {
     assert.equal(formatProgressMetrics({ ...row, done: 0, samples: 0 }, 97_000),
-      "0% · first range in progress (1m 37s) · ETA after progress");
-    assert.match(formatProgressMetrics({ ...row, done: 5, samples: 1 }, 5000), /^0.50% · measuring speed/);
+      "Waiting for first range (1m 37s) · estimating time");
+    assert.match(formatProgressMetrics({ ...row, done: 5, samples: 1 }, 5000), /^0.50% · estimating time/);
   });
   it("excludes one-time setup from later speed and estimates visible tasks together", () => {
     const first = { ...row, done: 30, total: 100, startedAt: 0,
       rateStartAt: 100_000, rateStartDone: 10, updatedAt: 110_000, samples: 2 };
-    assert.equal(formatProgressMetrics(first, 110_000), "30% · 2.0 blocks/s · task ETA ~35s");
+    assert.equal(formatProgressMetrics(first, 110_000), "30% · ~35s remaining");
     const second = { ...row, done: 50, total: 100, startedAt: 0,
       rateStartAt: 100_000, rateStartDone: 10, updatedAt: 110_000, samples: 2 };
-    assert.equal(formatKnownWorkEta([first, second]), "Known steps ETA ~35s-48s (more may follow)");
+    assert.equal(formatKnownWorkEta([first, second], 110_000), "Current steps ~35s-48s remaining");
   });
 });

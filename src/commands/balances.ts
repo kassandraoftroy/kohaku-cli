@@ -9,6 +9,7 @@ import { getAddress, isAddress } from "viem";
 
 import type { BalanceItem } from "../lib/balances-snapshot";
 import { loadBalancesSnapshot } from "../lib/balances-snapshot";
+import type { PrivateBalanceFreshness } from "../lib/private-balance-cache.js";
 import {
   formatDepositTimestampIso,
   formatNoteAssetLabel,
@@ -59,6 +60,7 @@ type BalancesOpts = {
   skipStealthScan?: boolean;
   resyncProfile?: boolean;
   profileIndex?: string;
+  refresh?: boolean;
 };
 
 function stringifyBalancesJson(payload: unknown): string {
@@ -336,11 +338,15 @@ function printBalanceItemRows(
 function printPrivateProtocolSection(
   title: string,
   rows: BalanceItem[],
-  opts?: { status?: boolean; subtitle?: string }
+  opts?: { status?: boolean; subtitle?: string; freshness?: PrivateBalanceFreshness }
 ): void {
   console.log();
   console.log(chalk.bold(`  ■ ${title}`));
   if (opts?.subtitle) console.log(`  ${opts.subtitle}`);
+  if (opts?.freshness?.fromCache) {
+    const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(opts.freshness.checkedAt)) / 1000));
+    console.log(chalk.dim(`  Checked ${seconds}s ago · use --refresh to sync now`));
+  }
   console.log(chalk.dim(`  ${THIN}`));
   printBalanceItemRows(rows, opts);
 }
@@ -389,6 +395,7 @@ function printHumanBalances(opts: {
   includeProtocols: SupportedProtocol[];
   verbose: boolean;
   privateNotes?: Partial<Record<SupportedProtocol, PrivateNoteRow[]>>;
+  privateBalanceFreshness?: Partial<Record<SupportedProtocol, PrivateBalanceFreshness>>;
 }): void {
   console.log();
   console.log(chalk.bold(` ${BAR}`));
@@ -422,6 +429,7 @@ function printHumanBalances(opts: {
   if (shouldIncludeProtocol("railgun", opts.includeProtocols)) {
     printPrivateProtocolSection("Private — Railgun", opts.privateRailgun, {
       status: true,
+      freshness: opts.privateBalanceFreshness?.railgun,
       subtitle: chalk.dim("0zk address: ") +
         (opts.railgunAddress ? chalk.cyan(opts.railgunAddress) : chalk.dim("(unavailable)")),
     });
@@ -431,7 +439,7 @@ function printHumanBalances(opts: {
     printPrivateProtocolSection(
       "Private — Privacy pools",
       opts.privatePrivacyPools,
-      { status: true }
+      { status: true, freshness: opts.privateBalanceFreshness?.["privacy-pools"] }
     );
   }
 
@@ -439,7 +447,7 @@ function printHumanBalances(opts: {
     printPrivateProtocolSection(
       "Private — Tornado Cash",
       opts.privateTornado,
-      { status: true }
+      { status: true, freshness: opts.privateBalanceFreshness?.tornado }
     );
   }
 
@@ -525,6 +533,7 @@ export function registerBalancesCommand(program: Command): void {
       "Extra ERC20 addresses (comma/space); merged with chain defaults, deduped"
     )
     .option("--without-tor", cliOptions.withoutTor)
+    .option("--refresh", "Sync private balances now instead of reusing checks from the last minute")
     .option("--stealth-start-block <block>", cliOptions.stealthStartBlock)
     .option(
       "--skip-stealth-scan",
@@ -639,13 +648,15 @@ export function registerBalancesCommand(program: Command): void {
               includeProtocols,
               verbose: !!opts.verbose,
               withoutTor: opts.withoutTor,
+              recentPrivateBalances: true,
+              refreshPrivateBalances: !!opts.refresh,
               stealthStartBlock,
               stealthStartBlockBackdate: stealthStartBlockFlag !== undefined,
               skipStealthScan: !!opts.skipStealthScan,
               onTorStatus: (message) => {
                 loading.start(message);
               },
-              onSyncProgress: (message) => {
+              onSyncProgress: quiet ? undefined : (message) => {
                 loading.start(message);
               },
               onStealthScanStart: quiet
@@ -711,6 +722,7 @@ export function registerBalancesCommand(program: Command): void {
               public_balances_aggregated: snap.publicAggregated,
               public_balances_by_address: snap.publicByAddress,
               private_balances: privateBalances,
+              private_balance_freshness: snap.privateBalanceFreshness ?? {},
               ...(shouldIncludeProtocol("railgun", includeProtocols)
                 ? { railgun_address: snap.railgunAddress ?? null }
                 : {}),
@@ -757,6 +769,7 @@ export function registerBalancesCommand(program: Command): void {
                 includeProtocols,
                 verbose: !!opts.verbose,
                 privateNotes: privateNotesOut,
+                privateBalanceFreshness: snap.privateBalanceFreshness,
               });
             }
           },

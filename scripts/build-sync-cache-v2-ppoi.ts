@@ -20,7 +20,7 @@ import {
 } from "../src/utils/ppoi-sync-snapshot.js";
 import { parseSyncCacheV2Manifest, type SyncCacheV2File, type SyncCacheV2Manifest } from "../src/utils/sync-cache-v2.js";
 
-const EXPECTED_RUST_COMMIT = "357104d3be2e06d91f532563f09c5a9804be088e";
+const EXPECTED_RUST_COMMIT = "be8862740832a7bac9325270c5b8f8066e32e1d5";
 const MAINNET_LIST_KEY = "efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88";
 const MAX_PAGES = 100_000;
 const MAX_PARALLEL = 4;

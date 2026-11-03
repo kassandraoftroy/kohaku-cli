@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
+import { reportCachedPoiLeaves } from "./sync-progress.js";
 
 import {
   hasLocalSyncCacheV2File,
@@ -28,6 +29,7 @@ type Index = {
 const LEAF_HEX = /^(?:0x)?[0-9a-fA-F]{1,64}$/;
 const LIST_KEY = /^[0-9a-fA-F]{64}$/;
 const decoded = new Map<string, string[]>();
+const indexes = new WeakMap<SyncCacheV2Manifest, Index>();
 
 function validIndex(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -38,6 +40,8 @@ function loadIndex(manifest: SyncCacheV2Manifest): Index | null {
   if (!prefix) return null;
   const indexFile = manifest.files.find((file) => file.path === `${prefix}/index.json`);
   if (!indexFile || !hasLocalSyncCacheV2File(indexFile)) return null;
+  const cached = indexes.get(manifest);
+  if (cached) return cached;
   let index: Index;
   try {
     index = JSON.parse(readFileSync(syncCacheV2ObjectPath(indexFile), "utf8")) as Index;
@@ -59,7 +63,9 @@ function loadIndex(manifest: SyncCacheV2Manifest): Index | null {
         !manifest.files.some((file) => file.path === `${prefix}/${segment.file}`)) return null;
     next = segment.toIndexExclusive;
   }
-  return next === index.throughLeafExclusive ? index : null;
+  if (next !== index.throughLeafExclusive) return null;
+  indexes.set(manifest, index);
+  return index;
 }
 
 function readLeaves(manifest: SyncCacheV2Manifest, prefix: string, segment: Segment): string[] | null {
@@ -111,6 +117,7 @@ export function ppoiSyncSnapshotResponse(url: string, method: string, body: Uint
   if (!leaves) return null;
   const result = leaves.slice(from - segment.fromIndex, to - segment.fromIndex);
   if (result.length !== PPOI_LEAF_PAGE) return null;
+  reportCachedPoiLeaves(from, to, index.throughLeafExclusive, index.listKey);
   const response = new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
     status: 200,
     headers: { "content-type": "application/json", "x-kohaku-public-cache": "v2-ppoi-hit" },
