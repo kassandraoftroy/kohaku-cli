@@ -29,7 +29,7 @@ export async function runTornadoShield(opts: {
   ethBalance?: bigint;
 } & Eip7702TorOpts): Promise<void> {
   const fmt = (amount: bigint) => `${formatUnits(amount, opts.token.decimals)} ${opts.token.symbol}`;
-  if (opts.broadcast && !opts.privateKey) throw new Error("Cannot sign this shield: use a stored wallet account or --from-priv.");
+  if (opts.broadcast && !opts.privateKey) throw new Error("Cannot sign this shield: use a stored wallet account or --sender-priv <key>.");
   if (opts.broadcast) {
     const available = opts.token.isEth
       ? await opts.client.getBalance({ address: opts.sender as `0x${string}` })

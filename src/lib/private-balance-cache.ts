@@ -10,10 +10,11 @@ export const PRIVATE_BALANCE_MAX_AGE_MS = 60_000;
 export type PrivateBalanceData = {
   balances: AssetAmount[];
   railgunAddress?: string;
+  poiError?: string;
   legacyBalances?: AssetAmount[];
   rawNotes?: unknown[];
 };
-export type PrivateBalanceFreshness = { checkedAt: string; fromCache: boolean };
+export type PrivateBalanceFreshness = { checkedAt: string; fromCache: boolean; poiError?: string };
 type Entry = { checkedAt: number; fingerprint: string; data: PrivateBalanceData };
 type Cache = { version: 1; identity: string; entries: Partial<Record<SupportedProtocol, Entry>> };
 

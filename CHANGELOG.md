@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-04
+
+### Added
+
+- `private-transfer` and `transfer --from <protocol>` support `--amount-max` and interactive `max` for Railgun, Privacy Pools, and Tornado. Maximum recipient amounts reserve the relevant protocol and gas fees, including forwarding costs for public recipients and private WETH gas payment for Railgun `0zk` transfers. Legacy and signature-derived notes remain separate.
+
+### Changed
+
+- Replace `--from-priv` with `--sender-priv <key>` on `shield`, `transfer`, `transact-raw`, and `ragequit`. The new option accepts an external sender's private key, validates that it matches the selected address, and does not save it. When no stored key exists, interactive broadcasts prompt with hidden input and non-interactive broadcasts require the option. Unsaved HD indexes are derived from the wallet seed automatically.
+- Interactive shields and public transfers identify the selected sender and its balance before asking for an amount. External senders can also use max amounts. Private transfers show token balances, spendable amounts, and estimated maximum recipient amounts across all protocols and both Railgun recipient types; Railgun also shows private WETH available for gas.
+
+### Fixed
+
+- Single-transaction public ETH max transfers use the same gas limit and EIP-1559 fee caps for amount sizing, confirmation, and signing, preventing a later fee estimate from exceeding the reserved balance. Preparation refreshes the sender balance and estimates recipient execution gas with headroom.
+- Privacy Pools max unshields without custom tail calls spend the approved gross balance and let the SDK deduct its final paymaster fee, avoiding insufficient-note failures caused by sizing a net amount from an earlier fee quote.
+- Railgun balances remain visible when history sync succeeds but POI/TXID refresh fails. Human output shows `[ERR: POI data missing]`, JSON and cached views retain the error, and affected funds remain unavailable for spending until POI refresh succeeds. History-sync failures still surface as errors.
+
 ## [0.1.3] - 2026-11-03
 
 ### Changed

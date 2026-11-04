@@ -431,7 +431,8 @@ function printHumanBalances(opts: {
       status: true,
       freshness: opts.privateBalanceFreshness?.railgun,
       subtitle: chalk.dim("0zk address: ") +
-        (opts.railgunAddress ? chalk.cyan(opts.railgunAddress) : chalk.dim("(unavailable)")),
+        (opts.railgunAddress ? chalk.cyan(opts.railgunAddress) : chalk.dim("(unavailable)")) +
+        (opts.privateBalanceFreshness?.railgun?.poiError ? chalk.yellow(" [ERR: POI data missing]") : ""),
     });
   }
 

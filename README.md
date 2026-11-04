@@ -318,6 +318,9 @@ kohaku reveal-seed-phrase --wallet testWallet
 
 ### `balances`
 
+If Railgun history sync succeeds but POI refresh fails, balances remain visible with `[ERR: POI data missing]`. Affected amounts are shown as unavailable for spending until POI refresh succeeds; JSON includes the POI error under `private_balance_freshness.railgun.poiError`.
+
+
 Show aggregated **public** balances (ETH + default ERC-20s for the chain, plus any private tokens discovered), and **private** balances for the protocols you select. Also prints the wallet **profile** name (reverse-resolved for HD index 0, if any; JSON: `wallet_profile_name`). Use `see-stealth-meta-address` for the stealth meta URI.
 
 By default, private balances are included only for `DEFAULT_PRIVACY_PROTOCOL` (if set). Otherwise only public balances are shown, with a short warning. Pass `--include` to sync one or more protocols explicitly (required for multiple protocols at once, or for any private balance when the env is unset).
@@ -367,12 +370,12 @@ Transfer ETH or ERC-20 tokens from one wallet public account to any public addre
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--from <address-or-index\|protocol>` | Public account address, HD index, stealth selector (`s0`), or private protocol (`railgun`, `tornado`, `privacy-pools`). |
-| `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
+| `--sender-priv <key>` | Private key for an external sender. Interactive broadcasts prompt with hidden input if the selected address has no stored key. The key must match `--from` and is not saved. |
 | `--to <address>` | Recipient address. |
 | `--token <address\|symbol\|eth>` | Token address or symbol (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human-readable amount using token decimals. |
-| `--amount-max` | Public transfer only: send the full ERC-20 balance, or the maximum ETH balance after reserving estimated gas. |
+| `--amount-max` | Maximum recipient amount after estimated fees. Public ERC-20 transfers send the full token balance; public ETH transfers reserve gas using the signed fee caps. |
 | `--exclude-new-pools` | With `--from tornado` only, use classic Tornado pools. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit. Omit to print a public transaction payload or prepared private operation. |
@@ -380,7 +383,7 @@ Transfer ETH or ERC-20 tokens from one wallet public account to any public addre
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, `--to`, and one amount flag. |
 | `--dataDir <path>` | Data root. |
 
-Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted. Private protocol sources accept the same options as `private-transfer`; `--from-priv`, `--stealth`, and `--amount-max` are public-transfer-only.
+Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted. Private protocol sources accept the same options as `private-transfer`; `--sender-priv <key>` and `--stealth` are public-transfer-only. `--amount-max` also works with private protocol sources and reserves the relevant protocol and gas fees.
 
 **Examples:**
 
@@ -408,7 +411,7 @@ Simulate or submit one or more raw contract calls from a public account.
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--from <address-or-index>` | Sender public account address, HD index, or stealth selector (`s0`). |
-| `--from-priv` | With `--broadcast`, derive an indexed sender from the mnemonic if it is not in the stored public account list. |
+| `--sender-priv <key>` | Private key for an external sender. Interactive broadcasts prompt with hidden input if the selected address has no stored key. The key must match `--from` and is not saved. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit on-chain (single EOA tx, or one batched UserOp for 2+ calls). Omit to simulate and print payloads. |
 | `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico UserOps, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
@@ -436,7 +439,7 @@ Move funds from a **public** account into a private protocol.
 | `--wallet <name>` | Wallet. |
 | `--password <password>` | Unlock password. |
 | `--from <address-or-index>` | Sender public account address, HD index, or stealth selector (`s0`). |
-| `--from-priv` | With `--broadcast`: derive private key by index from mnemonic if account not yet in stored public list. |
+| `--sender-priv <key>` | Private key for an external sender; interactive broadcasts prompt when no stored key exists. The key must match `--from` and is not saved. |
 | `--token <address\|eth>` | Token (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human amount (uses token decimals). |
@@ -528,6 +531,8 @@ kohaku unshield --protocol tornado --wallet testWallet --next --amount-formatted
 
 ### `private-transfer`
 
+Interactive transfers show the protocol's token balance, spendable balance, and available amount after estimated fees before asking for an amount. Railgun also shows private WETH available for gas; a `0zk` recipient receives WETH when `--token eth` is used.
+
 Send an **exact** private amount to someone else. For a public recipient, this unshields through a fresh public account and forwards the amount with a tail call. For a Railgun `0zk` recipient, the transfer stays inside Railgun and does not unshield. The 4337 paymaster gas is paid from private WETH.
 
 | Option | Description |
@@ -540,13 +545,14 @@ Send an **exact** private amount to someone else. For a public recipient, this u
 | `--exclude-new-pools` | Tornado only: use classic pools. |
 | `--amount-wei <n>` | Exact amount the recipient receives, in base units. |
 | `--amount-formatted <decimal>` | Exact amount the recipient receives. |
+| `--amount-max` | Maximum recipient amount after estimated protocol and gas fees. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Submit via the protocol bundler or paymaster. **Omit** to print the prepared private operation. |
 | `--without-tor` | Disable Tor for non-RPC HTTP. |
-| `--non-interactive` | JSON; requires `--wallet`, `--password` or `--password-file`, `--to`, and `--amount-wei` or `--amount-formatted`. |
+| `--non-interactive` | JSON; requires `--wallet`, `--password` or `--password-file`, `--to`, and one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. |
 | `--dataDir <path>` | Data root. |
 
-There is no `--next`, `--tail-calls`, or `--amount-max`. For public recipients, the fresh account is persisted only after a successful `--broadcast`. Railgun internal transfers use a fresh wallet-owned 4337 executor, persisted after broadcast, but do not create a fresh receiving account or unshield funds to it.
+Use `--amount-max` (or enter `max` interactively) to send the available amount after estimated fees. There is no `--next` or `--tail-calls`. For public recipients, the fresh account is persisted only after a successful `--broadcast`. Railgun internal transfers use a fresh wallet-owned 4337 executor, persisted after broadcast, but do not create a fresh receiving account or unshield funds to it.
 
 `transfer --from railgun`, `transfer --from tornado`, and `transfer --from privacy-pools` are aliases for this command with the corresponding `--protocol` value.
 
@@ -916,4 +922,4 @@ Find the note label in `balances --wallet my-wallet --include privacy-pools --ve
 kohaku ragequit --wallet my-wallet --label NOTE_LABEL --scheme signature
 ```
 
-Add `--broadcast` to submit after reviewing the simulation. The sender defaults to the note's depositor; `--from 0`, `--from s0`, or `--from ADDRESS` selects it explicitly. `--from-priv` permits deriving an unsaved HD index. Use `--scheme legacy` for an older BIP-32 note. Approved notes use `unshield` instead.
+Add `--broadcast` to submit after reviewing the simulation. The sender defaults to the note's depositor; `--from 0`, `--from s0`, or `--from ADDRESS` selects it explicitly. `--sender-priv <key>` signs for an external depositor; interactive broadcasts prompt for the key if needed. Unsaved HD indices are derived from the wallet seed automatically. Use `--scheme legacy` for an older BIP-32 note. Approved notes use `unshield` instead.

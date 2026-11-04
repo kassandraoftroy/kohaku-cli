@@ -237,11 +237,12 @@ async function loadPrivateProtocolData(
           if (protocol === "railgun") {
             const railgunAddress = (plugins.signature as RailgunAdapter).wallet.address;
             const balances = await plugins.signature.balance(undefined);
-            if (!includeNotes) return { balances, railgunAddress };
+            const poiError = (plugins.signature as RailgunAdapter).poiError;
+            if (!includeNotes) return { balances, railgunAddress, poiError };
             try {
-              return { balances, railgunAddress, rawNotes: await readNotes(plugins.signature) };
+              return { balances, railgunAddress, poiError, rawNotes: await readNotes(plugins.signature) };
             } catch (e) {
-              return { balances, railgunAddress, notesError: e };
+              return { balances, railgunAddress, poiError, notesError: e };
             }
           }
 
@@ -424,7 +425,7 @@ async function resolvePrivateBalanceItems(
   const loadOne = async (protocol: SupportedProtocol) => {
     const hit = cached.get(protocol);
     if (hit) {
-      privateBalanceFreshness[protocol] = { checkedAt: new Date(hit.checkedAt).toISOString(), fromCache: true };
+      privateBalanceFreshness[protocol] = { checkedAt: new Date(hit.checkedAt).toISOString(), fromCache: true, ...(hit.data.poiError ? { poiError: hit.data.poiError } : {}) };
       if (hit.data.rawNotes) rawNotesByProtocol[protocol] = hit.data.rawNotes;
       return hit.data;
     }
@@ -441,7 +442,7 @@ async function resolvePrivateBalanceItems(
     if (loaded.rawNotes) rawNotesByProtocol[protocol] = loaded.rawNotes;
     if (loaded.notesError) notesErrors[protocol] = loaded.notesError;
     const checkedAt = Date.now();
-    privateBalanceFreshness[protocol] = { checkedAt: new Date(checkedAt).toISOString(), fromCache: false };
+    privateBalanceFreshness[protocol] = { checkedAt: new Date(checkedAt).toISOString(), fromCache: false, ...(loaded.poiError ? { poiError: loaded.poiError } : {}) };
     if (!loaded.notesError) cache?.write(protocol, loaded, checkedAt);
     return loaded;
   };

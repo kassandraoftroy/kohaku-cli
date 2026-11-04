@@ -1,3 +1,4 @@
+import { resolveTransactionSender, includeSelectedSenderBalance } from "../lib/transaction-sender.js";
 import { startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
 import { log, spinner } from "@clack/prompts";
@@ -11,7 +12,6 @@ import {
   formatPublicAccountBalanceLabel,
   listPublicAccountsWithBalance,
   parseFromIndex,
-  resolveShieldSender,
   simulateTransactionOrThrow,
   type PublicAccountWithBalance,
 } from "../lib/shield-flow.js";
@@ -54,6 +54,7 @@ import { runPrivateTransfer } from "./private-transfer.js";
 import { isSupportedProtocol, SUPPORTED_PROTOCOLS_HELP } from "../utils/plugins.js";
 import {
   estimateEthTransferGasReserveWei,
+  prepareEthMaxTransfer,
   transferMaxAmountFromBalance,
 } from "../utils/transfer-max.js";
 import {
@@ -67,7 +68,7 @@ type TransferOpts = {
   password?: string;
   passwordFile?: string;
   from?: string;
-  fromPriv?: boolean;
+  senderPriv?: string;
   to?: string;
   token?: string;
   amountWei?: string;
@@ -215,8 +216,8 @@ export function registerTransferCommand(program: Command): void {
     .addOption(passwordFileOption())
     .option("--from <address-or-index|protocol>", `Public address, HD index, stealth selector (s0), or private protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
     .option(
-      "--from-priv",
-      "With --broadcast: derive --from index from mnemonic when missing from public accounts"
+      "--sender-priv <key>",
+      "Private key for an external sender (interactive broadcasts prompt when needed)"
     )
     .option("--to <address>", "Recipient address, Railgun 0zk address, name (.eth/.gwei/.wei), or stealth meta-address")
     .option(
@@ -242,16 +243,12 @@ export function registerTransferCommand(program: Command): void {
     .action(async (opts: TransferOpts) => {
       const privateProtocol = opts.from?.trim();
       if (isSupportedProtocol(privateProtocol)) {
-        if (opts.fromPriv) {
-          cliError("--from-priv is only supported for public transfers.");
+        if (opts.senderPriv !== undefined) {
+          cliError("--sender-priv is only supported for public transfers.");
           return;
         }
         if (opts.stealth) {
           cliError("--stealth is only supported for public transfers.");
-          return;
-        }
-        if (opts.amountMax) {
-          cliError("private-transfer does not support --amount-max.");
           return;
         }
         return runPrivateTransfer({
@@ -263,6 +260,7 @@ export function registerTransferCommand(program: Command): void {
           token: opts.token,
           amountWei: opts.amountWei,
           amountFormatted: opts.amountFormatted,
+          amountMax: opts.amountMax,
           excludeNewPools: opts.excludeNewPools,
           rpcUrl: opts.rpcUrl,
           nonInteractive: opts.nonInteractive,
@@ -350,6 +348,7 @@ export function registerTransferCommand(program: Command): void {
         return;
       }
 
+      let usedAmountMax = !!opts.amountMax;
       const broadcast = !!opts.broadcast;
       const dryRun = !broadcast;
 
@@ -396,6 +395,14 @@ export function registerTransferCommand(program: Command): void {
       const quiet = quietNonInteractive(opts.nonInteractive);
 
       try {
+        if (fromValue) {
+          fromValue = await includeSelectedSenderBalance(withBalances, {
+            fromValue, walletDir, mnemonic, password, senderPriv: opts.senderPriv,
+          }, rpcUrl, tokenMeta);
+        } else if (amount === null || opts.amountMax) {
+          fromValue = await promptSourceAccount(withBalances, tokenMeta, `Pick source account for ${tokenMeta.symbol} transfer`);
+        }
+
         if (withBalances.length === 0) {
           cliError(
             "No public or stealth accounts found in this wallet. Create one with next-fresh-address or init-profile first."
@@ -448,17 +455,11 @@ export function registerTransferCommand(program: Command): void {
               `Pick source account for max ${tokenMeta.symbol} transfer`
             );
           }
+          usedAmountMax = true;
           amount = await resolveMaxForFrom(fromValue);
         } else if (amount === null) {
-          console.log();
-          console.log(
-            chalk.bold(`Available accounts (${tokenMeta.symbol} balances):`)
-          );
-          for (const acct of withBalances) {
-            console.log(
-              `  [${acct.index}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
-            );
-          }
+          const selected = findAccountWithBalance(fromValue, withBalances)!;
+          console.log(`Sender: ${selected.address} (${formatPublicAccountBalanceLabel(selected, tokenMeta)})`);
 
           const amountFormattedInput = await input({
             message: `Amount to transfer (${tokenMeta.symbol}, formatted, or "max"):`,
@@ -483,6 +484,7 @@ export function registerTransferCommand(program: Command): void {
                 `Pick source account for max ${tokenMeta.symbol} transfer`
               );
             }
+            usedAmountMax = true;
             amount = await resolveMaxForFrom(fromValue);
           } else {
             amount = parseUnits(
@@ -582,13 +584,13 @@ export function registerTransferCommand(program: Command): void {
       let senderAddress: string;
       let senderPrivateKey: string | undefined;
       try {
-        const resolved = resolveShieldSender({
+        const resolved = await resolveTransactionSender({
           fromValue,
           walletDir,
           mnemonic,
           password,
           dryRun,
-          allowDeriveFromMnemonic: !!opts.fromPriv,
+          senderPriv: opts.senderPriv, nonInteractive: opts.nonInteractive,
         });
         senderAddress = resolved.senderAddress;
         senderPrivateKey = resolved.senderPrivateKey;
@@ -623,12 +625,20 @@ export function registerTransferCommand(program: Command): void {
         ? [stealthPlan.transferTx, stealthPlan.announceTx]
         : [buildTransferTx(tokenMeta, recipientAddress, amount)];
 
+      const initialAmount = amount;
       await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
+      let sendAmount = initialAmount;
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();
-      const amountPreview = `${formatUnits(amount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
-
+      let maxPrepared: Awaited<ReturnType<typeof prepareEthMaxTransfer>> | undefined;
       try {
+        if (usedAmountMax && tokenMeta.isEth && !stealthPlan) {
+          maxPrepared = await prepareEthMaxTransfer(client, senderAddress, recipientAddress);
+          sendAmount = maxPrepared.value;
+          txs[0]!.value = sendAmount;
+        }
+        const amountPreview = `${formatUnits(sendAmount, tokenMeta.decimals)} ${tokenMeta.symbol}`;
+
         const batchAsUserOp = !!stealthPlan;
         const payloads: TxPayloadJson[] = txs.map((tx) => ({
           data: tx.data,
@@ -679,7 +689,7 @@ export function registerTransferCommand(program: Command): void {
               stealthMetaAddressURI: stealthMetaURI ?? undefined,
               recipient: recipientAddress,
               ephemeralPublicKey: stealthPlan?.ephemeralPublicKey,
-              amount: amount.toString(),
+              amount: sendAmount.toString(),
               token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
               fees,
               mode: "eip7702-userop",
@@ -722,7 +732,7 @@ export function registerTransferCommand(program: Command): void {
         }
 
         if (!batchAsUserOp) {
-          const fees = await estimateEoaTxFeePreview(
+          const fees = maxPrepared?.preview ?? await estimateEoaTxFeePreview(
             client,
             {
               to: txs[0]!.to,
@@ -739,7 +749,7 @@ export function registerTransferCommand(program: Command): void {
                 stealth: false,
                 stealthMetaAddressURI: stealthMetaURI ?? undefined,
                 recipient: recipientAddress,
-                amount: amount.toString(),
+                amount: sendAmount.toString(),
                 token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
                 fees,
                 transactions: payloads,
@@ -750,7 +760,7 @@ export function registerTransferCommand(program: Command): void {
                 tokenMeta,
                 senderAddress,
                 recipientAddress,
-                amount,
+                sendAmount,
                 tokenMeta.decimals
               );
               printFeePreview(fees);
@@ -761,7 +771,7 @@ export function registerTransferCommand(program: Command): void {
 
           if (!senderPrivateKey) {
             cliError(
-              "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
+              "Cannot sign: no private key for this --from (use a saved account or --sender-priv <key>)."
             );
             return;
           }
@@ -781,6 +791,11 @@ export function registerTransferCommand(program: Command): void {
                 to: txs[0]!.to,
                 data: txs[0]!.data,
                 value: txs[0]!.value,
+                ...(maxPrepared ? {
+                  gas: maxPrepared.gas,
+                  maxFeePerGas: maxPrepared.maxFeePerGas,
+                  maxPriorityFeePerGas: maxPrepared.maxPriorityFeePerGas,
+                } : {}),
               }),
             (h) => `Mined: ${h}`
           );
@@ -792,7 +807,7 @@ export function registerTransferCommand(program: Command): void {
               explorers: [etherscanTxUrl(chainId, hash)],
               from: senderAddress,
               to: recipientAddress,
-              amount: amount.toString(),
+              amount: sendAmount.toString(),
               token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
             });
           } else {
@@ -805,7 +820,7 @@ export function registerTransferCommand(program: Command): void {
 
         if (!senderPrivateKey) {
           cliError(
-            "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
+            "Cannot sign: no private key for this --from (use a saved account or --sender-priv <key>)."
           );
           return;
         }
@@ -867,7 +882,7 @@ export function registerTransferCommand(program: Command): void {
             to: recipientAddress,
             stealthMetaAddressURI: stealthMetaURI ?? undefined,
             ephemeralPublicKey: stealthPlan.ephemeralPublicKey,
-            amount: amount.toString(),
+            amount: sendAmount.toString(),
             token: tokenMeta.isEth ? "eth" : tokenMeta.tokenAddress,
             calls: payloads,
             fees: fees!,

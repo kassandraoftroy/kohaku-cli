@@ -59,6 +59,27 @@ export type TornadoPrivateTransferCover = {
   estimatedFee: bigint;
 };
 
+/** Best recipient amount from one scheme, allowing expensive tiny notes to stay. */
+export async function tornadoPrivateTransferMaxAmount(opts: {
+  noteAmounts: readonly bigint[]; isErc20: boolean; maxFeePerGas: bigint;
+  quoteFeeWei?: (fee: bigint) => Promise<bigint>;
+  tailGas?: bigint;
+}): Promise<bigint> {
+  const notes = [...opts.noteAmounts].sort((a, b) => a > b ? -1 : a < b ? 1 : 0);
+  let total = 0n;
+  let best = 0n;
+  for (let i = 0; i < notes.length; i++) {
+    total += notes[i]!;
+    const feeWei = padTornadoTailForwardFee(estimateTornadoPaymasterFee(opts.maxFeePerGas, {
+      isERC20: opts.isErc20,
+      callGasLimit: tornadoWithdrawalCallGasLimit(i, opts.tailGas, opts.isErc20),
+    }));
+    const fee = opts.quoteFeeWei ? await opts.quoteFeeWei(feeWei) : feeWei;
+    if (total - fee > best) best = total - fee;
+  }
+  return best;
+}
+
 /**
  * Smallest Tornado note sum that covers `transferAmount` plus the padded
  * paymaster fee. Fee depends on note count and tail gas, so this retries a
