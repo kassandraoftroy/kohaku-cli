@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-04
+
+### Fixed
+
+- Tornado shield packings allocate distinct signature nonces across the complete plan, including different pools and transaction batches. Pool-local SDK preparations previously reused the same starting nonce.
+- Tornado and Privacy Pools shields refresh complete protocol history and check each proposed note index against deposits and spent nullifiers across pools, including other assets, excluded Tornado denominations, and notes submitted outside the CLI. Spent notes still consume their index. Tornado nonces and Privacy Pools deposit indexes have separate sequences per protocol and chain; existing note derivation and recovery remain unchanged.
+- Shield preparation stops when freshness cannot be verified through the chain head sampled before the refresh, including when one Tornado pool's sync failed. Existing Tornado notes sharing a nonce across pools remain discoverable and independently spendable; the uniqueness rule applies only to new shield plans.
+
 ## [0.1.4] - 2026-11-04
 
 ### Added
