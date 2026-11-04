@@ -88,6 +88,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
   rpcUrl: string;
   tokenMeta: ResolvedTokenMeta;
   amountWei: bigint;
+  amountMax?: boolean;
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
   recipientDerivationPath?: string;
@@ -111,6 +112,22 @@ export async function preparePrivacyPoolsUnshield(opts: {
     asNotes(await opts.plugin.notes(undefined, false)),
     asset
   );
+  // Max without custom tails spends the approved gross balance directly.
+  // Let the SDK price and deduct its own final fee, avoiding independent quotes
+  // that can make a previously calculated net exceed the available notes.
+  if (opts.amountMax && opts.tailCalls.length === 0) {
+    const grossAmount = notes.reduce((sum, note) => sum + note.balance, 0n);
+    if (grossAmount <= 0n) throw new Error("No approved Privacy Pools balance to unshield.");
+    const delegation = privacyPoolsDelegationConfig({ delegationPath: opts.recipientDerivationPath,
+      tailCallsCount: 0, withdrawalCount: notes.length });
+    const operation = await prepare(privateUnshieldAsset("privacy-pools", opts.chainId, opts.tokenMeta, grossAmount),
+      opts.recipient, { mode: "paymaster", batch: true, refundRecipient: opts.recipient,
+        ...(delegation ? { delegation } : {}) });
+    const fee = privacyPoolsPreparedFee(operation);
+    if (fee == null || fee >= grossAmount) throw new Error("Privacy Pools balance cannot cover the prepared paymaster fee.");
+    const net = grossAmount - fee;
+    return { ...(operation as object), exact: { grossAmount, requestedNet: net, expectedNet: net, fee } };
+  }
   const hasTails = opts.tailCalls.length > 0;
   const tailGas = hasTails
     ? privacyPoolsTailCallsGasEstimate(opts.tailCalls.length)
@@ -228,6 +245,7 @@ export async function prepareProtocolUnshield(opts: {
   rpcUrl: string;
   tokenMeta: ResolvedTokenMeta;
   amountWei: bigint;
+  amountMax?: boolean;
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
   recipientDerivationPath?: string;

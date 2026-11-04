@@ -11,6 +11,7 @@ import {
   quotePrivacyPoolsPaymasterFeeInToken,
   sumPrivacyPoolsNoteBalances,
   countPrivacyPoolsNotesForAmount,
+  privacyPoolsTailCallsGasEstimate,
   type PpNoteBalance,
 } from "../utils/privacy-pools-paymaster.js";
 import { railgunPimlicoBundlerUrl } from "../utils/rpc.js";
@@ -56,6 +57,7 @@ async function privacyPoolsMaxReceivable(opts: {
   tokenMeta: ResolvedTokenMeta;
   chainId: bigint;
   rpcUrl?: string;
+  tailCallsCount?: number;
 }): Promise<MaxUnshieldAmountHint> {
   const target = privacyPoolsAssetAddress(
     opts.tokenMeta.isEth,
@@ -99,7 +101,8 @@ async function privacyPoolsMaxReceivable(opts: {
     privacyPoolsRequiredGas({
       isErc20: !opts.tokenMeta.isEth,
       extraWithdrawals: Math.max(0, noteCount - 1),
-      hasUserTailCalls: false,
+      hasUserTailCalls: (opts.tailCallsCount ?? 0) > 0,
+      tailCallsGasEstimate: privacyPoolsTailCallsGasEstimate(opts.tailCallsCount ?? 0),
     }),
     maxFeePerGas
   );
@@ -117,6 +120,8 @@ async function privacyPoolsMaxReceivable(opts: {
       return { cap: 0n, railgunGasEstimateFailed: true };
     }
   }
+  // Custom forwarding needs headroom for SDK refinement and subsequent quotes.
+  if (opts.tailCallsCount) fee = (fee * 12n + 9n) / 10n;
   return {
     cap: fee >= total ? 0n : total - fee,
     estimatedGasFeeWei: opts.tokenMeta.isEth ? feeWei : undefined,
@@ -128,10 +133,11 @@ export async function maxUnshieldAmountHint(
   plugin: unknown,
   tokenMeta: ResolvedTokenMeta,
   chainId: bigint,
-  rpcUrl?: string
+  rpcUrl?: string,
+  tailCallsCount = 0,
 ): Promise<MaxUnshieldAmountHint> {
   if (protocol === "privacy-pools") {
-    return privacyPoolsMaxReceivable({ plugin, tokenMeta, chainId, rpcUrl });
+    return privacyPoolsMaxReceivable({ plugin, tokenMeta, chainId, rpcUrl, tailCallsCount });
   }
 
   if (protocol !== "railgun" && protocol !== "tornado") {

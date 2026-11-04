@@ -226,6 +226,9 @@ export class RailgunAdapter {
     return { accountPrivateKey: this.accountPrivateKey, bundlerUrl: this.bundlerUrl };
   }
 
+  /** History may be current even when the external POI service is unavailable. */
+  poiError?: string;
+
   async sync(): Promise<void> {
     if (this.syncPromise) return this.syncPromise;
     this.syncPromise = this.syncNow();
@@ -246,19 +249,23 @@ export class RailgunAdapter {
       console.error(`Railgun history source is currently at block ${this.wallet.syncedBlock}; chain head is ${head}. The resync will continue on the next run.`);
     }
     finish = beginSyncActivity("Railgun · refreshing PPOI lists / TXIDs", { priority: 1 });
+    this.poiError = undefined;
     try { await this.wallet.refreshPoi(); }
+    catch (error) { this.poiError = error instanceof Error ? error.message : String(error); }
     finally { finish(); }
-    if (this.wallet.pendingPoi().length > 0) {
+    if (!this.poiError && this.wallet.pendingPoi().length > 0) {
       const finish = beginSyncActivity("Railgun PPOI recovery");
       try {
         const result = await this.wallet.processPendingPoi();
         reportPoi(result);
         if (result.submitted.length > 0) await this.wallet.refreshPoi();
-      } finally { finish(); }
+      } catch (error) { this.poiError = error instanceof Error ? error.message : String(error); }
+      finally { finish(); }
     }
-    if (this.migratingOldFile && reachedHead) {
+    if (this.migratingOldFile && reachedHead && !this.poiError) {
       await this.storage.set(MIGRATION_COMPLETE_KEY, "true");
     }
+    if (this.poiError) console.error(`Railgun [ERR: POI data missing]: ${this.poiError}`);
     this.lastSyncedAt = Date.now();
   }
 
@@ -269,12 +276,16 @@ export class RailgunAdapter {
 
   async balance(_assets?: unknown[]): Promise<AssetAmount[]> {
     await this.ensureSynced();
-    return (await this.wallet.balances()).map(railgunBalanceForCli);
+    return (await this.wallet.balances()).map((entry) => railgunBalanceForCli(
+      this.poiError ? { ...entry, poiStatus: "Unavailable" } : entry,
+    ));
   }
 
   async notes(_assets?: unknown[], _includeSpent?: boolean): Promise<unknown[]> {
     await this.ensureSynced();
-    return (await this.wallet.notes()).map(railgunNoteForCli);
+    return (await this.wallet.notes()).map((entry) => railgunNoteForCli(
+      this.poiError ? { ...entry, poiStatus: "Unavailable" } : entry,
+    ));
   }
 
   async prepareShield(asset: AssetAmount): Promise<unknown> {
@@ -290,6 +301,7 @@ export class RailgunAdapter {
     recipient: Hex,
     options?: { tailCalls?: () => Promise<Array<{ to: Hex; value: bigint; data: Hex }>> },
   ): Promise<PreparedUserOperation> {
+    if (this.poiError) throw new Error(`Railgun POI data missing: ${this.poiError}`);
     const calls = await options?.tailCalls?.() ?? [];
     return this.wallet.prepareUnshield(railgunUnshieldInput(
       asset, recipient, calls, this.wallet.chain.wrappedBaseToken, this.spendConfig(),
@@ -297,6 +309,7 @@ export class RailgunAdapter {
   }
 
   async prepareTransfer(asset: AssetAmount, recipient: RailgunAddress): Promise<PreparedUserOperation> {
+    if (this.poiError) throw new Error(`Railgun POI data missing: ${this.poiError}`);
     return this.wallet.prepareTransfer(railgunTransferInput(
       asset, recipient, this.wallet.chain.wrappedBaseToken, this.spendConfig(),
     ));

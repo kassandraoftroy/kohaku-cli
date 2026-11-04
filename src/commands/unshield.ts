@@ -1,3 +1,4 @@
+import { privateTransferBalanceSummary } from "../lib/private-transfer-balance.js";
 import { preflightTornadoUnshield } from "../utils/tornado-unshield-preflight.js";
 import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
 import { tornadoPreparedFee, tornadoPreparedSender, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
@@ -17,6 +18,7 @@ import {
   exactTransferTailCall,
   planNonTornadoPrivateTransfer,
   resolveTornadoPrivateTransferCover,
+  tornadoPrivateTransferMaxAmount,
 } from "../lib/private-transfer.js";
 import {
   prepareProtocolUnshield,
@@ -250,26 +252,49 @@ async function runRailgunInternalTransfer(args: {
       }, () => syncPluginWithProgress(plugin, "railgun"));
       if (spin.active) spin.stop("Private state synced.");
 
+      const balances = privateTransferBalanceSummary(await plugin.balance(), tokenMeta, chainId, "railgun");
+      let gasReserve: bigint | undefined;
+      try { gasReserve = estimateRailgunBundlerFeeWei(await fetchPimlicoMaxFeePerGas(railgunPimlicoBundlerUrl(chainId))); }
+      catch { /* Explicit amounts can still use the SDK's live fee estimation. */ }
+      const max = gasReserve === undefined ? undefined : balances.feeToken < gasReserve ? 0n :
+        isRailgunFeeToken(tokenMeta, chainId) ? (balances.spendable > gasReserve ? balances.spendable - gasReserve : 0n) : balances.spendable;
+      const symbol = tokenMeta.isEth ? "WETH" : tokenMeta.symbol;
+      if (!quiet) {
+        console.log(`Private source: Railgun ${from}`);
+        console.log(`  ${symbol} balance: ${formatUnits(balances.total, tokenMeta.decimals)}; POI-verified spendable: ${formatUnits(balances.spendable, tokenMeta.decimals)}`);
+        console.log(`  WETH available for fees: ${formatUnits(balances.feeToken, 18)}${max !== undefined ? `; max recipient amount: ${formatUnits(max, tokenMeta.decimals)} ${symbol}` : "; fee estimate unavailable"}`);
+        if (plugin.poiError) console.log("  [ERR: POI data missing]");
+      }
+
       let amountWei: bigint;
-      if (opts.amountWei !== undefined) amountWei = BigInt(opts.amountWei);
+      if (opts.amountMax) {
+        if (max === undefined) throw new Error("Cannot calculate max while bundler fee estimates are unavailable.");
+        amountWei = max;
+      }
+      else if (opts.amountWei !== undefined) amountWei = BigInt(opts.amountWei);
       else if (opts.amountFormatted !== undefined) amountWei = parseUnits(opts.amountFormatted, tokenMeta.decimals);
       else {
         const raw = await input({
-          message: `Exact private amount to send (${tokenMeta.isEth ? "WETH" : tokenMeta.symbol}):`,
+          message: `Private amount to send (${symbol}, spendable ${formatUnits(balances.spendable, tokenMeta.decimals)}, or "max"):`,
           validate: (value) => {
             try {
-              return parseUnits(value.trim(), tokenMeta.decimals) > 0n || "Amount must be greater than zero.";
+              if (value.trim().toLowerCase() === "max") return max !== undefined && max > 0n || "No max amount available after fees.";
+              const parsed = parseUnits(value.trim(), tokenMeta.decimals);
+              if (parsed > balances.spendable) return "Amount exceeds the POI-verified spendable balance.";
+              return parsed > 0n || "Amount must be greater than zero.";
             } catch (error) {
               return error instanceof Error ? error.message : String(error);
             }
           },
         });
-        amountWei = parseUnits(raw.trim(), tokenMeta.decimals);
+        amountWei = raw.trim().toLowerCase() === "max" ? max! : parseUnits(raw.trim(), tokenMeta.decimals);
       }
       if (amountWei <= 0n) {
         cliError("Amount must be greater than zero.");
         return;
       }
+      if (plugin.poiError) throw new Error(`Railgun POI data missing: ${plugin.poiError}`);
+      if (amountWei > balances.spendable) throw new Error("Amount exceeds the POI-verified spendable balance.");
       const asset = privateUnshieldAsset("railgun", chainId, tokenMeta, amountWei);
       const privateOp = await runQuietSpinner(
         quiet, spin,
@@ -277,7 +302,6 @@ async function runRailgunInternalTransfer(args: {
         () => plugin.prepareTransfer(asset, recipient),
         () => "Railgun internal transfer prepared.",
       );
-      const symbol = tokenMeta.isEth ? "WETH" : tokenMeta.symbol;
       const amountLabel = `${formatUnits(amountWei, tokenMeta.decimals)} ${symbol}`;
       const fields = {
         protocol: "railgun" as const,
@@ -383,21 +407,15 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         cliError("private-transfer builds its own transfer and does not accept --tail-calls.");
         return;
       }
-      if (privateTransfer && opts.amountMax) {
-        cliError("private-transfer does not support --amount-max.");
-        return;
-      }
 
       const amountFlags = [
         opts.amountWei,
         opts.amountFormatted,
-        privateTransfer ? undefined : opts.amountMax,
+        opts.amountMax,
       ].filter(Boolean).length;
       if (amountFlags > 1) {
         cliError(
-          privateTransfer
-            ? "Provide only one of --amount-wei or --amount-formatted."
-            : "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
+          "Provide only one of --amount-wei, --amount-formatted, or --amount-max."
         );
         return;
       }
@@ -407,9 +425,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           cliError("Missing --to in non-interactive mode.");
           return;
         }
-        if (!opts.amountWei && !opts.amountFormatted && opts.nonInteractive) {
+        if (!opts.amountWei && !opts.amountFormatted && !opts.amountMax && opts.nonInteractive) {
           cliError(
-            "Missing amount in non-interactive mode. Provide --amount-wei or --amount-formatted."
+            "Missing amount in non-interactive mode. Provide --amount-wei, --amount-formatted, or --amount-max."
           );
           return;
         }
@@ -805,7 +823,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         }
 
         if (!quiet) spin.start("Syncing private state...");
-        const {
+        let {
           cap: maxAmountHint,
           estimatedGasFeeWei,
           railgunGasEstimateFailed,
@@ -868,14 +886,16 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               plugins.legacy,
               tokenMeta,
               chainId,
-              rpcUrl
+              rpcUrl,
+              privateTransfer ? 1 : tailCalls.length,
             );
             const signatureHint = await maxUnshieldAmountHint(
               protocol,
               plugins.signature,
               tokenMeta,
               chainId,
-              rpcUrl
+              rpcUrl,
+              privateTransfer ? 1 : tailCalls.length,
             );
             const cap = largerSchemeCap(legacyHint.cap, signatureHint.cap);
             const winner = signatureHint.cap > legacyHint.cap ? signatureHint : legacyHint;
@@ -895,6 +915,15 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           }
         );
         if (spin.active) spin.stop("Private state synced.");
+        if (privateTransfer && protocol === "tornado") {
+          const price = await resolveTornadoPrepareMaxFeePerGas(chainId);
+          const quoteFeeWei = tokenMeta.isEth ? undefined : (feeWei: bigint) => quoteTornadoPaymasterFeeInToken({
+            rpcUrl, chainId, feeToken: tokenMeta.tokenAddress as `0x${string}`, feeWei,
+          });
+          legacyCap = await tornadoPrivateTransferMaxAmount({ noteAmounts: legacyTornadoNotes, isErc20: !tokenMeta.isEth, maxFeePerGas: price, quoteFeeWei });
+          signatureCap = await tornadoPrivateTransferMaxAmount({ noteAmounts: signatureTornadoNotes, isErc20: !tokenMeta.isEth, maxFeePerGas: price, quoteFeeWei });
+          maxAmountHint = largerSchemeCap(legacyCap, signatureCap);
+        }
         const isRailgunEth = protocol === "railgun" && tokenMeta.isEth;
         const amountCap = maxAmountHint;
         const maxFormatted = formatUnits(amountCap, tokenMeta.decimals);
@@ -902,6 +931,23 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         const maxCapLabel = isRailgunEth
           ? `WETH ${maxPromptLabel}`
           : maxPromptLabel;
+
+        if (privateTransfer && !quiet) {
+          console.log(`Private source: ${protocol}`);
+          const schemes = protocol === "railgun" ? ["signature" as const] : ["legacy" as const, "signature" as const];
+          for (const scheme of schemes) {
+            const summary = privateTransferBalanceSummary(await plugins[scheme].balance(undefined), tokenMeta, chainId, protocol);
+            console.log(`  ${protocol}${protocol === "railgun" ? "" : ` ${scheme}`} balance: ${formatUnits(summary.total, tokenMeta.decimals)} ${isRailgunEth ? "WETH" : tokenMeta.symbol}; spendable: ${formatUnits(summary.spendable, tokenMeta.decimals)}`);
+            if (protocol === "railgun") {
+              console.log(`  WETH available for fees: ${formatUnits(summary.feeToken, 18)}`);
+              if ((plugins.signature as RailgunAdapter).poiError) console.log("  [ERR: POI data missing]");
+            }
+          }
+          console.log(`  Max recipient amount: ${maxFormatted} ${tokenMeta.symbol}${railgunGasEstimateFailed ? " (fee estimate unavailable)" : " (after estimated fees)"}`);
+          if (protocol !== "railgun") {
+            console.log(`  Max by scheme: legacy ${formatUnits(legacyCap, tokenMeta.decimals)}, signature ${formatUnits(signatureCap, tokenMeta.decimals)} ${tokenMeta.symbol} (spent separately)`);
+          }
+        }
 
         const tornadoSingleNoteOnly = !recipientDerivationPath;
         const tornadoAmountAllowed = (value: bigint) => tornadoSingleNoteOnly
@@ -956,12 +1002,13 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         if (amount === null) {
           if (privateTransfer) {
             const amountInput = await input({
-              message: `Amount the recipient will receive (${tokenMeta.symbol}, spendable ${maxFormatted}):`,
+              message: `Amount the recipient will receive (${tokenMeta.symbol}, available after fees ${maxFormatted}, or "max"):`,
               validate: (value) => {
                 const trimmed = value.trim();
                 if (!trimmed) return "Amount is required.";
                 if (trimmed.toLowerCase() === "max") {
-                  return "private-transfer sends an exact amount.";
+                  if (railgunGasEstimateFailed) return "Cannot calculate max while fee estimates are unavailable.";
+                  return maxAmountHint > 0n || "No spendable balance after fees.";
                 }
                 try {
                   const parsed = parseUnits(trimmed, tokenMeta.decimals);
@@ -976,7 +1023,11 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               },
             });
             try {
-              amount = parseUnits(amountInput.trim(), tokenMeta.decimals);
+              if (amountInput.trim().toLowerCase() === "max") {
+                opts.amountMax = true;
+                if (railgunGasEstimateFailed) throw new Error("Cannot calculate max while fee estimates are unavailable.");
+                amount = maxAmountHint;
+              } else amount = parseUnits(amountInput.trim(), tokenMeta.decimals);
             } catch (e) {
               cliErrorFromCaught(e);
               return;
@@ -996,6 +1047,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                 (protocol !== "railgun" || isRailgunFeeToken(tokenMeta, chainId))) {
               cliError("Could not fetch bundler gas price to compute max. Enter an explicit amount or retry."); return;
             }
+            if (amountInput.trim().toLowerCase() === "max") opts.amountMax = true;
             const parsed = parseUnshieldAmount(amountInput, tokenMeta.decimals,
               protocol === "tornado" && amountInput.trim().toLowerCase() !== "max" ? 0n : maxAmountHint);
             if (protocol === "tornado" && !tornadoAmountAllowed(parsed)) {
@@ -1091,10 +1143,12 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         if (protocol === "privacy-pools" || (protocol === "tornado" && !privateTransfer)) {
           try {
             const legacyCanCover =
+              opts.amountMax && protocol === "privacy-pools" ? legacyCap > 0n && legacyCap >= signatureCap :
               protocol === "tornado"
                 ? (tornadoSingleNoteOnly ? legacyTornadoNotes.includes(amountWei) : tornadoSchemeCanCover(legacyTornadoNotes, amountWei))
                 : await privacyPoolsPluginCovers(plugins.legacy);
             const signatureCanCover =
+              opts.amountMax && protocol === "privacy-pools" ? signatureCap > 0n && signatureCap >= legacyCap :
               protocol === "tornado"
                 ? (tornadoSingleNoteOnly ? signatureTornadoNotes.includes(amountWei) : tornadoSchemeCanCover(signatureTornadoNotes, amountWei))
                 : await privacyPoolsPluginCovers(plugins.signature);
@@ -1276,15 +1330,34 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                       leftoverRecipient: recipient,
                       forwardLeftover: false,
                     });
-                  const coverScheme = (noteAmounts: readonly bigint[]) =>
-                    resolveTornadoPrivateTransferCover({
-                      noteAmounts,
-                      transferAmount: transferAmountWei!,
-                      isErc20: tornadoIsErc20,
-                      maxFeePerGas: tornadoMaxFeePerGas!,
-                      quoteFeeWei: quoteTornadoFee,
-                      estimateTailGas,
-                    });
+                  const coverScheme = async (noteAmounts: readonly bigint[]) => {
+                    let tailGas: bigint | undefined;
+                    for (let attempt = 0; attempt < 4; attempt++) {
+                      const target = opts.amountMax ? await tornadoPrivateTransferMaxAmount({
+                        noteAmounts, isErc20: tornadoIsErc20, maxFeePerGas: tornadoMaxFeePerGas!,
+                        quoteFeeWei: quoteTornadoFee, tailGas,
+                      }) : transferAmountWei!;
+                      if (target <= 0n) throw new TornadoCoverError(1n, 0n);
+                      tailCalls = [exactTransferTailCall({ isEth: tokenMeta.isEth,
+                        tokenAddress: tokenMeta.tokenAddress as `0x${string}` }, payee!, target)];
+                      const before = tailGas;
+                      try {
+                        const cover = await resolveTornadoPrivateTransferCover({
+                          noteAmounts, transferAmount: target, isErc20: tornadoIsErc20,
+                          maxFeePerGas: tornadoMaxFeePerGas!, quoteFeeWei: quoteTornadoFee,
+                          estimateTailGas: async (args) => { tailGas = await estimateTailGas(args); return tailGas; },
+                        });
+                        return { ...cover, transferAmount: target };
+                      } catch (error) {
+                        if (!opts.amountMax || !(error instanceof TornadoCoverError) || before === tailGas || attempt === 3) throw error;
+                      }
+                    }
+                    throw new Error("Tornado max fee did not stabilize.");
+                  };
+                  if (opts.amountMax) {
+                    const scheme = signatureCap > legacyCap ? "signature" as const : "legacy" as const;
+                    return { scheme, cover: await coverScheme(scheme === "legacy" ? legacyTornadoNotes : signatureTornadoNotes) };
+                  }
                   try {
                     return {
                       scheme: "legacy" as const,
@@ -1317,6 +1390,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               plugin = plugins[planned.scheme];
               announceScheme(planned.scheme);
               const cover = planned.cover;
+              transferAmountWei = cover.transferAmount;
+              tailCalls = [exactTransferTailCall({ isEth: tokenMeta.isEth,
+                tokenAddress: tokenMeta.tokenAddress as `0x${string}` }, payee!, transferAmountWei)];
               amountWei = cover.unshieldAmountWei;
               tornadoWithdrawalCount = cover.withdrawalCount;
               tornadoTailCallsGasEstimate = cover.tailGas;
@@ -1471,6 +1547,11 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                   );
                 }
                 amountWei = refined.amount;
+                if (privateTransfer) {
+                  transferAmountWei = amountWei;
+                  tailCalls = [exactTransferTailCall({ isEth: tokenMeta.isEth,
+                    tokenAddress: tokenMeta.tokenAddress as `0x${string}` }, payee!, amountWei)];
+                }
                 asset = privateUnshieldAsset(
                   protocol,
                   chainId,
@@ -1498,6 +1579,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               rpcUrl,
               tokenMeta,
               amountWei,
+              amountMax: !!opts.amountMax,
               recipient,
               tailCalls,
               recipientDerivationPath,
@@ -1507,6 +1589,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               tornadoErc20Tail,
               tornadoForwardLeftover: forwardLeftover,
             });
+            if (protocol === "privacy-pools" && opts.amountMax && !privateTransfer && tailCalls.length === 0) {
+              const exact = (prepared as { exact: { expectedNet: bigint } }).exact;
+              amountWei = exact.expectedNet;
+            }
             if (protocol === "tornado") {
               tornadoGasEstimation = await preflightTornadoUnshield(prepared, undefined, {
                 allowFallback: tailCalls.length === 0,
