@@ -4,7 +4,7 @@ import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import { formatUnits, erc20Abi } from "viem";
 import type { Host } from "@kohaku-eth/plugins";
-import { createProtocolPlugin, ETH_AS_ERC20, prepareProtocolShield } from "../utils/plugins.js";
+import { createProtocolPlugin, ETH_AS_ERC20, freshTornadoShieldCalls } from "../utils/plugins.js";
 import { assertTornadoShieldCalls, toShieldTxs } from "./shield-flow.js";
 import { isolatedShieldHost, shieldRunJournal, splitTornadoShieldCalls, submitTornadoShieldBatches, type ShieldBatchRun } from "./tornado-shield-batches.js";
 import { estimateEip7702BatchUserOpFee, sendEip7702BatchUserOperation, type Eip7702TorOpts } from "../utils/eip7702-batch-userop.js";
@@ -49,12 +49,15 @@ export async function runTornadoShield(opts: {
       // Prepare each pool exactly once. Restricting just the whole plan's pool
       // catalog is insufficient for non-greedy combinations such as 1 + 4x0.3.
       const selection = await createProtocolPlugin("tornado", isolatedShieldHost(opts.host), opts.chainId, "signature", false, [pool.poolAddress]);
-      const operation = await prepareProtocolShield(selection, "tornado", {
+      const operation = await selection.prepareShield({
         asset: { __type: "erc20", contract: (opts.token.isEth ? ETH_AS_ERC20 : opts.token.tokenAddress) as `0x${string}` },
         amount: pool.denomination * BigInt(count),
       });
       raw.push(...toShieldTxs(operation));
     }
+    // Pool-local SDK preparations all start from the same discovered nonce.
+    // Allocate the complete packing together against the full, refreshed history.
+    raw = await freshTornadoShieldCalls(full, raw);
     progress.stop("Tornado packing prepared.");
   } finally { if (progress.active) progress.stop("Tornado preparation stopped."); }
   assertTornadoShieldCalls(opts.chainId, raw, { ...opts.token, amount: opts.plan.amount });
