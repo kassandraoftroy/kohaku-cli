@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-06
+
+### Fixed
+
+- Tornado unshields to custom addresses use the next unused public HD account as the EIP-7702 executor instead of the SDK's note-derived account. The executor is saved before preparation, so gas refunds and funds left after execution failures appear in normal `balances`. Dry runs, cancelled preparations, and failed attempts also reserve that account index.
+
+### Changed
+
+- Custom-address Tornado unshields can combine multiple notes in one paymaster UserOp using the reserved wallet executor. User tail calls still require a stored wallet recipient.
+- Tornado confirmations and JSON output identify the executor and refund recipient; custom-address withdrawals also show the executor's public account index.
+
 ## [0.1.6] - 2026-11-06
 
 ### Fixed
