@@ -98,16 +98,36 @@ function diskBytes(dir: string): number {
 
 /** Called only for network responses. Fully populated PPOI pages are append-only;
  * indexer ranges must be at least 128 blocks behind a live observed indexer head. */
-export async function cacheRailgunLiveResponse(url: string, body: Uint8Array, response: Response): Promise<void> {
-  if (response.status !== 200) return;
+export async function cacheRailgunLiveResponse(url: string, body: Uint8Array, response: Response): Promise<Response> {
+  if (response.status !== 200 || !response.body || response.bodyUsed || response.body.locked) return response;
   const value = parse(body);
   const isHead = url === INDEXER && typeof value?.query === "string" && hash(value.query) === HEAD_QUERY;
   const req = request(url, body);
-  if (!isHead && !req) return;
-  if (Number(response.headers.get("content-length")) > MAX_ENTRY) return;
+  if (!isHead && !req) return response;
+  if (Number(response.headers.get("content-length")) > MAX_ENTRY) return response;
+
+  // Reading a clone of a streamed response can disturb the original body in Node.
+  // Give the caller its own stream, including when the cache discards a large page.
+  const [walletBody, cacheBody] = response.body.tee();
+  const walletResponse = new Response(walletBody, {
+    status: response.status, statusText: response.statusText, headers: response.headers,
+  });
+  Object.defineProperties(walletResponse, {
+    url: { value: response.url },
+    redirected: { value: response.redirected },
+    type: { value: response.type },
+  });
+  await writeRailgunLiveResponse(req, isHead, cacheBody);
+  return walletResponse;
+}
+
+async function writeRailgunLiveResponse(
+  req: Request | null,
+  isHead: boolean,
+  body: ReadableStream<Uint8Array>,
+): Promise<void> {
   try {
-    const reader = response.clone().body?.getReader();
-    if (!reader) return;
+    const reader = body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
     while (true) {
