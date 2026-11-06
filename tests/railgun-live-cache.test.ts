@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { gzipSync } from "node:zlib";
 import { cacheRailgunLiveResponse, railgunLiveCacheResponse } from "../src/utils/railgun-live-cache.js";
 import { getPublicSyncCacheDataDir, setPublicSyncCacheDataDir } from "../src/utils/public-sync-cache.js";
 import { PPOI_MAINNET_ENDPOINT, PPOI_ZERO_LEAF } from "../src/utils/ppoi-sync-snapshot.js";
@@ -69,4 +72,31 @@ test("indexer caching requires a live head and keeps a confirmation buffer; head
     await cacheRailgunLiveResponse(endpoint, unknown, Response.json({ data }));
     assert.equal(await railgunLiveCacheResponse(endpoint, unknown), null);
   } finally { setPublicSyncCacheDataDir(previous); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("skipping an oversized compressed indexer page leaves its full body readable", async () => {
+  const endpoint = "https://rail-squid.squids.live/squid-railgun-ethereum-v2/v/v1/graphql";
+  const query = readFileSync(new URL("./fixtures/railgun-commitments.graphql", import.meta.url), "utf8");
+  const request = encode({ query, variables: {
+    blockNumber_gte: 10, blockNumber_lte: 20, id_gt: "", limit: 20000,
+  } });
+  const payload = encode({ data: { commitments: [{ id: "a", blockNumber: "11", hash: "a".repeat(9 * 1024 * 1024) }] } });
+  const compressed = gzipSync(payload);
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
+    response.end(compressed);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const address = server.address();
+    assert(address && typeof address !== "string");
+    const upstream = await fetch(`http://127.0.0.1:${address.port}/`);
+    const response = await cacheRailgunLiveResponse(endpoint, request, upstream);
+    assert.equal(response.url, upstream.url);
+    assert(Buffer.from(await response.arrayBuffer()).equals(payload));
+  } finally {
+    server.close();
+    server.closeAllConnections();
+  }
 });

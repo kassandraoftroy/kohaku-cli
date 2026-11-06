@@ -482,7 +482,7 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
     const response = await kohakuFetchInner(input, init, rpcMethod, cacheBody);
     if (cacheBody &&
         !response.headers.has("x-kohaku-public-cache")) {
-      await cacheRailgunLiveResponse(resolveRequestUrl(input), cacheBody, response);
+      return await cacheRailgunLiveResponse(resolveRequestUrl(input), cacheBody, response);
     }
     return response;
   } finally {
