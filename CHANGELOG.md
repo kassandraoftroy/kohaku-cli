@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-06
+
+### Fixed
+
+- Fix Railgun sync failures when an indexer response exceeds the live cache's 8 MiB limit by keeping the wallet's response stream readable after caching stops.
+
 ## [0.1.5] - 2026-11-04
 
 ### Fixed
