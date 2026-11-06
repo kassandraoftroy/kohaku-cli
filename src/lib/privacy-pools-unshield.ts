@@ -249,6 +249,8 @@ export async function prepareProtocolUnshield(opts: {
   recipient: `0x${string}`;
   tailCalls: readonly UnshieldTailCall[];
   recipientDerivationPath?: string;
+  /** Separate wallet-managed executor for a custom Tornado payout address. */
+  tornadoDelegationPath?: string;
   tornadoMaxFeePerGas?: bigint;
   tornadoWithdrawalCount?: number;
   tornadoTailCallsGasEstimate?: bigint;
@@ -288,7 +290,7 @@ export async function prepareProtocolUnshield(opts: {
         opts.recipient,
         opts.amountWei,
         opts.tornadoMaxFeePerGas!,
-        opts.recipientDerivationPath,
+        opts.tornadoDelegationPath ?? opts.recipientDerivationPath,
         opts.tornadoWithdrawalCount!,
         opts.tailCalls,
         opts.tornadoTailCallsGasEstimate,

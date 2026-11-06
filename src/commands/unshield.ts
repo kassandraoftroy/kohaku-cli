@@ -1,7 +1,7 @@
 import { privateTransferBalanceSummary } from "../lib/private-transfer-balance.js";
 import { preflightTornadoUnshield } from "../utils/tornado-unshield-preflight.js";
 import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
-import { tornadoPreparedFee, tornadoPreparedSender, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
+import { tornadoPreparedFee, tornadoPreparedSender, tornadoPreparedRefundRecipient, assertTornadoPreparedExecutor, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
 import { tornadoUnavailableAmountMessage, tornadoNearestAmounts, tornadoAlternativeLabel } from "../utils/tornado-operation-limits.js";
 import { setRailgunActivityParticipants, startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
@@ -133,6 +133,8 @@ import {
 import {
   assertTornadoTailCallsHaveHdDelegator,
   tornadoDelegationConfig,
+  reserveTornadoUnshieldExecutor,
+  type TornadoExecutorAccount,
   tornadoUnshieldConfirmExtraLines,
 } from "../utils/tornado-unshield-delegation.js";
 import { parseTailCalls } from "../utils/unshield-tail-calls.js";
@@ -534,6 +536,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       let recipient: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
       let recipientDerivationPath: string | undefined;
+      let tornadoExecutor: TornadoExecutorAccount | undefined;
       let payee: `0x${string}` | undefined;
       let forwardLeftover = true;
       let transferAmountWei: bigint | undefined;
@@ -768,6 +771,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         }
       }
 
+      let tornadoDelegationPath = recipientDerivationPath;
+
       if (!opts.nonInteractive) {
         console.log(
           chalk.yellow(
@@ -949,10 +954,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           }
         }
 
-        const tornadoSingleNoteOnly = !recipientDerivationPath;
-        const tornadoAmountAllowed = (value: bigint) => tornadoSingleNoteOnly
-          ? [...signatureTornadoNotes, ...legacyTornadoNotes].some((note) => note === value)
-          : tornadoSchemeCanCover(signatureTornadoNotes, value) || tornadoSchemeCanCover(legacyTornadoNotes, value);
+        // Custom Tornado recipients get a fresh wallet executor before prepare,
+        // so every recipient can safely consolidate multiple notes.
+        const tornadoAmountAllowed = (value: bigint) =>
+          tornadoSchemeCanCover(signatureTornadoNotes, value) || tornadoSchemeCanCover(legacyTornadoNotes, value);
         let amount: bigint | null = null;
         if (opts.amountMax) {
           if (
@@ -986,7 +991,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         if (amount !== null && amountCap > 0n && amount > amountCap) {
           cliError(
             protocol === "tornado" && !privateTransfer
-              ? tornadoUnavailableAmountMessage({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, amount, tokenMeta, tornadoSingleNoteOnly)
+              ? tornadoUnavailableAmountMessage({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, amount, tokenMeta)
               : protocol === "tornado" || protocol === "privacy-pools"
               ? unshieldSchemeFailure({
                   legacyCap,
@@ -1051,7 +1056,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             const parsed = parseUnshieldAmount(amountInput, tokenMeta.decimals,
               protocol === "tornado" && amountInput.trim().toLowerCase() !== "max" ? 0n : maxAmountHint);
             if (protocol === "tornado" && !tornadoAmountAllowed(parsed)) {
-              const near = tornadoNearestAmounts({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, parsed, tornadoSingleNoteOnly);
+              const near = tornadoNearestAmounts({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, parsed);
               const alternatives = [near.lower, near.upper].filter((value) => value != null);
               const choice = await select<bigint | "other" | "cancel">({
                 message: `Cannot withdraw ${formatUnits(parsed, tokenMeta.decimals)} ${tokenMeta.symbol} exactly. Choose an amount leaving the pools, before paymaster fees:`,
@@ -1125,7 +1130,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         if (protocol === "tornado" && !privateTransfer) {
           try {
             if (!tornadoAmountAllowed(amountWei)) {
-              throw new Error(tornadoUnavailableAmountMessage({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, amountWei, tokenMeta, tornadoSingleNoteOnly));
+              throw new Error(tornadoUnavailableAmountMessage({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, amountWei, tokenMeta));
             }
           } catch (e) {
             cliErrorFromCaught(e);
@@ -1145,12 +1150,12 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             const legacyCanCover =
               opts.amountMax && protocol === "privacy-pools" ? legacyCap > 0n && legacyCap >= signatureCap :
               protocol === "tornado"
-                ? (tornadoSingleNoteOnly ? legacyTornadoNotes.includes(amountWei) : tornadoSchemeCanCover(legacyTornadoNotes, amountWei))
+                ? tornadoSchemeCanCover(legacyTornadoNotes, amountWei)
                 : await privacyPoolsPluginCovers(plugins.legacy);
             const signatureCanCover =
               opts.amountMax && protocol === "privacy-pools" ? signatureCap > 0n && signatureCap >= legacyCap :
               protocol === "tornado"
-                ? (tornadoSingleNoteOnly ? signatureTornadoNotes.includes(amountWei) : tornadoSchemeCanCover(signatureTornadoNotes, amountWei))
+                ? tornadoSchemeCanCover(signatureTornadoNotes, amountWei)
                 : await privacyPoolsPluginCovers(plugins.signature);
             const scheme = chooseDerivationScheme({
               legacyCanCover,
@@ -1243,6 +1248,17 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           cliErrorFromCaught(e);
           return;
         }
+        if (protocol === "tornado" && !recipientDerivationPath) {
+          const selected = await reserveTornadoUnshieldExecutor(publicStorage,
+            (address) => isAddressUsed(address, rpcForHost));
+          tornadoExecutor = selected.executor;
+          tornadoDelegationPath = tornadoExecutor.delegationPath;
+          for (const used of selected.skipped) {
+            const message = `Public account [${used.index}] ${used.address} already has a nonce, balance, or code. Saved it and advanced to the next index.`;
+            if (quiet) console.error(message); else log.warn(message);
+          }
+          if (!quiet) log.info(`Tornado executor: public account [${tornadoExecutor.index}] ${tornadoExecutor.address}. Saved in this wallet before preparation.`);
+        }
         let tornadoWithdrawalCount: number | undefined;
         if (protocol === "tornado" && !privateTransfer) {
           tornadoWithdrawalCount = await countTornadoWithdrawals(
@@ -1252,7 +1268,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           );
           try {
             tornadoDelegationConfig({
-              delegationPath: recipientDerivationPath,
+              delegationPath: tornadoDelegationPath,
               tailCallsCount: tailCalls.length,
               withdrawalCount: tornadoWithdrawalCount,
             });
@@ -1406,7 +1422,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
                 excludeNewPools: opts.excludeNewPools,
               });
               tornadoDelegationConfig({
-                delegationPath: recipientDerivationPath,
+                delegationPath: tornadoDelegationPath,
                 tailCallsCount: tailCalls.length,
                 withdrawalCount: tornadoWithdrawalCount,
               });
@@ -1583,6 +1599,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               recipient,
               tailCalls,
               recipientDerivationPath,
+              tornadoDelegationPath,
               tornadoMaxFeePerGas,
               tornadoWithdrawalCount,
               tornadoTailCallsGasEstimate,
@@ -1594,6 +1611,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               amountWei = exact.expectedNet;
             }
             if (protocol === "tornado") {
+              if (tornadoExecutor) assertTornadoPreparedExecutor(prepared, tornadoExecutor.address);
               tornadoGasEstimation = await preflightTornadoUnshield(prepared, undefined, {
                 allowFallback: tailCalls.length === 0,
               });
@@ -1730,6 +1748,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           : undefined;
         const tornadoResultFields = tornadoGasEstimation ? {
           gasEstimation: tornadoGasEstimation, executor: tornadoPreparedSender(privateOp),
+          refundRecipient: tornadoPreparedRefundRecipient(privateOp),
+          ...(tornadoExecutor ? { executorAccountIndex: tornadoExecutor.index } : {}),
           ...(!privateTransfer && tailCalls.length === 0 ? {
             expectedRecipientAmountWei: (amountWei - tornadoPreparedFee(privateOp)).toString(),
             expectedRecipientAmountFormatted: formatUnits(amountWei - tornadoPreparedFee(privateOp), tokenMeta.decimals),
@@ -1835,7 +1855,9 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             protocol === "tornado"
               ? tornadoUnshieldConfirmExtraLines({
                   recipient,
-                  delegationPath: recipientDerivationPath,
+                  delegationPath: tornadoDelegationPath,
+                  executorAccountIndex: tornadoExecutor?.index,
+                  refundRecipient: tornadoPreparedRefundRecipient(privateOp),
                   hasTailCalls: tailCalls.length > 0,
                   withdrawalCount: tornadoWithdrawalCount ?? 1,
                   sender: tornadoPreparedSender(privateOp),

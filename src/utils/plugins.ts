@@ -410,10 +410,9 @@ export function tornadoUnshieldOptions(
   amountWei: bigint,
   maxFeePerGas: bigint,
   /**
-   * BIP-32 path for a wallet-controlled batch 7702 (`--next` / stored HD `--to`
-   * / stored stealth via `STEALTH_ADDRESS_MAGIC_VALUE_PATH`). Omit only for a
-   * single-note unshield with no `--tail-calls` (the SDK uses a recoverable
-   * note-derived sender and forwards the proceeds to `recipient`).
+   * BIP-32 path for a wallet-controlled 7702 executor: the recipient's stored
+   * HD/stealth path, or a separately reserved fresh HD account for custom payouts.
+   * Without a path, only single-note unshields with no user tails are allowed.
    */
   delegationPath: string | undefined,
   withdrawalCount: number,
