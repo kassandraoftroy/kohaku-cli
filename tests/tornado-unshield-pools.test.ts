@@ -165,7 +165,7 @@ test("rejects existing cDAI notes without paymaster support", () => {
   }], cdai.denomination), /no paymaster support configured/);
 });
 
-test("custom Tornado payouts use a separate wallet executor for native and ERC-20 notes", async () => {
+test("custom Tornado payouts use the SDK default sender for one note and a wallet executor for multiple notes", async () => {
   const recipient = "0x0000000000000000000000000000000000000009";
   const path = "m/44'/60'/0'/0/7";
   for (const chainId of [1n, 11155111n]) {
@@ -183,8 +183,9 @@ test("custom Tornado payouts use a separate wallet executor for native and ERC-2
             }) => {
               assert.equal(to, recipient);
               assert.equal(asset.amount, pool.denomination * BigInt(count));
-              assert.deepEqual(options.delegation, { mode: "deterministic", path });
-              // SDK builds any forwarding with the actual proof fee, not a CLI estimate.
+              assert.deepEqual(options.delegation, count === 1 ? undefined : { mode: "deterministic", path });
+              assert.equal(Object.hasOwn(options, "delegation"), count > 1);
+              // Omit tailCalls so single notes stay direct and batches use SDK forwarding.
               assert.equal(options.tailCalls, undefined);
               return "prepared";
             },
@@ -192,7 +193,7 @@ test("custom Tornado payouts use a separate wallet executor for native and ERC-2
           tokenMeta: { isEth: !isERC20, tokenAddress: pool.assetAddress ?? "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             symbol: pool.asset, decimals: pool.decimals },
           amountWei: pool.denomination * BigInt(count), recipient, tailCalls: [],
-          tornadoDelegationPath: path, tornadoMaxFeePerGas: 1n, tornadoWithdrawalCount: count,
+          tornadoDelegationPath: count === 1 ? undefined : path, tornadoMaxFeePerGas: 1n, tornadoWithdrawalCount: count,
         });
         assert.equal(result, "prepared");
       }

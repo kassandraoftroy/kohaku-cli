@@ -1,12 +1,11 @@
 /**
  * Tornado paymaster 7702 landing-account policy.
  *
- * The SDK uses an EIP-7702 sender for every unshield. Omitting delegation
- * selects a recoverable note-derived key. Wallet-controlled deterministic is used for
- * `--next` / stored public HD `--to` / stored stealth (`STEALTH_ADDRESS_MAGIC_VALUE_PATH`).
- * For a custom `--to`, the command reserves a fresh public HD executor and
- * passes its path separately from the payout address. User tails still require
- * a wallet-controlled recipient.
+ * Stored HD / --next / stored stealth recipients use their own key as sender.
+ * A single-note custom payout without tails uses the SDK's default note-derived sender;
+ * the SDK pays the withdrawal and refund directly to the recipient.
+ * Multi-note custom payouts reserve a recoverable public HD executor instead.
+ * User tails still require a wallet-controlled recipient.
  */
 
 import { getAddress } from "viem";
@@ -67,7 +66,8 @@ export function assertTornadoTailCallsHaveHdDelegator(
  * Delegation passed to the Tornado SDK.
  * - Stored HD / `--next` / stored stealth / reserved custom-target executor:
  *   `{ mode: "deterministic", path }`.
- * - Custom `--to`, single note, no tails: omit `delegation` (note-derived sender forwards to `--to`).
+ * - Custom `--to`, exactly one note, no tails: omit delegation for the SDK's
+ *   recoverable note-derived sender (direct payout, no account reservation).
  */
 export function tornadoDelegationConfig(opts: {
   delegationPath: string | undefined;
@@ -130,8 +130,8 @@ export function tornadoUnshieldConfirmExtraLines(opts: {
   }
   if (!hasPath) {
     return [
-      `  EIP-7702 executor: ${opts.sender ?? "note-derived sender"} (recoverable from this note's secrets)`,
-      "  The executor forwards the withdrawal minus its fee to the recipient; unused-gas refunds stay on the executor",
+      `  EIP-7702 executor: ${opts.sender ?? "note-derived sender"} (temporary)`,
+      "  The withdrawal and unused-gas refund go directly to the recipient",
     ];
   }
   return [];
