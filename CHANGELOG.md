@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-07
+
+### Changed
+
+- Single-note Tornado withdrawals to custom recipients use the SDK's default recoverable note-derived executor, shown as temporary without tracking or reserving a public account, and pay the recipient and gas refund directly. Wallet-owned recipients still act as their own executor; custom multi-note withdrawals retain a reserved recoverable executor.
+- Update the Tornado Cash SDK to `0.1.0-alpha.36` and Privacy Pools SDK to `0.1.0-alpha.38`.
+
+### Fixed
+
+- Reject prepared Tornado withdrawals using a temporary executor unless they contain exactly one direct payout to the requested recipient with no execution calls or execution gas. Fallback gas warnings and fee previews reflect the prepared payout and refund destination.
+
 ## [0.1.7] - 2026-11-06
 
 ### Fixed

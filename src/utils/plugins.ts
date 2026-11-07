@@ -446,9 +446,9 @@ export function tornadoUnshieldOptions(
     ...(delegation ? { delegation } : {}),
   };
 
-  // No user tails: omit `tailCalls` so the SDK forwards leftovers with the
-  // *actual* proof fee (`forwardCalls(fee)`). Baking our own forward here was
-  // the Sepolia ExecuteError(1) failure mode (pre-estimate fee < proof fee).
+  // Omit tailCalls: the SDK pays single notes directly and builds batch
+  // forwarding with the actual proof fee. Even an empty callback would force
+  // execution through the temporary single-note sender.
   if (tailCalls.length === 0) {
     return base;
   }

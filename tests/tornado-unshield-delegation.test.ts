@@ -23,6 +23,13 @@ const STEALTH_PATH = stealthDelegatorPath(0);
 const RECIPIENT = "0x9dAEf1EA5CC90C0F9DA9a5F0B49DA10510c34502" as const;
 
 describe("tornadoDelegationConfig", () => {
+  for (const path of [HD_PATH, STEALTH_PATH]) {
+    it(`uses the stored recipient for a single note without tails (${path})`, () => {
+      assert.deepEqual(tornadoDelegationConfig({ delegationPath: path, tailCallsCount: 0, withdrawalCount: 1 }),
+        { mode: "deterministic", path });
+    });
+  }
+
   it("uses wallet-path deterministic for stored HD + tails", () => {
     assert.deepEqual(
       tornadoDelegationConfig({
@@ -67,8 +74,8 @@ describe("tornadoDelegationConfig", () => {
     );
   });
 
-  it("omits delegation for custom --to single-note with no tails", () => {
-    assert.equal(
+  it("uses the SDK default sender for custom --to single-note with no tails", () => {
+    assert.deepEqual(
       tornadoDelegationConfig({
         delegationPath: undefined,
         tailCallsCount: 0,
@@ -79,7 +86,7 @@ describe("tornadoDelegationConfig", () => {
   });
 
   it("treats blank path as missing", () => {
-    assert.equal(
+    assert.deepEqual(
       tornadoDelegationConfig({
         delegationPath: "  ",
         tailCallsCount: 0,
@@ -189,7 +196,7 @@ describe("tornadoUnshieldConfirmExtraLines", () => {
     );
   });
 
-  it("shows the actual note-derived sender for custom --to", () => {
+  it("shows the note-derived sender as temporary and the direct payout for custom --to", () => {
     assert.deepEqual(
       tornadoUnshieldConfirmExtraLines({
         recipient: RECIPIENT,
@@ -198,8 +205,8 @@ describe("tornadoUnshieldConfirmExtraLines", () => {
         withdrawalCount: 1,
       }),
       [
-        "  EIP-7702 executor: 0x0000000000000000000000000000000000000001 (recoverable from this note's secrets)",
-        "  The executor forwards the withdrawal minus its fee to the recipient; unused-gas refunds stay on the executor",
+        "  EIP-7702 executor: 0x0000000000000000000000000000000000000001 (temporary)",
+        "  The withdrawal and unused-gas refund go directly to the recipient",
       ]
     );
   });
