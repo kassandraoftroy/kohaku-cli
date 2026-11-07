@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { tornadoPreparedFee, tornadoPreparedSender, tornadoPreparedRefundRecipient, assertTornadoPreparedExecutor, tornadoEstimationWarning } from "../src/utils/tornado-prepared-unshield.js";
+import { tornadoPreparedFee, tornadoPreparedSender, tornadoPreparedRefundRecipient, assertTornadoPreparedExecutor, assertTornadoPreparedDirectWithdrawal, tornadoEstimationWarning } from "../src/utils/tornado-prepared-unshield.js";
 import { buildFeePreview } from "../src/utils/fee-preview.js";
 
 const sender = "0x0000000000000000000000000000000000000001" as const;
@@ -63,4 +63,25 @@ it("refuses to broadcast when any prepared sender differs from the reserved acco
     { withdrawals: [...operation.withdrawals, { userOperation: { sender: "0x0000000000000000000000000000000000000002" } }] }]) {
     assert.throws(() => assertTornadoPreparedExecutor(invalid, sender), /does not match.*reserved/);
   }
+});
+
+it("allows a temporary executor only for one direct payout with the intended refund recipient", () => {
+  const recipient = "0x0000000000000000000000000000000000000009";
+  const direct = { withdrawals: [{ mode: "paymaster", proof: { args: [0, 0, recipient] },
+    userOperation: { sender, callData: "0x", callGasLimit: "0x0" } }] };
+  assertTornadoPreparedDirectWithdrawal(direct, recipient);
+  const invalid = [
+    {}, { withdrawals: [] }, { withdrawals: [...direct.withdrawals, ...direct.withdrawals] },
+    { withdrawals: [{ ...direct.withdrawals[0], mode: "relayer" }] },
+    { withdrawals: [{ ...direct.withdrawals[0], proof: { args: [0, 0, sender] } }] },
+    ...[{ callData: "0x1234", callGasLimit: "0x0" }, { callData: "0x", callGasLimit: "0x1" },
+      { callData: "0x" }].map(op => ({ withdrawals: [{ ...direct.withdrawals[0], userOperation: op }] })),
+  ];
+  for (const operation of invalid) {
+    assert.throws(() => assertTornadoPreparedDirectWithdrawal(operation, recipient), /temporary Tornado executor requires one direct withdrawal/);
+  }
+  const estimates = [{ status: "fallback", reason: "bundler-internal", message: "sensitive" }] as const;
+  const warning = tornadoEstimationWarning(estimates, direct);
+  assert.match(warning!, /conservative fallback/);
+  assert.doesNotMatch(warning!, /funds.*sender|sensitive/);
 });

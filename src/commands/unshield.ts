@@ -1,7 +1,7 @@
 import { privateTransferBalanceSummary } from "../lib/private-transfer-balance.js";
 import { preflightTornadoUnshield } from "../utils/tornado-unshield-preflight.js";
 import type { PaymasterGasEstimation } from "@kohaku-eth/tornado-cash";
-import { tornadoPreparedFee, tornadoPreparedSender, tornadoPreparedRefundRecipient, assertTornadoPreparedExecutor, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
+import { tornadoPreparedFee, tornadoPreparedSender, tornadoPreparedRefundRecipient, assertTornadoPreparedExecutor, assertTornadoPreparedDirectWithdrawal, tornadoEstimationWarning } from "../utils/tornado-prepared-unshield.js";
 import { tornadoUnavailableAmountMessage, tornadoNearestAmounts, tornadoAlternativeLabel } from "../utils/tornado-operation-limits.js";
 import { setRailgunActivityParticipants, startActivityLog } from "../utils/activity-log.js";
 import { confirm, input, select } from "@inquirer/prompts";
@@ -1248,17 +1248,6 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           cliErrorFromCaught(e);
           return;
         }
-        if (protocol === "tornado" && !recipientDerivationPath) {
-          const selected = await reserveTornadoUnshieldExecutor(publicStorage,
-            (address) => isAddressUsed(address, rpcForHost));
-          tornadoExecutor = selected.executor;
-          tornadoDelegationPath = tornadoExecutor.delegationPath;
-          for (const used of selected.skipped) {
-            const message = `Public account [${used.index}] ${used.address} already has a nonce, balance, or code. Saved it and advanced to the next index.`;
-            if (quiet) console.error(message); else log.warn(message);
-          }
-          if (!quiet) log.info(`Tornado executor: public account [${tornadoExecutor.index}] ${tornadoExecutor.address}. Saved in this wallet before preparation.`);
-        }
         let tornadoWithdrawalCount: number | undefined;
         if (protocol === "tornado" && !privateTransfer) {
           tornadoWithdrawalCount = await countTornadoWithdrawals(
@@ -1266,6 +1255,17 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             asset,
             amountWei
           );
+          if (!recipientDerivationPath && tornadoWithdrawalCount > 1) {
+            const selected = await reserveTornadoUnshieldExecutor(publicStorage,
+              (address) => isAddressUsed(address, rpcForHost));
+            tornadoExecutor = selected.executor;
+            tornadoDelegationPath = tornadoExecutor.delegationPath;
+            for (const used of selected.skipped) {
+              const message = `Public account [${used.index}] ${used.address} already has a nonce, balance, or code. Saved it and advanced to the next index.`;
+              if (quiet) console.error(message); else log.warn(message);
+            }
+            if (!quiet) log.info(`Tornado executor: public account [${tornadoExecutor.index}] ${tornadoExecutor.address}. Saved in this wallet before preparation.`);
+          }
           try {
             tornadoDelegationConfig({
               delegationPath: tornadoDelegationPath,
@@ -1612,6 +1612,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             }
             if (protocol === "tornado") {
               if (tornadoExecutor) assertTornadoPreparedExecutor(prepared, tornadoExecutor.address);
+              else if (!tornadoDelegationPath) assertTornadoPreparedDirectWithdrawal(prepared, recipient);
               tornadoGasEstimation = await preflightTornadoUnshield(prepared, undefined, {
                 allowFallback: tailCalls.length === 0,
               });
@@ -1646,13 +1647,14 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           });
         } else if (protocol === "tornado") {
           const fee = tornadoPreparedFee(privateOp);
-          const warning = tornadoEstimationWarning(tornadoGasEstimation ?? []);
+          const warning = tornadoEstimationWarning(tornadoGasEstimation ?? [], privateOp);
           fees = buildFeePreview({
             kind: "tornado-paymaster",
             amount: fee,
             decimals: tokenMeta.decimals,
             asset: tokenMeta.symbol,
-            note: "fee committed in the prepared withdrawal proof; unused gas may refund to the EIP-7702 executor" +
+            note: "fee committed in the prepared withdrawal proof; unused gas may refund to " +
+              (tornadoPreparedRefundRecipient(privateOp)?.toLowerCase() === recipient.toLowerCase() ? "the recipient" : "the EIP-7702 executor") +
               (warning ? "; conservative fallback gas (estimation unavailable)" : ""),
           });
           if (warning) {
@@ -1874,7 +1876,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               : [];
           const confirmExtra = [...tornadoConfirmExtra, ...privacyPoolsConfirmExtra];
           const tornadoNetLine = protocol === "tornado" && !privateTransfer && tailCalls.length === 0
-            ? `  Expected amount forwarded: ${formatUnits(amountWei - tornadoPreparedFee(privateOp), tokenMeta.decimals)} ${tokenMeta.symbol} (after paymaster fee)\n`
+            ? `  Expected recipient amount: ${formatUnits(amountWei - tornadoPreparedFee(privateOp), tokenMeta.decimals)} ${tokenMeta.symbol} (after paymaster fee)\n`
             : "";
           const refundLine =
             privateTransfer && protocol === "privacy-pools"
