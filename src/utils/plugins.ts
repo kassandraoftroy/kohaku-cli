@@ -47,6 +47,7 @@ import {
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
 import ppv1SepoliaState from "./ppv1-sepolia-state.json";
+import { freshShieldNoteNonces } from "./shield-note-nonces.js";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
@@ -409,10 +410,9 @@ export function tornadoUnshieldOptions(
   amountWei: bigint,
   maxFeePerGas: bigint,
   /**
-   * BIP-32 path for a wallet-controlled batch 7702 (`--next` / stored HD `--to`
-   * / stored stealth via `STEALTH_ADDRESS_MAGIC_VALUE_PATH`). Omit only for a
-   * single-note unshield with no `--tail-calls` (the SDK uses a recoverable
-   * note-derived sender and forwards the proceeds to `recipient`).
+   * BIP-32 path for a wallet-controlled 7702 executor: the recipient's stored
+   * HD/stealth path, or a separately reserved fresh HD account for custom payouts.
+   * Without a path, only single-note unshields with no user tails are allowed.
    */
   delegationPath: string | undefined,
   withdrawalCount: number,
@@ -446,9 +446,9 @@ export function tornadoUnshieldOptions(
     ...(delegation ? { delegation } : {}),
   };
 
-  // No user tails: omit `tailCalls` so the SDK forwards leftovers with the
-  // *actual* proof fee (`forwardCalls(fee)`). Baking our own forward here was
-  // the Sepolia ExecuteError(1) failure mode (pre-estimate fee < proof fee).
+  // Omit tailCalls: the SDK pays single notes directly and builds batch
+  // forwarding with the actual proof fee. Even an empty callback would force
+  // execution through the temporary single-note sender.
   if (tailCalls.length === 0) {
     return base;
   }
@@ -686,13 +686,30 @@ export async function prepareProtocolShield(
   protocol: SupportedProtocol,
   asset: AssetAmount
 ): Promise<unknown> {
-  if (protocol === "tornado") {
-    return plugin.prepareShield(asset, {
+  const operation = protocol === "tornado"
+    ? await plugin.prepareShield(asset, {
       // Prefer larger denominations first (fewer deposits / aggregated approvals).
       strategy: DepositStrategy.MinFee,
-    });
-  }
-  return plugin.prepareShield(asset);
+    })
+    : await plugin.prepareShield(asset);
+  if (protocol === "railgun") return operation;
+  const context = shieldNonceContexts.get(plugin);
+  if (!context) throw new Error("Missing shield nonce freshness context.");
+  const calls = (operation as { txns: Array<{ to: string; data: string; value: bigint }> }).txns;
+  return { ...(operation as object), txns: await freshShieldNoteNonces({
+    protocol, ...context, source: context.fullSource ?? plugin as ShieldNonceSource, calls,
+  }) };
+}
+
+type ShieldNonceSource = AnyPlugin & { dumpState: () => unknown | Promise<unknown> };
+const shieldNonceContexts = new WeakMap<AnyPlugin, { host: Host; chainId: bigint; fullSource?: ShieldNonceSource }>();
+const tornadoFullSources = new WeakMap<Host["keystore"], Map<bigint, ShieldNonceSource>>();
+
+/** Used once for a whole Tornado packing, after its pool-local SDK preparations. */
+export async function freshTornadoShieldCalls(plugin: AnyPlugin, calls: Array<{ to: string; data: string; value: bigint }>) {
+  const context = shieldNonceContexts.get(plugin);
+  if (!context) throw new Error("Missing shield nonce freshness context.");
+  return freshShieldNoteNonces({ protocol: "tornado", ...context, source: plugin as ShieldNonceSource, calls });
 }
 
 function ppv1BundledSnapshotMap(chainId: bigint): Record<string, unknown> {
@@ -838,7 +855,7 @@ export async function createProtocolPlugin(
       );
     }
     const paymasterConfig = tornadoPaymasterConfig(chainId);
-    return createTCPlugin(host, {
+    const plugin = createTCPlugin(host, {
       accountIndex: 0,
       protocolConfig: tornadoShieldPools ? {
         ...config,
@@ -851,6 +868,11 @@ export async function createProtocolPlugin(
       secretManagerFactory: (params) => tornadoSchemeSecretManager(scheme, params),
       ...(paymasterConfig ? { paymasterConfig: paymasterConfig as never } : {}),
     }) as AnyPlugin;
+    const sources = tornadoFullSources.get(host.keystore) ?? new Map<bigint, ShieldNonceSource>();
+    tornadoFullSources.set(host.keystore, sources);
+    if (scheme === "signature" && !tornadoShieldPools && !excludeNewPools) sources.set(chainId, plugin as ShieldNonceSource);
+    shieldNonceContexts.set(plugin, { host, chainId, fullSource: sources.get(chainId) });
+    return plugin;
   }
 
   const params = PrivacyPoolsV1_0xBow[Number(chainId) as 1 | 11155111];
@@ -893,7 +915,7 @@ export async function createProtocolPlugin(
 
   // Each plugin scans only its own scheme. The SDK default is signature
   // secrets; legacy deposits stay spendable on the BIP-32 manager.
-  return createPPv1Plugin(host, {
+  const plugin = createPPv1Plugin(host, {
     ...ppv1Params,
     secretManager:
       scheme === "legacy"
@@ -901,6 +923,8 @@ export async function createProtocolPlugin(
         : PrivacyPoolsSignatureSecretManager,
     ...(dataService ? { dataService } : {}),
   } as never) as AnyPlugin;
+  shieldNonceContexts.set(plugin, { host, chainId });
+  return plugin;
 }
 
 export async function broadcastTornadoPrivateOp(

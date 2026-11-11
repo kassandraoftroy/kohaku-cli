@@ -105,7 +105,7 @@ describe("worker progress renderer", () => {
 });
 
 
-it("renders task speed and ETA from the actual worker", () => {
+it("renders remaining time from the actual worker", () => {
   const result = spawnSync(process.execPath, ["--import", "tsx", "--eval", `
     (async () => {
       const { manageSpinner } = await import("./src/utils/cli-quiet.ts");
@@ -128,7 +128,7 @@ it("renders task speed and ETA from the actual worker", () => {
     env: { ...process.env, KOHAKU_NO_WORKER_PROGRESS: "0" },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /RPC test · 33% · [\d,]+ blocks\/s · task ETA ~/);
+  assert.match(result.stdout, /RPC test · 33% · ~\d+s remaining/);
   assert.match(result.stdout, /450\/1350 blocks/);
   assert.match(result.stdout, /Now: Railgun PPOI list · loading leaves \(size unknown\)/);
 });

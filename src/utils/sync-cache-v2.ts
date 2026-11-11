@@ -4,6 +4,7 @@ import { open, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { getPublicSyncCacheDataDir } from "./public-sync-cache.js";
+import { fileFingerprint } from "./file-fingerprint.js";
 
 export const SYNC_CACHE_V2_BASE_URL = "https://artifacts.0000000000.org/sync-cache/v2";
 export const SYNC_CACHE_V2_MANIFEST = "manifest.json";
@@ -11,6 +12,8 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_PATH = /^[a-zA-Z0-9._/-]+$/;
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
+const manifests = new Map<string, { fingerprint: string; manifest: SyncCacheV2Manifest }>();
+const verified = new Map<string, { fingerprint: string; sha256: string; bytes: number }>();
 
 export type SyncCacheV2File = {
   path: string;
@@ -106,9 +109,23 @@ export function parseSyncCacheV2Manifest(raw: string): SyncCacheV2Manifest {
 }
 
 export function localSyncCacheV2Manifest(dataDir?: string): SyncCacheV2Manifest | null {
+  const path = join(syncCacheV2Dir(dataDir), SYNC_CACHE_V2_MANIFEST);
   try {
-    return parseSyncCacheV2Manifest(readFileSync(join(syncCacheV2Dir(dataDir), SYNC_CACHE_V2_MANIFEST), "utf8"));
+    const fingerprint = fileFingerprint(path);
+    if (!fingerprint) { manifests.delete(path); return null; }
+    const cached = manifests.get(path);
+    if (cached?.fingerprint === fingerprint) return cached.manifest;
+    const manifest = parseSyncCacheV2Manifest(readFileSync(path, "utf8"));
+    if (fileFingerprint(path) !== fingerprint) return null;
+    for (const file of manifest.files) Object.freeze(file);
+    Object.freeze(manifest.files);
+    Object.freeze(manifest.sources);
+    Object.freeze(manifest);
+    if (manifests.size >= 16) manifests.delete(manifests.keys().next().value!);
+    manifests.set(path, { fingerprint, manifest });
+    return manifest;
   } catch {
+    manifests.delete(path);
     return null;
   }
 }
@@ -133,8 +150,17 @@ export function syncCacheV2ObjectPath(file: SyncCacheV2File, dataDir?: string): 
 export function hasLocalSyncCacheV2File(file: SyncCacheV2File, dataDir?: string): boolean {
   const path = syncCacheV2ObjectPath(file, dataDir);
   try {
-    return statSync(path).size === file.bytes && sha256Buffer(readFileSync(path)) === file.sha256;
+    const fingerprint = fileFingerprint(path);
+    if (!fingerprint) { verified.delete(path); return false; }
+    const cached = verified.get(path);
+    if (cached?.fingerprint === fingerprint && cached.sha256 === file.sha256 && cached.bytes === file.bytes) return true;
+    if (statSync(path).size !== file.bytes || sha256Buffer(readFileSync(path)) !== file.sha256 ||
+        fileFingerprint(path) !== fingerprint) { verified.delete(path); return false; }
+    if (verified.size >= 2048) verified.delete(verified.keys().next().value!);
+    verified.set(path, { fingerprint, sha256: file.sha256, bytes: file.bytes });
+    return true;
   } catch {
+    verified.delete(path);
     return false;
   }
 }

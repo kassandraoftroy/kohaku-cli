@@ -1,13 +1,15 @@
 /**
  * Tornado paymaster 7702 landing-account policy.
  *
- * The SDK uses an EIP-7702 sender for every unshield. Omitting delegation
- * selects a recoverable note-derived key. Wallet-controlled deterministic is used for
- * `--next` / stored public HD `--to` / stored stealth (`STEALTH_ADDRESS_MAGIC_VALUE_PATH`).
- * A custom `--to` is allowed only for a single-note unshield with no user tails
- * (the sender forwards the proceeds to `--to`).
+ * Stored HD / --next / stored stealth recipients use their own key as sender.
+ * A single-note custom payout without tails uses the SDK's default note-derived sender;
+ * the SDK pays the withdrawal and refund directly to the recipient.
+ * Multi-note custom payouts reserve a recoverable public HD executor instead.
+ * User tails still require a wallet-controlled recipient.
  */
 
+import { getAddress } from "viem";
+import { publicAccountDerivationPath, selectNextUnusedPublicAccount, type PublicAccountsStorage } from "./public-accounts.js";
 import { parseStealthDelegatorPath } from "../lib/stealth/constants.js";
 import { formatStealthSelector } from "../lib/stealth/storage.js";
 
@@ -15,12 +17,36 @@ export const TORNADO_TAILS_REQUIRE_WALLET_CONTROLLED =
   "Tornado --tail-calls require --next, --to a stored public account, or --to a stored stealth account (sN). This --to address is not in wallet storage, so the CLI cannot EIP-7702-sign it. Use `unshield --next` (after `next-fresh-address --peek` if you need the address first), persist the address with `next-fresh-address` then pass it as --to, or pass a stored stealth selector. Peeked addresses are not stored.";
 
 export const TORNADO_MULTI_NOTE_REQUIRE_WALLET_CONTROLLED =
-  "This Tornado amount spends multiple notes, which would consolidate onto an EIP-7702 account this wallet does not control. Use --next, --to a stored public account, or --to a stored stealth account (sN) so funds land on a wallet key. A custom --to is only allowed for a single-note unshield with no --tail-calls.";
+  "Multiple-note Tornado withdrawals require a wallet-controlled executor path. The CLI reserves a fresh public account for custom --to recipients.";
 
 export type TornadoWalletPathDelegation = {
   mode: "deterministic";
   path: string;
 };
+
+export type TornadoExecutorAccount = {
+  address: `0x${string}`;
+  index: number;
+  delegationPath: string;
+};
+
+/** Save the --next account BEFORE preparing signatures: a failed/abandoned
+ * prepare or ambiguous broadcast must not lose its refund account or reuse it.
+ * Return only public metadata; private keys stay in the encrypted account store. */
+export async function reserveTornadoUnshieldExecutor(
+  storage: Pick<PublicAccountsStorage, "peekNextAccounts" | "addNextAccounts">,
+  isUsed: (address: string) => Promise<boolean>,
+): Promise<{ executor: TornadoExecutorAccount; skipped: { address: string; index: number }[] }> {
+  const { account, skipped } = await selectNextUnusedPublicAccount(storage, isUsed);
+  const [saved] = storage.addNextAccounts(1);
+  if (!saved || saved.index !== account.index || saved.address.toLowerCase() !== account.address.toLowerCase()) {
+    throw new Error("The selected Tornado executor account changed before reservation. Retry the unshield.");
+  }
+  return {
+    executor: { address: getAddress(account.address), index: account.index, delegationPath: publicAccountDerivationPath(account.index) },
+    skipped: skipped.map(({ address, index }) => ({ address, index })),
+  };
+}
 
 function hasWalletControlledPath(delegationPath: string | undefined): boolean {
   return Boolean(delegationPath?.trim());
@@ -38,8 +64,10 @@ export function assertTornadoTailCallsHaveHdDelegator(
 
 /**
  * Delegation passed to the Tornado SDK.
- * - Stored HD / `--next` / stored stealth: `{ mode: "deterministic", path }`.
- * - Custom `--to`, single note, no tails: omit `delegation` (note-derived sender forwards to `--to`).
+ * - Stored HD / `--next` / stored stealth / reserved custom-target executor:
+ *   `{ mode: "deterministic", path }`.
+ * - Custom `--to`, exactly one note, no tails: omit delegation for the SDK's
+ *   recoverable note-derived sender (direct payout, no account reservation).
  */
 export function tornadoDelegationConfig(opts: {
   delegationPath: string | undefined;
@@ -73,6 +101,8 @@ export function tornadoUnshieldConfirmExtraLines(opts: {
   hasTailCalls: boolean;
   withdrawalCount: number;
   sender?: `0x${string}`;
+  executorAccountIndex?: number;
+  refundRecipient?: `0x${string}`;
 }): string[] {
   const path = opts.delegationPath?.trim() || undefined;
   const hasPath = path != null;
@@ -81,18 +111,27 @@ export function tornadoUnshieldConfirmExtraLines(opts: {
     const who =
       stealthIndex !== null
         ? `this wallet, stealth ${formatStealthSelector(stealthIndex)}`
-        : "this wallet";
+        : opts.executorAccountIndex != null ? `this wallet, public account [${opts.executorAccountIndex}]` : "this wallet";
     const lines = [`  EIP-7702 executor: ${opts.sender ?? opts.recipient} (${who})`];
     if (opts.hasTailCalls) {
       lines.push("  Tail-calls execute on the EIP-7702 executor");
     }
-    lines.push("  Unused-gas refunds stay on this executor");
+    const sender = opts.sender ?? opts.recipient;
+    const refundRecipient = opts.refundRecipient ?? sender;
+    if (!opts.hasTailCalls && sender.toLowerCase() !== opts.recipient.toLowerCase()) {
+      lines.push(refundRecipient.toLowerCase() === opts.recipient.toLowerCase()
+        ? "  The withdrawal pays the recipient directly"
+        : "  The executor forwards the withdrawal minus its fee to the recipient");
+    }
+    lines.push(refundRecipient.toLowerCase() === sender.toLowerCase()
+      ? "  Unused-gas refunds stay on this executor"
+      : `  Unused-gas refunds go to ${refundRecipient}`);
     return lines;
   }
   if (!hasPath) {
     return [
-      `  EIP-7702 executor: ${opts.sender ?? "note-derived sender"} (recoverable from this note's secrets)`,
-      "  The executor forwards the withdrawal minus its fee to the recipient; unused-gas refunds stay on the executor",
+      `  EIP-7702 executor: ${opts.sender ?? "note-derived sender"} (temporary)`,
+      "  The withdrawal and unused-gas refund go directly to the recipient",
     ];
   }
   return [];

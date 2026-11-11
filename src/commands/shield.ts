@@ -1,3 +1,4 @@
+import { resolveTransactionSender, includeSelectedSenderBalance } from "../lib/transaction-sender.js";
 import { runTornadoShield } from "../lib/tornado-shield-flow.js";
 import { excludedTornadoDenominations, requireTornadoShieldPlan, tornadoShieldPlans, tornadoShieldChoices, tornadoShieldPlanLabel, type TornadoShieldPlan } from "../utils/tornado-shield-plans.js";
 import { startActivityLog } from "../utils/activity-log.js";
@@ -19,7 +20,6 @@ import {
   assertTornadoShieldCalls,
   partitionShieldTxs,
   resolveShieldApprovalCalls,
-  resolveShieldSender,
   shieldTransactionConfirmMessage,
   summarizeMultiShieldPlan,
   toShieldTxs,
@@ -115,7 +115,7 @@ type ShieldOpts = {
   password?: string;
   passwordFile?: string;
   from?: string;
-  fromPriv?: boolean;
+  senderPriv?: string;
   token?: string;
   amountWei?: string;
   amountFormatted?: string;
@@ -305,8 +305,8 @@ export function registerShieldCommand(program: Command): void {
       "Public sender address, HD index, or stealth selector (s0)"
     )
     .option(
-      "--from-priv",
-      "With --broadcast: derive --from index from mnemonic when missing from public accounts (not required for dry-run)"
+      "--sender-priv <key>",
+      "Private key for an external sender (interactive broadcasts prompt when needed)"
     )
     .option(
       "--broadcast",
@@ -521,6 +521,14 @@ export function registerShieldCommand(program: Command): void {
           fromValue = await resolveAddressOrName(fromValue, rpcUrl);
         }
 
+        if (fromValue) {
+          fromValue = await includeSelectedSenderBalance(withBalances, {
+            fromValue, walletDir, mnemonic, password, senderPriv: opts.senderPriv,
+          }, rpcUrl, tokenMeta);
+        } else if (amount === null || opts.amountMax) {
+          fromValue = await promptSourceAccount(withBalances, tokenMeta, `Pick source account for ${tokenMeta.symbol} shield`);
+        }
+
         const resolveMaxForFrom = async (from: string): Promise<bigint> => {
           const acct = findAccountWithBalance(from, withBalances);
           if (!acct) {
@@ -618,15 +626,8 @@ export function registerShieldCommand(program: Command): void {
             return;
           }
 
-          console.log();
-          console.log(
-            chalk.bold(`Available accounts (${tokenMeta.symbol} balances):`)
-          );
-          for (const acct of withBalances) {
-            console.log(
-              `  [${formatAccountSelector(acct)}] ${acct.address}  ${formatPublicAccountBalanceLabel(acct, tokenMeta)}`
-            );
-          }
+          const selected = findAccountWithBalance(fromValue, withBalances)!;
+          console.log(`Sender: ${selected.address} (${formatPublicAccountBalanceLabel(selected, tokenMeta)})`);
 
           const amountFormattedInput = await input({
             message: `Amount to shield (${tokenMeta.symbol}, formatted, or "max"):`,
@@ -746,13 +747,13 @@ export function registerShieldCommand(program: Command): void {
       let senderAddress: string;
       let senderPrivateKey: string | undefined;
       try {
-        const resolved = resolveShieldSender({
+        const resolved = await resolveTransactionSender({
           fromValue,
           walletDir,
           mnemonic,
           password,
           dryRun,
-          allowDeriveFromMnemonic: !!opts.fromPriv,
+          senderPriv: opts.senderPriv, nonInteractive: opts.nonInteractive,
         });
         senderAddress = resolved.senderAddress;
         senderPrivateKey = resolved.senderPrivateKey;
@@ -1149,7 +1150,7 @@ export function registerShieldCommand(program: Command): void {
 
         if (!senderPrivateKey) {
           cliError(
-            "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
+            "Cannot sign: no private key for this --from (use a saved account or --sender-priv <key>)."
           );
           return;
         }

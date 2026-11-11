@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-07
+
+### Changed
+
+- Single-note Tornado withdrawals to custom recipients use the SDK's default recoverable note-derived executor, shown as temporary without tracking or reserving a public account, and pay the recipient and gas refund directly. Wallet-owned recipients still act as their own executor; custom multi-note withdrawals retain a reserved recoverable executor.
+- Update the Tornado Cash SDK to `0.1.0-alpha.36` and Privacy Pools SDK to `0.1.0-alpha.38`.
+
+### Fixed
+
+- Reject prepared Tornado withdrawals using a temporary executor unless they contain exactly one direct payout to the requested recipient with no execution calls or execution gas. Fallback gas warnings and fee previews reflect the prepared payout and refund destination.
+
+## [0.1.7] - 2026-11-06
+
+### Fixed
+
+- Tornado unshields to custom addresses use the next unused public HD account as the EIP-7702 executor instead of the SDK's note-derived account. The executor is saved before preparation, so gas refunds and funds left after execution failures appear in normal `balances`. Dry runs, cancelled preparations, and failed attempts also reserve that account index.
+
+### Changed
+
+- Custom-address Tornado unshields can combine multiple notes in one paymaster UserOp using the reserved wallet executor. User tail calls still require a stored wallet recipient.
+- Tornado confirmations and JSON output identify the executor and refund recipient; custom-address withdrawals also show the executor's public account index.
+
+## [0.1.6] - 2026-11-06
+
+### Fixed
+
+- Fix Railgun sync failures when an indexer response exceeds the live cache's 8 MiB limit by keeping the wallet's response stream readable after caching stops.
+
+## [0.1.5] - 2026-11-04
+
+### Fixed
+
+- Tornado shield packings allocate distinct signature nonces across the complete plan, including different pools and transaction batches. Pool-local SDK preparations previously reused the same starting nonce.
+- Tornado and Privacy Pools shields refresh complete protocol history and check each proposed note index against deposits and spent nullifiers across pools, including other assets, excluded Tornado denominations, and notes submitted outside the CLI. Spent notes still consume their index. Tornado nonces and Privacy Pools deposit indexes have separate sequences per protocol and chain; existing note derivation and recovery remain unchanged.
+- Shield preparation stops when freshness cannot be verified through the chain head sampled before the refresh, including when one Tornado pool's sync failed. Existing Tornado notes sharing a nonce across pools remain discoverable and independently spendable; the uniqueness rule applies only to new shield plans.
+
+## [0.1.4] - 2026-11-04
+
+### Added
+
+- `private-transfer` and `transfer --from <protocol>` support `--amount-max` and interactive `max` for Railgun, Privacy Pools, and Tornado. Maximum recipient amounts reserve the relevant protocol and gas fees, including forwarding costs for public recipients and private WETH gas payment for Railgun `0zk` transfers. Legacy and signature-derived notes remain separate.
+
+### Changed
+
+- Replace `--from-priv` with `--sender-priv <key>` on `shield`, `transfer`, `transact-raw`, and `ragequit`. The new option accepts an external sender's private key, validates that it matches the selected address, and does not save it. When no stored key exists, interactive broadcasts prompt with hidden input and non-interactive broadcasts require the option. Unsaved HD indexes are derived from the wallet seed automatically.
+- Interactive shields and public transfers identify the selected sender and its balance before asking for an amount. External senders can also use max amounts. Private transfers show token balances, spendable amounts, and estimated maximum recipient amounts across all protocols and both Railgun recipient types; Railgun also shows private WETH available for gas.
+
+### Fixed
+
+- Single-transaction public ETH max transfers use the same gas limit and EIP-1559 fee caps for amount sizing, confirmation, and signing, preventing a later fee estimate from exceeding the reserved balance. Preparation refreshes the sender balance and estimates recipient execution gas with headroom.
+- Privacy Pools max unshields without custom tail calls spend the approved gross balance and let the SDK deduct its final paymaster fee, avoiding insufficient-note failures caused by sizing a net amount from an earlier fee quote.
+- Railgun balances remain visible when history sync succeeds but POI/TXID refresh fails. Human output shows `[ERR: POI data missing]`, JSON and cached views retain the error, and affected funds remain unavailable for spending until POI refresh succeeds. History-sync failures still surface as errors.
+
+## [0.1.3] - 2026-11-03
+
+### Changed
+
+- Railgun uses `kohaku-rg-js-wrapper` `0.0.3`, pinned to kohaku-rs `be8862740832a7bac9325270c5b8f8066e32e1d5`. Wallet hashing, tree restoration and proving run in a worker; network requests and encrypted persistence remain controlled by the CLI. Checkpoints retain computed Merkle nodes, with a one-time rebuild for older checkpoints.
+- Railgun catches up history in bounded windows and refreshes PPOI/TXIDs once afterward. Larger history windows, asynchronous checkpoint compression and skipping unchanged writes reduce repeated checkpoint work. PPOI validation, historical missing-proof recovery and save-before-return behavior are retained.
+- Balances sync independent private protocols concurrently while keeping each protocol's legacy and signature writes ordered. Privacy Pools verbose note reads reuse the balance sync.
+- `balances` can reuse successful encrypted private balance checks for up to one minute, displays their age, and includes `private_balance_freshness` in JSON. `--refresh` forces a new check. Wallet identity, protocol storage and operation activity changes invalidate cached views; spending flows do not use them. When every requested private view is recent, the command skips private wallet initialization and Tor bootstrap.
+- Public snapshot indexes and file integrity checks are reused only while their files remain unchanged. Railgun snapshot pagination avoids repeated full sorting. Complete PPOI leaf pages and confirmed historical indexer responses fetched live are shared across wallets in `sync-cache-v2/live`, capped at 256 MiB. Heads, the recent indexer tip, incomplete PPOI pages, root validation, status and submissions remain live.
+- Sync progress shows stable phases and cached PPOI leaf progress, with fewer redraws and shorter remaining-time estimates. Estimates count down between updates and report when work takes longer than expected. Completed history bars are hidden during later phases.
+- Tornado shield confirmations omit the pool contract address listing.
+
+## [0.1.2] - 2026-11-02
+
+### Fixed
+
+- Successful Tornado shields using the packing and batch flow now finish with Etherscan links for every transaction and `✔ Shield flow completed.`, including single-transaction plans. Sepolia shields link to Sepolia Etherscan.
+
+## [0.1.1] - 2026-11-02
+
+### Changed
+
+- Tornado Cash SDK to `0.1.0-alpha.34` and Privacy Pools SDK to `0.1.0-alpha.37`.
+
+### Fixed
+
+- Tornado balances, shields, and ERC-4337 paymaster withdrawals no longer query traditional TORN-staked relayers, avoiding failures caused by unrelated ENS records. Traditional relayer withdrawals discover relayers on demand and isolate broken ENS URL lookups so one invalid entry cannot block the other relayers. Failed relayer reads retain their sync cursor for retry.
+
 ## [0.1.0] - 2026-11-01
 
 First minor version release; no functional changes from 0.0.18.

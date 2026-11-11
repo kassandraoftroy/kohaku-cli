@@ -1,9 +1,10 @@
+import { resolveTransactionSender } from "../lib/transaction-sender.js";
 import { startActivityLog } from "../utils/activity-log.js";
 import type { Command } from "commander";
 import { withNameCommandContext, type NameWalletOpts } from "../lib/names/cli.js";
 import { broadcastPreparedTxs, simulatePreparedTxs } from "../lib/names/tx.js";
 import { withProtocolRuntime } from "../lib/protocol-runtime.js";
-import { resolveShieldSender, toShieldTxs } from "../lib/shield-flow.js";
+import { toShieldTxs } from "../lib/shield-flow.js";
 import { cliOptions, passwordFileOption } from "../utils/cli-command-options.js";
 import { syncPluginWithProgress } from "../utils/sync-progress.js";
 import { addressishToHex } from "../lib/private-notes.js";
@@ -19,7 +20,7 @@ export function assertRagequitNote(note: RagequitNote, sender: string): void {
   }
 }
 
-type RagequitOpts = NameWalletOpts & { label: string; scheme: string; from?: string; fromPriv?: boolean };
+type RagequitOpts = NameWalletOpts & { label: string; scheme: string; from?: string; senderPriv?: string };
 
 export function registerRagequitCommand(program: Command): void {
   program.command("ragequit")
@@ -27,7 +28,7 @@ export function registerRagequitCommand(program: Command): void {
     .requiredOption("--label <label>", "Privacy Pools note label (decimal or hex)")
     .option("--scheme <scheme>", "Note derivation: signature or legacy", "signature")
     .option("--from <address-or-index>", "Original depositor: saved address, HD index, or stealth selector; defaults to note depositor")
-    .option("--from-priv", "Derive an unsaved --from HD index from the wallet seed")
+    .option("--sender-priv <key>", "Private key for an external depositor (interactive broadcasts prompt when needed)")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
@@ -51,10 +52,10 @@ export function registerRagequitCommand(program: Command): void {
           await syncPluginWithProgress(plugin, "privacy-pools");
           const note = (await plugin.notes()).find((note) => note.label === label);
           if (!note) throw new Error("No unspent Privacy Pools note with this label in the selected scheme.");
-          const sender = resolveShieldSender({
+          const sender = await resolveTransactionSender({
             fromValue: opts.from ?? addressishToHex(note.depositor),
             walletDir: ctx.walletDir, mnemonic: ctx.mnemonic, password: ctx.password,
-            dryRun: ctx.dryRun, allowDeriveFromMnemonic: !!opts.fromPriv,
+            dryRun: ctx.dryRun, senderPriv: opts.senderPriv, nonInteractive: opts.nonInteractive,
           });
           assertRagequitNote(note, sender.senderAddress);
           const txs = toShieldTxs(await plugin.ragequit([label])).map((tx) => ({

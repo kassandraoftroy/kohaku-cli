@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { tornadoPreparedFee, tornadoPreparedSender, tornadoEstimationWarning } from "../src/utils/tornado-prepared-unshield.js";
+import { tornadoPreparedFee, tornadoPreparedSender, tornadoPreparedRefundRecipient, assertTornadoPreparedExecutor, assertTornadoPreparedDirectWithdrawal, tornadoEstimationWarning } from "../src/utils/tornado-prepared-unshield.js";
 import { buildFeePreview } from "../src/utils/fee-preview.js";
 
 const sender = "0x0000000000000000000000000000000000000001" as const;
@@ -41,4 +41,47 @@ it("only warns for explicit fallback preparation and does not echo raw bundler e
   const warning = tornadoEstimationWarning([{ status: "fallback", reason: "bundler-internal", message: "Request body: sensitive proof" }]);
   assert.match(warning!, /conservative fallback.*rejected.*funds.*sender/);
   assert.doesNotMatch(warning!, /sensitive proof/);
+});
+
+it("reads the sponsoring proof refund recipient independently of its executor", () => {
+  const operation = prepared(100n);
+  operation.withdrawals[0].proof.args[2] = "0x123";
+  assert.equal(tornadoPreparedRefundRecipient(operation), "0x0000000000000000000000000000000000000123");
+  assert.equal(tornadoPreparedRefundRecipient({ withdrawals: [{ proof: { args: [0n, 0n, 123n] } }] }),
+    "0x000000000000000000000000000000000000007b");
+  for (const value of ["invalid", -1n, 1n << 160n, undefined]) {
+    assert.equal(tornadoPreparedRefundRecipient({ withdrawals: [{ proof: { args: [0n, 0n, value] } }] }), undefined);
+  }
+  assert.equal(tornadoPreparedRefundRecipient({}), undefined);
+});
+
+it("refuses to broadcast when any prepared sender differs from the reserved account", () => {
+  const operation = prepared(100n);
+  assertTornadoPreparedExecutor(operation, sender);
+  assertTornadoPreparedExecutor({ withdrawals: [...operation.withdrawals, ...operation.withdrawals] }, sender);
+  for (const invalid of [{}, { withdrawals: [] }, { withdrawals: [{}] },
+    { withdrawals: [...operation.withdrawals, { userOperation: { sender: "0x0000000000000000000000000000000000000002" } }] }]) {
+    assert.throws(() => assertTornadoPreparedExecutor(invalid, sender), /does not match.*reserved/);
+  }
+});
+
+it("allows a temporary executor only for one direct payout with the intended refund recipient", () => {
+  const recipient = "0x0000000000000000000000000000000000000009";
+  const direct = { withdrawals: [{ mode: "paymaster", proof: { args: [0, 0, recipient] },
+    userOperation: { sender, callData: "0x", callGasLimit: "0x0" } }] };
+  assertTornadoPreparedDirectWithdrawal(direct, recipient);
+  const invalid = [
+    {}, { withdrawals: [] }, { withdrawals: [...direct.withdrawals, ...direct.withdrawals] },
+    { withdrawals: [{ ...direct.withdrawals[0], mode: "relayer" }] },
+    { withdrawals: [{ ...direct.withdrawals[0], proof: { args: [0, 0, sender] } }] },
+    ...[{ callData: "0x1234", callGasLimit: "0x0" }, { callData: "0x", callGasLimit: "0x1" },
+      { callData: "0x" }].map(op => ({ withdrawals: [{ ...direct.withdrawals[0], userOperation: op }] })),
+  ];
+  for (const operation of invalid) {
+    assert.throws(() => assertTornadoPreparedDirectWithdrawal(operation, recipient), /temporary Tornado executor requires one direct withdrawal/);
+  }
+  const estimates = [{ status: "fallback", reason: "bundler-internal", message: "sensitive" }] as const;
+  const warning = tornadoEstimationWarning(estimates, direct);
+  assert.match(warning!, /conservative fallback/);
+  assert.doesNotMatch(warning!, /funds.*sender|sensitive/);
 });

@@ -18,7 +18,7 @@ const DEPLOYMENT_BLOCK = 14_693_013;
 const REORG_BUFFER = 512;
 const SEGMENT_BLOCKS = 250_000;
 const PAGE_LIMIT = 20_000;
-const EXPECTED_RUST_COMMIT = "357104d3be2e06d91f532563f09c5a9804be088e";
+const EXPECTED_RUST_COMMIT = "be8862740832a7bac9325270c5b8f8066e32e1d5";
 
 type Kind = "commitments" | "nullifiers" | "operations";
 type RecordRow = { id: string; blockNumber: string } & Record<string, unknown>;

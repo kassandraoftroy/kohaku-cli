@@ -32,6 +32,7 @@ export function registerPrivateTransferCommand(program: Command): void {
       "--amount-formatted <amount>",
       "Exact amount the recipient receives (converted using token decimals)"
     )
+    .option("--amount-max", "Send the maximum spendable recipient amount after protocol and gas fees")
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option(

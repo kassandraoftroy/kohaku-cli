@@ -3,6 +3,7 @@ import type { Host } from "@kohaku-eth/plugins";
 import { makeHost } from "../host/makeHost.js";
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc.js";
 import { runWithWalletTrafficLog } from "../utils/tor.js";
+import { beginSyncActivity } from "../utils/sync-progress.js";
 import {
   createSchemedPlugins,
   pluginIdForProtocol,
@@ -31,33 +32,39 @@ export async function withProtocolRuntime<T>(
   fn: (host: Host, plugins: SchemedPlugins) => Promise<T>
 ): Promise<T> {
   return runWithWalletTrafficLog(ctx.walletDir, async () => {
-    if (ctx.protocol === "railgun") {
-      const { host, plugin } = await acquireRailgunSession({
-        rpcUrl: ctx.rpcUrl,
-        walletDir: ctx.walletDir,
-        password: ctx.password,
-        mnemonic: ctx.mnemonic,
-        chainId: ctx.chainId,
-      });
-      return fn(host, { legacy: plugin, signature: plugin });
-    }
-
-    const rpc = await makePublicClient(ctx.rpcUrl);
+    const name = ctx.protocol === "railgun" ? "Railgun" : ctx.protocol === "tornado" ? "Tornado Cash" : "Privacy Pools";
+    const opened = beginSyncActivity(`${name} · opening wallet`, { priority: 1 });
     try {
-      const host = await makeHost({
-        rpc,
-        rpcUrl: ctx.rpcUrl,
-        walletDir: ctx.walletDir,
-        password: ctx.password,
-        mnemonic: ctx.mnemonic,
-        pluginId: pluginIdForProtocol(ctx.protocol),
-        chainId: ctx.chainId,
-      });
-      const plugins = await createSchemedPlugins(ctx.protocol, host, ctx.chainId);
-      return await fn(host, plugins);
-    } finally {
-      disposePublicClient(rpc);
-    }
+      if (ctx.protocol === "railgun") {
+        const { host, plugin } = await acquireRailgunSession({
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          password: ctx.password,
+          mnemonic: ctx.mnemonic,
+          chainId: ctx.chainId,
+        });
+        opened();
+        return fn(host, { legacy: plugin, signature: plugin });
+      }
+
+      const rpc = await makePublicClient(ctx.rpcUrl);
+      try {
+        const host = await makeHost({
+          rpc,
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          password: ctx.password,
+          mnemonic: ctx.mnemonic,
+          pluginId: pluginIdForProtocol(ctx.protocol),
+          chainId: ctx.chainId,
+        });
+        const plugins = await createSchemedPlugins(ctx.protocol, host, ctx.chainId);
+        opened();
+        return await fn(host, plugins);
+      } finally {
+        disposePublicClient(rpc);
+      }
+    } finally { opened(); }
   });
 }
 

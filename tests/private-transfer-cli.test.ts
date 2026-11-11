@@ -137,7 +137,7 @@ describe("private-transfer CLI wiring", () => {
       const alias = runCli(transferAliasArgs(protocol, flags));
       assert.equal(direct.status, 1);
       assert.equal(alias.status, direct.status);
-      assert.match(combinedOutput(alias), /Provide only one of --amount-wei or --amount-formatted/);
+      assert.match(combinedOutput(alias), /Provide only one of --amount-wei, --amount-formatted, or --amount-max/);
       assert.equal(combinedOutput(alias), combinedOutput(direct));
       assertNoBroadcast(combinedOutput(alias));
     }
@@ -145,11 +145,10 @@ describe("private-transfer CLI wiring", () => {
 
   it("rejects public-only transfer flags with a private source", () => {
     for (const [flag, expected] of [
-      ["--from-priv", /--from-priv is only supported for public transfers/],
+      ["--sender-priv", /--sender-priv is only supported for public transfers/],
       ["--stealth", /--stealth is only supported for public transfers/],
-      ["--amount-max", /private-transfer does not support --amount-max/],
     ] as const) {
-      const result = runCli(transferAliasArgs("tornado", [flag, "--to", PAYEE]));
+      const result = runCli(transferAliasArgs("tornado", [flag, ...(flag === "--sender-priv" ? ["01".repeat(32)] : []), "--to", PAYEE]));
       assert.equal(result.status, 1);
       assert.match(combinedOutput(result), expected);
       assertNoBroadcast(combinedOutput(result));
@@ -183,7 +182,7 @@ describe("private-transfer CLI wiring", () => {
     );
     const output = combinedOutput(result);
     assert.equal(result.status, 1);
-    assert.match(output, /Provide only one of --amount-wei or --amount-formatted/);
+    assert.match(output, /Provide only one of --amount-wei, --amount-formatted, or --amount-max/);
     assertNoBroadcast(output);
   });
 
@@ -195,8 +194,8 @@ describe("private-transfer CLI wiring", () => {
     assertNoBroadcast(output);
   });
 
-  it("rejects --amount-max, --next, and --tail-calls before any broadcast", () => {
-    for (const flag of ["--amount-max", "--next", "--tail-calls"]) {
+  it("rejects --next and --tail-calls before any broadcast", () => {
+    for (const flag of ["--next", "--tail-calls"]) {
       const args = baseArgs(["--to", PAYEE, "--amount-wei", "1", flag]);
       if (flag === "--tail-calls") args.push("0x1111111111111111111111111111111111111111:0x");
       const result = runCli(args);
@@ -204,6 +203,30 @@ describe("private-transfer CLI wiring", () => {
       assert.equal(result.status, 1, output);
       assert.match(output, new RegExp(`unknown option '${flag}'`));
       assertNoBroadcast(output);
+    }
+  });
+
+  it("accepts max amounts through both private transfer commands for every protocol", () => {
+    for (const protocol of ["railgun", "privacy-pools", "tornado"]) {
+      for (const command of [["private-transfer", "--protocol", protocol], ["transfer", "--from", protocol]]) {
+        const result = runCli([...command, "--to", PAYEE, "--amount-max", "--non-interactive"]);
+        assert.match(combinedOutput(result), /--wallet <name> is required/);
+        assertNoBroadcast(combinedOutput(result));
+      }
+    }
+  });
+
+  it("replaces the old sender option on every command that exposed it", () => {
+    for (const command of ["shield", "transfer", "transact-raw", "ragequit"]) {
+      const help = runCli([command, "--help"]);
+      assert.equal(help.status, 0);
+      assert.match(combinedOutput(help), /--sender-priv <key>/);
+      assert.doesNotMatch(combinedOutput(help), /--from-priv/);
+      const required = command === "transact-raw" ? ["--targets", PAYEE, "--payloads", "0x"]
+        : command === "ragequit" ? ["--label", "1"] : [];
+      const removed = runCli([command, ...required, "--from-priv"]);
+      assert.equal(removed.status, 1);
+      assert.match(combinedOutput(removed), /unknown option '--from-priv'/);
     }
   });
 
@@ -219,7 +242,7 @@ describe("private-transfer CLI wiring", () => {
     assert.equal(missingAmount.status, 1);
     assert.match(
       missingAmountOutput,
-      /Missing amount in non-interactive mode\. Provide --amount-wei or --amount-formatted/
+      /Missing amount in non-interactive mode\. Provide --amount-wei, --amount-formatted, or --amount-max/
     );
     assertNoBroadcast(missingAmountOutput);
   });

@@ -164,3 +164,39 @@ test("rejects existing cDAI notes without paymaster support", () => {
     pool: cdai.address, amount: cdai.denomination, balance: cdai.denomination,
   }], cdai.denomination), /no paymaster support configured/);
 });
+
+test("custom Tornado payouts use the SDK default sender for one note and a wallet executor for multiple notes", async () => {
+  const recipient = "0x0000000000000000000000000000000000000009";
+  const path = "m/44'/60'/0'/0/7";
+  for (const chainId of [1n, 11155111n]) {
+    for (const isERC20 of [false, true]) {
+      const pool = tornadoPoolsForChain(chainId).find(p => p.isERC20 === isERC20)!;
+      assert.ok(pool);
+      const poolNote = { pool: BigInt(pool.poolAddress), amount: pool.denomination, balance: pool.denomination };
+      for (const count of [1, 2]) {
+        const result = await prepareProtocolUnshield({
+          protocol: "tornado", chainId, rpcUrl: "unused", client: client(),
+          plugin: {
+            notes: async () => Array.from({ length: count }, () => ({ ...poolNote })),
+            prepareUnshield: async (asset: { amount: bigint }, to: string, options: {
+              delegation?: { mode: string; path: string }; tailCalls?: unknown;
+            }) => {
+              assert.equal(to, recipient);
+              assert.equal(asset.amount, pool.denomination * BigInt(count));
+              assert.deepEqual(options.delegation, count === 1 ? undefined : { mode: "deterministic", path });
+              assert.equal(Object.hasOwn(options, "delegation"), count > 1);
+              // Omit tailCalls so single notes stay direct and batches use SDK forwarding.
+              assert.equal(options.tailCalls, undefined);
+              return "prepared";
+            },
+          } as never,
+          tokenMeta: { isEth: !isERC20, tokenAddress: pool.assetAddress ?? "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            symbol: pool.asset, decimals: pool.decimals },
+          amountWei: pool.denomination * BigInt(count), recipient, tailCalls: [],
+          tornadoDelegationPath: count === 1 ? undefined : path, tornadoMaxFeePerGas: 1n, tornadoWithdrawalCount: count,
+        });
+        assert.equal(result, "prepared");
+      }
+    }
+  }
+});

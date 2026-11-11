@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { confirm } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
+import chalk from "chalk";
 import { formatUnits, erc20Abi } from "viem";
 import type { Host } from "@kohaku-eth/plugins";
-import { createProtocolPlugin, ETH_AS_ERC20, prepareProtocolShield } from "../utils/plugins.js";
+import { createProtocolPlugin, ETH_AS_ERC20, freshTornadoShieldCalls } from "../utils/plugins.js";
 import { assertTornadoShieldCalls, toShieldTxs } from "./shield-flow.js";
 import { isolatedShieldHost, shieldRunJournal, splitTornadoShieldCalls, submitTornadoShieldBatches, type ShieldBatchRun } from "./tornado-shield-batches.js";
 import { estimateEip7702BatchUserOpFee, sendEip7702BatchUserOperation, type Eip7702TorOpts } from "../utils/eip7702-batch-userop.js";
@@ -28,7 +29,7 @@ export async function runTornadoShield(opts: {
   ethBalance?: bigint;
 } & Eip7702TorOpts): Promise<void> {
   const fmt = (amount: bigint) => `${formatUnits(amount, opts.token.decimals)} ${opts.token.symbol}`;
-  if (opts.broadcast && !opts.privateKey) throw new Error("Cannot sign this shield: use a stored wallet account or --from-priv.");
+  if (opts.broadcast && !opts.privateKey) throw new Error("Cannot sign this shield: use a stored wallet account or --sender-priv <key>.");
   if (opts.broadcast) {
     const available = opts.token.isEth
       ? await opts.client.getBalance({ address: opts.sender as `0x${string}` })
@@ -48,12 +49,15 @@ export async function runTornadoShield(opts: {
       // Prepare each pool exactly once. Restricting just the whole plan's pool
       // catalog is insufficient for non-greedy combinations such as 1 + 4x0.3.
       const selection = await createProtocolPlugin("tornado", isolatedShieldHost(opts.host), opts.chainId, "signature", false, [pool.poolAddress]);
-      const operation = await prepareProtocolShield(selection, "tornado", {
+      const operation = await selection.prepareShield({
         asset: { __type: "erc20", contract: (opts.token.isEth ? ETH_AS_ERC20 : opts.token.tokenAddress) as `0x${string}` },
         amount: pool.denomination * BigInt(count),
       });
       raw.push(...toShieldTxs(operation));
     }
+    // Pool-local SDK preparations all start from the same discovered nonce.
+    // Allocate the complete packing together against the full, refreshed history.
+    raw = await freshTornadoShieldCalls(full, raw);
     progress.stop("Tornado packing prepared.");
   } finally { if (progress.active) progress.stop("Tornado preparation stopped."); }
   assertTornadoShieldCalls(opts.chainId, raw, { ...opts.token, amount: opts.plan.amount });
@@ -134,7 +138,17 @@ export async function runTornadoShield(opts: {
     : {};
   if (opts.nonInteractive) logCliJson({ ...summary, ...singleResult, status: run.status, shieldedAmount: shielded.toString(), unconfirmedAmount: (run.amount - shielded).toString(),
     batches: run.batches, ...(run.error ? { error: run.error } : {}), ...(unknown ? { warning: "A submitted operation has an unresolved receipt. Check its hash before retrying; do not repeat the original shield amount." } : {}) });
-  if (!opts.nonInteractive && run.status === "complete") console.log(`Shield complete: ${fmt(shielded)} across ${batches.length} transaction(s).`);
+  if (!opts.nonInteractive && run.status === "complete" && !run.error) {
+    console.log(`Shield complete: ${fmt(shielded)} across ${batches.length} transaction(s).`);
+    console.log(chalk.bold("Etherscan links:"));
+    const explorerHost = opts.chainId === 11155111n ? "sepolia.etherscan.io" : "etherscan.io";
+    for (const [index, batch] of run.batches.entries()) {
+      if (batch.userOpHash) console.log(chalk.dim(`  userOpHash: ${batch.userOpHash}`));
+      const label = batches.length === 1 ? "shield" : `shield ${index + 1}`;
+      console.log(chalk.cyan(`  ${label}: https://${explorerHost}/tx/${batch.txHash}`));
+    }
+    console.log(chalk.green("✔ Shield flow completed."));
+  }
   if (run.error) console.error(run.error);
   if (run.status !== "complete" || run.error) {
     process.exitCode = 1;

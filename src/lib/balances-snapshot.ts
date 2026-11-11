@@ -3,8 +3,9 @@ import { formatUnits, getAddress, isAddress } from "viem";
 
 import { formatCaughtError } from "../utils/cli-errors";
 import { makePublicClient, disposePublicClient } from "../utils/rpc";
-import { runWithSyncProgress } from "../utils/sync-progress.js";
+import { beginSyncActivity, runWithSyncProgress } from "../utils/sync-progress.js";
 import { isFirstProtocolSync } from "../utils/first-sync.js";
+import { privateBalanceCache, type PrivateBalanceData, type PrivateBalanceFreshness } from "./private-balance-cache.js";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { withProtocolRuntime } from "./protocol-runtime";
 import type { RailgunAdapter } from "./railgun-adapter";
@@ -15,6 +16,7 @@ import {
 } from "../utils/tokens-util";
 import {
   shouldIncludeProtocol,
+  ALL_PRIVATE_PROTOCOLS,
   type AnyPlugin,
   type SupportedProtocol,
 } from "../utils/plugins";
@@ -76,6 +78,7 @@ export type BalancesSnapshot = {
   legacyPrivacyPools: BalanceItem[];
   legacyTornado: BalanceItem[];
   privateNotes?: PrivateNotesByProtocol;
+  privateBalanceFreshness?: Partial<Record<SupportedProtocol, PrivateBalanceFreshness>>;
 };
 
 function isNonZeroRawHoldings(raw: string): boolean {
@@ -143,12 +146,7 @@ function mapProtocolNotes(
   return mapRailgunNotes(notes, tokenMeta);
 }
 
-type ProtocolPrivateLoad = {
-  balances: AssetAmount[];
-  railgunAddress?: string;
-  /** Legacy-scheme rows only. Omitted for Railgun. */
-  legacyBalances?: AssetAmount[];
-  rawNotes?: unknown[];
+type ProtocolPrivateLoad = PrivateBalanceData & {
   notesError?: unknown;
 };
 
@@ -232,23 +230,32 @@ async function loadPrivateProtocolData(
             if (!plugin.notes) {
               throw new Error(`${protocol} plugin does not expose notes()`);
             }
-            return plugin.notes(undefined, false);
+            return protocol === "privacy-pools"
+              ? plugin.notes(undefined, false, { sync: false })
+              : plugin.notes(undefined, false);
           };
           if (protocol === "railgun") {
             const railgunAddress = (plugins.signature as RailgunAdapter).wallet.address;
             const balances = await plugins.signature.balance(undefined);
-            if (!includeNotes) return { balances, railgunAddress };
+            const poiError = (plugins.signature as RailgunAdapter).poiError;
+            if (!includeNotes) return { balances, railgunAddress, poiError };
             try {
-              return { balances, railgunAddress, rawNotes: await readNotes(plugins.signature) };
+              return { balances, railgunAddress, poiError, rawNotes: await readNotes(plugins.signature) };
             } catch (e) {
-              return { balances, railgunAddress, notesError: e };
+              return { balances, railgunAddress, poiError, notesError: e };
             }
           }
 
           // Legacy first, then signature, so the shared wallet file is not
           // written by two syncs at once.
-          const legacyBalances = await plugins.legacy.balance(undefined);
-          const signatureBalances = await plugins.signature.balance(undefined);
+          const name = protocol === "privacy-pools" ? "Privacy Pools" : "Tornado Cash";
+          const readBalance = async (plugin: AnyPlugin, scheme: string) => {
+            const finish = beginSyncActivity(`${name} · syncing ${scheme} notes`, { priority: 1 });
+            try { return await plugin.balance(undefined); }
+            finally { finish(); }
+          };
+          const legacyBalances = await readBalance(plugins.legacy, "legacy");
+          const signatureBalances = await readBalance(plugins.signature, "signature");
           const balances = sumAssetAmountRows([
             ...legacyBalances,
             ...signatureBalances,
@@ -321,6 +328,10 @@ export type LoadBalancesSnapshotOptions = {
   onTorStatus?: (message: string) => void;
   /** Live first-sync progress (saga chunks, RPC windows, Subsquid/ASP). */
   onSyncProgress?: (message: string) => void;
+  /** Display-only reuse for up to one minute; omitted on spending flows. */
+  recentPrivateBalances?: boolean;
+  /** Bypass recent views while still updating them after a successful sync. */
+  refreshPrivateBalances?: boolean;
   /**
    * Lower bound for the ERC-5564 announcement scan (inclusive).
    * When set on a first/full history pass, skips announcer history before this block.
@@ -354,19 +365,13 @@ export type PrivateBalancesSnapshot = {
 };
 
 type ResolvedPrivateBalances = PrivateBalancesSnapshot & {
+  privateBalanceFreshness: Partial<Record<SupportedProtocol, PrivateBalanceFreshness>>;
   railgunAddress?: string;
   erc20FromPrivate: `0x${string}`[];
   protocolAvailable: Partial<Record<SupportedProtocol, boolean>>;
   rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>>;
   notesErrors: Partial<Record<SupportedProtocol, unknown>>;
 };
-
-function willSyncPrivateProtocols(
-  includeProtocols: SupportedProtocol[] | null
-): boolean {
-  // null = sync all private protocols (TUI / callers that omit the filter)
-  return includeProtocols === null || includeProtocols.length > 0;
-}
 
 async function resolvePrivateBalanceItems(
   opts: Pick<
@@ -380,6 +385,10 @@ async function resolvePrivateBalanceItems(
     | "verbose"
     | "onWarning"
     | "onSyncProgress"
+    | "withoutTor"
+    | "onTorStatus"
+    | "recentPrivateBalances"
+    | "refreshPrivateBalances"
   >
 ): Promise<ResolvedPrivateBalances> {
   const {
@@ -404,8 +413,22 @@ async function resolvePrivateBalanceItems(
   const protocolAvailable: Partial<Record<SupportedProtocol, boolean>> = {};
   const rawNotesByProtocol: Partial<Record<SupportedProtocol, unknown[]>> = {};
   const notesErrors: Partial<Record<SupportedProtocol, unknown>> = {};
+  const privateBalanceFreshness: Partial<Record<SupportedProtocol, PrivateBalanceFreshness>> = {};
+  const warnings: string[] = [];
+  const selected = ALL_PRIVATE_PROTOCOLS.filter((protocol) => shouldIncludeProtocol(protocol, includeProtocols));
+  const cache = opts.recentPrivateBalances ? privateBalanceCache(opts) : undefined;
+  const cached = new Map(selected.flatMap((protocol) => {
+    const entry = !opts.refreshPrivateBalances ? cache?.read(protocol, verbose) : null;
+    return entry ? [[protocol, entry] as const] : [];
+  }));
 
   const loadOne = async (protocol: SupportedProtocol) => {
+    const hit = cached.get(protocol);
+    if (hit) {
+      privateBalanceFreshness[protocol] = { checkedAt: new Date(hit.checkedAt).toISOString(), fromCache: true, ...(hit.data.poiError ? { poiError: hit.data.poiError } : {}) };
+      if (hit.data.rawNotes) rawNotesByProtocol[protocol] = hit.data.rawNotes;
+      return hit.data;
+    }
     const loaded = await loadPrivateProtocolData(
       protocol,
       rpcUrl,
@@ -418,50 +441,44 @@ async function resolvePrivateBalanceItems(
     );
     if (loaded.rawNotes) rawNotesByProtocol[protocol] = loaded.rawNotes;
     if (loaded.notesError) notesErrors[protocol] = loaded.notesError;
+    const checkedAt = Date.now();
+    privateBalanceFreshness[protocol] = { checkedAt: new Date(checkedAt).toISOString(), fromCache: false, ...(loaded.poiError ? { poiError: loaded.poiError } : {}) };
+    if (!loaded.notesError) cache?.write(protocol, loaded, checkedAt);
     return loaded;
   };
 
-  if (shouldIncludeProtocol("railgun", includeProtocols)) {
+  const loadAll = async () => Promise.all(selected.map(async (protocol) => {
     try {
-      const loaded = await loadOne("railgun");
-      rgRows = loaded.balances;
-      railgunAddress = loaded.railgunAddress;
-      protocolAvailable.railgun = true;
+      const loaded = await loadOne(protocol);
+      protocolAvailable[protocol] = true;
+      if (protocol === "railgun") {
+        rgRows = loaded.balances;
+        railgunAddress = loaded.railgunAddress;
+      } else if (protocol === "privacy-pools") {
+        ppRows = loaded.balances;
+        ppLegacyRows = loaded.legacyBalances ?? [];
+      } else {
+        tcRows = loaded.balances;
+        tcLegacyRows = loaded.legacyBalances ?? [];
+      }
     } catch (e) {
-      onWarning?.(
-        `Railgun private balances unavailable: ${formatCaughtError(e)}`
-      );
-      protocolAvailable.railgun = false;
+      const name = protocol === "railgun" ? "Railgun" : protocol === "tornado" ? "Tornado Cash" : "Privacy pools";
+      warnings.push(`${name} private balances unavailable: ${formatCaughtError(e)}`);
+      protocolAvailable[protocol] = false;
     }
+  }));
+  if (selected.length > 0) {
+    // Each protocol has its own store. Its legacy/signature writes remain
+    // sequential, and all protocols share one progress renderer and Tor session.
+    await withTor(!opts.withoutTor && cached.size < selected.length,
+      { rpcUrl, onStatus: opts.onTorStatus, walletDir },
+      () => cached.size === selected.length ? loadAll() : runWithSyncProgress({
+        source: selected.length === 1 ? selected[0]! : "private",
+        firstRun: selected.some((protocol) => !cached.has(protocol) && isFirstProtocolSync(walletDir, protocol)),
+        onUpdate: onSyncProgress,
+      }, loadAll));
   }
-
-  if (shouldIncludeProtocol("privacy-pools", includeProtocols)) {
-    try {
-      const loaded = await loadOne("privacy-pools");
-      ppRows = loaded.balances;
-      ppLegacyRows = loaded.legacyBalances ?? [];
-      protocolAvailable["privacy-pools"] = true;
-    } catch (e) {
-      onWarning?.(
-        `Privacy pools private balances unavailable: ${formatCaughtError(e)}`
-      );
-      protocolAvailable["privacy-pools"] = false;
-    }
-  }
-
-  if (shouldIncludeProtocol("tornado", includeProtocols)) {
-    try {
-      const loaded = await loadOne("tornado");
-      tcRows = loaded.balances;
-      tcLegacyRows = loaded.legacyBalances ?? [];
-      protocolAvailable.tornado = true;
-    } catch (e) {
-      onWarning?.(
-        `Tornado Cash private balances unavailable: ${formatCaughtError(e)}`
-      );
-      protocolAvailable.tornado = false;
-    }
-  }
+  for (const warning of warnings) onWarning?.(warning);
   const erc20FromPrivate = [
     ...collectErc20AddressesFromPrivateBalances(rgRows),
     ...collectErc20AddressesFromPrivateBalances(ppRows),
@@ -509,6 +526,7 @@ async function resolvePrivateBalanceItems(
       protocolAvailable,
       rawNotesByProtocol,
       notesErrors,
+      privateBalanceFreshness,
     };
   } finally {
     disposePublicClient(client);
@@ -528,22 +546,17 @@ export async function loadPrivateBalancesOnly(
     | "withoutTor"
     | "onTorStatus"
     | "onSyncProgress"
+    | "recentPrivateBalances"
+    | "refreshPrivateBalances"
   >
 ): Promise<PrivateBalancesSnapshot> {
-  const includeProtocols = opts.includeProtocols ?? null;
-  const useTor =
-    !opts.withoutTor && willSyncPrivateProtocols(includeProtocols);
   const {
     privateRailgun,
     privatePrivacyPools,
     privateTornado,
     legacyPrivacyPools,
     legacyTornado,
-  } = await withTor(
-    useTor,
-    { rpcUrl: opts.rpcUrl, onStatus: opts.onTorStatus, walletDir: opts.walletDir },
-    () => resolvePrivateBalanceItems(opts)
-  );
+  } = await resolvePrivateBalanceItems(opts);
   const [
     pricedRailgun,
     pricedPrivacyPools,
@@ -599,8 +612,6 @@ async function loadBalancesSnapshotInner(
   } = opts;
   const chainIdString = chainId.toString();
 
-  const useTor = !withoutTor && willSyncPrivateProtocols(includeProtocols);
-
   const {
     privateRailgun,
     railgunAddress,
@@ -612,11 +623,8 @@ async function loadBalancesSnapshotInner(
     protocolAvailable,
     rawNotesByProtocol,
     notesErrors,
-  } = await withTor(
-    useTor,
-    { rpcUrl, onStatus: onTorStatus, walletDir },
-    () =>
-      resolvePrivateBalanceItems({
+    privateBalanceFreshness,
+  } = await resolvePrivateBalanceItems({
         rpcUrl,
         walletDir,
         password,
@@ -626,8 +634,11 @@ async function loadBalancesSnapshotInner(
         verbose,
         onWarning,
         onSyncProgress,
-      })
-  );
+        withoutTor,
+        onTorStatus,
+        recentPrivateBalances: opts.recentPrivateBalances,
+        refreshPrivateBalances: opts.refreshPrivateBalances,
+      });
 
   const { erc20Addresses: tokenAddresses, knownMetaByLower } =
     mergeDefaultAndExtraErc20s(chainIdString, [
@@ -989,5 +1000,6 @@ async function loadBalancesSnapshotInner(
     legacyPrivacyPools: pricedPrivate[3]!,
     legacyTornado: pricedPrivate[4]!,
     privateNotes,
+    privateBalanceFreshness,
   };
 }

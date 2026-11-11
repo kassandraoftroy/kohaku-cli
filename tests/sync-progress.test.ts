@@ -15,11 +15,11 @@ const macrotask = () => new Promise((r) => setTimeout(r, 0));
 
 async function capture(
   opts: Parameters<typeof runWithSyncProgress>[0],
-  body: () => Promise<void> | void
+  body: (messages: string[]) => Promise<void> | void
 ): Promise<string[]> {
   const messages: string[] = [];
   await runWithSyncProgress({ ...opts, onUpdate: (m) => messages.push(m) }, async () => {
-    await body();
+    await body(messages);
     await settle();
   });
   return messages;
@@ -215,6 +215,36 @@ describe("sync progress emission", () => {
 
 
 describe("sync activities", () => {
+  it("keeps the protocol phase stable and hides completed history during PPOI refresh", async () => {
+    const messages = await capture({ source: "railgun" }, async (updates) => {
+      reportSyncBlockProgress(100n, 100n, "Railgun history");
+      const phase = beginSyncActivity("Railgun · refreshing PPOI lists / TXIDs", { priority: 1 });
+      const request = beginSyncActivity("low-level request", { priority: -1 });
+      await settle();
+      assert.match(updates.at(-1)!, /refreshing PPOI/);
+      assert.doesNotMatch(updates.at(-1)!, /low-level|Railgun history|discovering/);
+      request();
+      phase();
+    });
+    assert.ok(messages.every((message) => !message.includes("processing / discovering")));
+  });
+
+  it("shares one outer session across concurrent protocol scopes", async () => {
+    let nestedUpdates = 0;
+    const messages = await capture({ source: "private" }, async () => {
+      await Promise.all((["railgun", "tornado", "privacy-pools"] as const).map((source) =>
+        runWithSyncProgress({ source, onUpdate: () => { nestedUpdates++; } }, async () => {
+          const ticket = addSyncUnits("saga", 3, source);
+          await macrotask();
+          ticket.advance();
+        })));
+    });
+    assert.equal(nestedUpdates, 0);
+    const last = messages.at(-1)!;
+    assert.match(last, /^Private balances sync/);
+    for (const source of ["railgun", "tornado", "privacy-pools"]) assert.ok(last.includes(`${source} 1/3`));
+  });
+
   it("tracks concurrent activities without persisting finished network stages", async () => {
     const messages = await capture({ source: "railgun" }, async () => {
       const finishHistory = beginSyncActivity("Subsquid history · total unavailable");

@@ -31,7 +31,7 @@ test("Railgun v2 opens with the old file untouched and persists a reloadable che
   const messages: string[] = [];
   console.error = (...args) => { messages.push(args.map(String).join(" ")); };
   globalThis.fetch = async (input, init) => {
-    const request = JSON.parse(input instanceof Request ? await input.text() : String(init?.body)) as { method: string; id: number };
+    const request = await new Request(input, init).json() as { method: string; id: number };
     assert.equal(request.method, "eth_chainId");
     const response = Response.json({ jsonrpc: "2.0", id: request.id, result: "0xaa36a7" });
     Object.defineProperty(response, "url", { value: input instanceof Request ? input.url : String(input) });
@@ -139,26 +139,61 @@ test("Railgun resync checkpoints bounded windows and stops when the source lags"
   const wallet = {
     chain: { deploymentBlock: 100n },
     get syncedBlock() { return syncedBlock; },
-    syncTo: async (target: bigint) => {
+    syncHistoryTo: async (target: bigint) => {
       targets.push(target);
       syncedBlock = target;
     },
     sync: async () => { throw new Error("unexpected full sync"); },
   };
   assert.equal(await syncRailgunHistory(wallet, 250_099n), true);
-  assert.deepEqual(targets, [5_099n, 25_099n, 55_099n, 100_099n, 200_099n, 250_099n]);
+  assert.deepEqual(targets, [5_099n, 25_099n, 100_099n, 250_099n]);
 
   syncedBlock = 25_099n;
   targets.length = 0;
   assert.equal(await syncRailgunHistory(wallet, 250_099n), true);
-  assert.deepEqual(targets, [55_099n, 100_099n, 200_099n, 250_099n]);
+  assert.deepEqual(targets, [100_099n, 250_099n]);
 
   syncedBlock = 0n;
   targets.length = 0;
-  wallet.syncTo = async (target) => {
+  wallet.syncHistoryTo = async (target) => {
     targets.push(target);
     syncedBlock = 200n;
   };
   assert.equal(await syncRailgunHistory(wallet, 250_099n), false);
   assert.deepEqual(targets, [5_099n]);
+});
+
+test("Railgun refreshes PPOI once per catch-up and recent reads do not repeat sync", async () => {
+  const originalFetch = globalThis.fetch;
+  let headRequests = 0;
+  let syncedBlock = 0n;
+  let historyCalls = 0;
+  let poiCalls = 0;
+  globalThis.fetch = async () => {
+    headRequests++;
+    return Response.json({ result: "0x3d0f3" }); // 250099
+  };
+  const adapter = Object.create(RailgunAdapter.prototype) as RailgunAdapter;
+  Object.assign(adapter, { rpcUrl: "https://rpc.example.invalid", wallet: {
+    chain: { deploymentBlock: 100n },
+    get syncedBlock() { return syncedBlock; },
+    syncHistoryTo: async (block: bigint) => { historyCalls++; syncedBlock = block; },
+    refreshPoi: async () => { poiCalls++; },
+    pendingPoi: () => [],
+    balances: async () => [],
+    notes: async () => [],
+    sync: () => { throw new Error("full sync must not run per history window"); },
+  } });
+  try {
+    await adapter.sync();
+    assert.equal(historyCalls, 4);
+    assert.equal(poiCalls, 1);
+    await adapter.balance();
+    await adapter.notes();
+    assert.equal(headRequests, 1);
+    assert.equal(poiCalls, 1);
+    await adapter.sync();
+    assert.equal(historyCalls, 4, "same-head sync skips history");
+    assert.equal(poiCalls, 2, "explicit sync still refreshes PPOI");
+  } finally { globalThis.fetch = originalFetch; }
 });

@@ -26,10 +26,6 @@ export function tornadoShieldConfirmation(opts: {
     "",
     `  From: ${opts.sender}`,
     "",
-    "  Pools:",
-    ...plan.entries.map(({ pool }) =>
-      `    ${fmt(pool.denomination)} → ${pool.poolAddress}`),
-    "",
     ...batches.map((batch, i) =>
       `  Tx ${i + 1}: ${fmt(batch.amount)} · ${batch.noteCount} ${batch.noteCount === 1 ? "note" : "notes"} · fee ${fee(batch.fee)}`),
     ...(batches.length > 1 ? [`  Total est. fee: ${fee(batches.reduce((sum, batch) => sum + batch.fee, 0n))}`] : []),

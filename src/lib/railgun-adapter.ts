@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import {
-  RailgunWallet,
+  RailgunWorkerWallet,
   buildShieldCalls,
   railgunKeyPaths,
   type Hex,
@@ -21,11 +21,11 @@ import { beginSyncActivity, reportSyncBlockProgress } from "../utils/sync-progre
 
 const CHECKPOINT_KEY = "railgun-rust-checkpoint";
 const MIGRATION_COMPLETE_KEY = "railgun-rust-migration-complete";
-const SYNC_WINDOW = 100_000n;
+const SYNC_WINDOW = 1_000_000n;
 // Stable block boundaries let wallets reuse identical cached Subsquid pages.
-// Only the first range is split further so history progress appears promptly
-// after the one-time PPOI initialization finishes.
-const FIRST_SYNC_BOUNDARIES = [5_000n, 25_000n, 55_000n, SYNC_WINDOW];
+// Keep early checkpoints small, then avoid rewriting a large encrypted wallet
+// every 100k blocks. Global PPOI catch-up happens after the history pass.
+const FIRST_SYNC_BOUNDARIES = [5_000n, 25_000n, 100_000n, 500_000n, SYNC_WINDOW];
 const warnedResync = new Set<string>();
 const ERC20_ID = /^erc20:(0x[0-9a-fA-F]{40})$/;
 
@@ -114,8 +114,7 @@ async function chainHead(rpcUrl: string): Promise<bigint> {
 type SyncableRailgunWallet = {
   readonly syncedBlock: bigint;
   readonly chain: { readonly deploymentBlock: bigint };
-  syncTo(block: bigint): Promise<void>;
-  sync(): Promise<void>;
+  syncHistoryTo(block: bigint): Promise<void>;
 };
 
 function nextRailgunSyncEnd(from: bigint, deployment: bigint): bigint {
@@ -133,8 +132,6 @@ export async function syncRailgunHistory(wallet: SyncableRailgunWallet, head: bi
     ? wallet.chain.deploymentBlock
     : wallet.syncedBlock + 1n;
   if (start > head) {
-    // A same-head sync still refreshes PPOI list status and TXID availability.
-    await wallet.sync();
     return wallet.syncedBlock >= head;
   }
   const totalBlocks = head - start + 1n;
@@ -142,12 +139,7 @@ export async function syncRailgunHistory(wallet: SyncableRailgunWallet, head: bi
   for (let from = start; from <= head;) {
     const boundary = nextRailgunSyncEnd(from, wallet.chain.deploymentBlock);
     const to = boundary < head ? boundary : head;
-    const finish = beginSyncActivity(`Railgun blocks ${from.toLocaleString("en-US")}-${to.toLocaleString("en-US")}`);
-    try {
-      await wallet.syncTo(to);
-    } finally {
-      finish();
-    }
+    await wallet.syncHistoryTo(to);
     const reached = wallet.syncedBlock < to ? wallet.syncedBlock : to;
     if (reached >= start) reportSyncBlockProgress(reached - start + 1n, totalBlocks, "Railgun history");
     if (reached < to) return false;
@@ -179,39 +171,47 @@ export class RailgunAdapter {
   private bundlerUrl?: string;
 
   private constructor(
-    readonly wallet: RailgunWallet,
+    readonly wallet: RailgunWorkerWallet,
     private readonly rpcUrl: string,
     private readonly storage: Host["storage"],
     private readonly migratingOldFile: boolean,
   ) {}
 
   static async open(host: Host, chainId: bigint): Promise<RailgunAdapter> {
-    const { rpcUrl, walletDir } = railgunHostContext(host);
-    const checkpointJson = await host.storage.get(CHECKPOINT_KEY);
-    const migratingOldFile = existsSync(join(walletDir, "rg-storage.json")) &&
-      await host.storage.get(MIGRATION_COMPLETE_KEY) !== "true";
-    if (migratingOldFile &&
-        !warnedResync.has(walletDir)) {
-      warnedResync.add(walletDir);
-      console.error(checkpointJson
-        ? "Railgun v0.0.16: resuming the history resync from the saved Rust checkpoint. The old Railgun wallet file is preserved."
-        : "Railgun v0.0.16: resyncing from chain history into a new encrypted checkpoint. The old Railgun wallet file is preserved. This may take several minutes and can resume after interruption.");
-    }
-    const paths = railgunKeyPaths(0);
-    const [spendingKey, viewingKey] = await Promise.all([
-      host.keystore.deriveAt(paths.spending),
-      host.keystore.deriveAt(paths.viewing),
-    ]);
-    const wallet = await RailgunWallet.open({
-      chainId,
-      rpcUrl,
-      spendingKey: spendingKey as Hex,
-      viewingKey: viewingKey as Hex,
-      checkpointJson,
-      artifactBaseUrl: DEFAULT_ARTIFACTS_BASE_URL,
-      persistCheckpoint: (json) => host.storage.set(CHECKPOINT_KEY, json),
-    });
-    return new RailgunAdapter(wallet, rpcUrl, host.storage, migratingOldFile);
+    const finish = beginSyncActivity("Railgun · opening wallet checkpoint", { priority: 1 });
+    try {
+      const { rpcUrl, walletDir } = railgunHostContext(host);
+      const checkpointJson = await host.storage.get(CHECKPOINT_KEY);
+      const migratingOldFile = existsSync(join(walletDir, "rg-storage.json")) &&
+        await host.storage.get(MIGRATION_COMPLETE_KEY) !== "true";
+      if (migratingOldFile &&
+          !warnedResync.has(walletDir)) {
+        warnedResync.add(walletDir);
+        console.error(checkpointJson
+          ? "Railgun v0.0.16: resuming the history resync from the saved Rust checkpoint. The old Railgun wallet file is preserved."
+          : "Railgun v0.0.16: resyncing from chain history into a new encrypted checkpoint. The old Railgun wallet file is preserved. This may take several minutes and can resume after interruption.");
+      }
+      const paths = railgunKeyPaths(0);
+      const [spendingKey, viewingKey] = await Promise.all([
+        host.keystore.deriveAt(paths.spending),
+        host.keystore.deriveAt(paths.viewing),
+      ]);
+      const wallet = await RailgunWorkerWallet.open({
+        chainId,
+        rpcUrl,
+        spendingKey: spendingKey as Hex,
+        viewingKey: viewingKey as Hex,
+        checkpointJson,
+        artifactBaseUrl: DEFAULT_ARTIFACTS_BASE_URL,
+        fetch: host.network?.fetch ?? globalThis.fetch,
+        persistCheckpoint: async (json) => {
+          const saved = beginSyncActivity("Railgun · saving encrypted checkpoint", { priority: 2 });
+          try { await host.storage.set(CHECKPOINT_KEY, json); }
+          finally { saved(); }
+        },
+      });
+      return new RailgunAdapter(wallet, rpcUrl, host.storage, migratingOldFile);
+    } finally { finish(); }
   }
 
   configureSpend(accountPrivateKey: Hex, bundlerUrl: string): void {
@@ -226,6 +226,9 @@ export class RailgunAdapter {
     return { accountPrivateKey: this.accountPrivateKey, bundlerUrl: this.bundlerUrl };
   }
 
+  /** History may be current even when the external POI service is unavailable. */
+  poiError?: string;
+
   async sync(): Promise<void> {
     if (this.syncPromise) return this.syncPromise;
     this.syncPromise = this.syncNow();
@@ -234,37 +237,55 @@ export class RailgunAdapter {
   }
 
   private async syncNow(): Promise<void> {
-    const head = await chainHead(this.rpcUrl);
-    const reachedHead = await syncRailgunHistory(this.wallet, head);
+    let finish = beginSyncActivity("Railgun · checking chain head", { priority: 1 });
+    let head: bigint;
+    try { head = await chainHead(this.rpcUrl); }
+    finally { finish(); }
+    finish = beginSyncActivity("Railgun · syncing history", { priority: 1 });
+    let reachedHead: boolean;
+    try { reachedHead = await syncRailgunHistory(this.wallet, head); }
+    finally { finish(); }
     if (!reachedHead) {
       console.error(`Railgun history source is currently at block ${this.wallet.syncedBlock}; chain head is ${head}. The resync will continue on the next run.`);
     }
-    if (this.wallet.pendingPoi().length > 0) {
+    finish = beginSyncActivity("Railgun · refreshing PPOI lists / TXIDs", { priority: 1 });
+    this.poiError = undefined;
+    try { await this.wallet.refreshPoi(); }
+    catch (error) { this.poiError = error instanceof Error ? error.message : String(error); }
+    finally { finish(); }
+    if (!this.poiError && this.wallet.pendingPoi().length > 0) {
       const finish = beginSyncActivity("Railgun PPOI recovery");
       try {
         const result = await this.wallet.processPendingPoi();
         reportPoi(result);
-        if (result.submitted.length > 0) await this.wallet.sync();
-      } finally { finish(); }
+        if (result.submitted.length > 0) await this.wallet.refreshPoi();
+      } catch (error) { this.poiError = error instanceof Error ? error.message : String(error); }
+      finally { finish(); }
     }
-    if (this.migratingOldFile && reachedHead) {
+    if (this.migratingOldFile && reachedHead && !this.poiError) {
       await this.storage.set(MIGRATION_COMPLETE_KEY, "true");
     }
+    if (this.poiError) console.error(`Railgun [ERR: POI data missing]: ${this.poiError}`);
     this.lastSyncedAt = Date.now();
   }
 
   private async ensureSynced(): Promise<void> {
+    if (this.syncPromise) return this.syncPromise;
     if (Date.now() - this.lastSyncedAt > 30_000) await this.sync();
   }
 
   async balance(_assets?: unknown[]): Promise<AssetAmount[]> {
     await this.ensureSynced();
-    return (await this.wallet.balances()).map(railgunBalanceForCli);
+    return (await this.wallet.balances()).map((entry) => railgunBalanceForCli(
+      this.poiError ? { ...entry, poiStatus: "Unavailable" } : entry,
+    ));
   }
 
   async notes(_assets?: unknown[], _includeSpent?: boolean): Promise<unknown[]> {
     await this.ensureSynced();
-    return (await this.wallet.notes()).map(railgunNoteForCli);
+    return (await this.wallet.notes()).map((entry) => railgunNoteForCli(
+      this.poiError ? { ...entry, poiStatus: "Unavailable" } : entry,
+    ));
   }
 
   async prepareShield(asset: AssetAmount): Promise<unknown> {
@@ -280,6 +301,7 @@ export class RailgunAdapter {
     recipient: Hex,
     options?: { tailCalls?: () => Promise<Array<{ to: Hex; value: bigint; data: Hex }>> },
   ): Promise<PreparedUserOperation> {
+    if (this.poiError) throw new Error(`Railgun POI data missing: ${this.poiError}`);
     const calls = await options?.tailCalls?.() ?? [];
     return this.wallet.prepareUnshield(railgunUnshieldInput(
       asset, recipient, calls, this.wallet.chain.wrappedBaseToken, this.spendConfig(),
@@ -287,6 +309,7 @@ export class RailgunAdapter {
   }
 
   async prepareTransfer(asset: AssetAmount, recipient: RailgunAddress): Promise<PreparedUserOperation> {
+    if (this.poiError) throw new Error(`Railgun POI data missing: ${this.poiError}`);
     return this.wallet.prepareTransfer(railgunTransferInput(
       asset, recipient, this.wallet.chain.wrappedBaseToken, this.spendConfig(),
     ));
