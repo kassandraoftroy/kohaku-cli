@@ -241,7 +241,7 @@ export async function broadcastPreparedPrivateOp(
   if (!result) {
     throw new Error("Privacy Pools paymaster withdrawal failed to broadcast.");
   }
-  return result;
+  return { userOpHash: result.userOpHash, ...await result.wait() };
 }
 
 /** Submit the signed Rust operation and retain the hash across ambiguous sends. */

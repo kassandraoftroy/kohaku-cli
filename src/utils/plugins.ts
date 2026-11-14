@@ -46,7 +46,6 @@ import {
 } from "./privacy-pools-saga.js";
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
-import ppv1SepoliaState from "./ppv1-sepolia-state.json";
 import { freshShieldNoteNonces } from "./shield-note-nonces.js";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
@@ -712,52 +711,6 @@ export async function freshTornadoShieldCalls(plugin: AnyPlugin, calls: Array<{ 
   return freshShieldNoteNonces({ protocol: "tornado", ...context, source: plugin as ShieldNonceSource, calls });
 }
 
-function ppv1BundledSnapshotMap(chainId: bigint): Record<string, unknown> {
-  if (chainId !== 11155111n) return {};
-  return ppv1SepoliaState as Record<string, unknown>;
-}
-
-function ppv1StorageKey(chainId: bigint, entrypointAddress: bigint): string {
-  return `privacy-pool-state-${chainId.toString()}-${entrypointAddress.toString()}`;
-}
-
-function ppv1LastSyncedBlock(state: unknown): bigint {
-  const raw = (state as { sync?: { lastSyncedBlock?: string | number } })?.sync
-    ?.lastSyncedBlock;
-  if (raw == null) return 0n;
-  return typeof raw === "string" ? BigInt(raw) : BigInt(raw);
-}
-
-/**
- * Sepolia has no saga stream, so seed its bundled snapshot when wallet storage
- * is missing or older. Mainnet history comes from the saga CDN instead.
- */
-async function ensurePpv1BundledStateSeeded(
-  host: Host,
-  chainId: bigint,
-  entrypointAddress: bigint
-): Promise<void> {
-  const storageKey = ppv1StorageKey(chainId, entrypointAddress);
-  const bundled = ppv1BundledSnapshotMap(chainId)[storageKey];
-  if (!bundled) return;
-
-  const bundledBlock = ppv1LastSyncedBlock(bundled);
-  const existingRaw = await host.storage.get(storageKey);
-  if (!existingRaw) {
-    await host.storage.set(storageKey, JSON.stringify(bundled));
-    return;
-  }
-
-  try {
-    const existing = JSON.parse(existingRaw) as unknown;
-    if (ppv1LastSyncedBlock(existing) < bundledBlock) {
-      await host.storage.set(storageKey, JSON.stringify(bundled));
-    }
-  } catch {
-    await host.storage.set(storageKey, JSON.stringify(bundled));
-  }
-}
-
 /**
  * Commitment that is not a real pool leaf. A scheme-scoped Tornado scan treats
  * it as a miss and does not record the other scheme's notes.
@@ -810,8 +763,8 @@ export type SchemedPlugins = {
 
 /**
  * One plugin per derivation. Railgun has no scheme split, so both fields are
- * the same instance. Tornado and Privacy Pools use separate storage keys and
- * secret managers; sync them one after the other.
+ * the same instance. Privacy Pools shares public chain state between the two
+ * secret managers; Tornado keeps scheme-prefixed state. Sync them in order.
  */
 export async function createSchemedPlugins(
   protocol: SupportedProtocol,
@@ -826,7 +779,7 @@ export async function createSchemedPlugins(
   const legacy = await createProtocolPlugin(protocol, host, chainId, "legacy", excludeNewPools);
   const signature = await createProtocolPlugin(
     protocol,
-    hostForScheme(host, "signature"),
+    protocol === "privacy-pools" ? host : hostForScheme(host, "signature"),
     chainId,
     "signature",
     excludeNewPools
@@ -882,11 +835,10 @@ export async function createProtocolPlugin(
 
   const entrypointAddress = BigInt(params.entrypoint.entrypointAddress);
 
-  await ensurePpv1BundledStateSeeded(host, chainId, entrypointAddress);
-
   const paymasterConfig = privacyPoolsPaymasterConfig(chainId);
   const ppv1Params = {
     accountIndex: 0,
+    chainStorage: host.storage,
     entrypoint: {
       address: entrypointAddress,
       deploymentBlock: params.entrypoint.deploymentBlock,
@@ -898,9 +850,6 @@ export async function createProtocolPlugin(
         network: host.network,
         aspUrl: oxbowAspUrlForChain(chainId),
       }),
-    ...(chainId === 11155111n
-      ? { initialState: async () => ppv1SepoliaState as never }
-      : {}),
   };
 
   // Sepolia's saga index does not publish Privacy Pools, so that chain keeps
@@ -940,8 +889,13 @@ export async function broadcastTornadoPrivateOp(
     // Viem's default 10s HTTP timeout + retries double-submits over Tor
     // (Pimlico "Already known"). Use a Tor-aware client instead.
     paymasterClientFactory: () =>
-      createTorAwarePaymasterBroadcaster(chainId) as never,
+      createTorAwarePaymasterBroadcaster(chainId),
   });
 
-  return await broadcaster.broadcast(operation as never);
+  const results = await broadcaster.broadcast(operation as never);
+  return Promise.all(results.map(async (result) => {
+    if (!("wait" in result)) return result;
+    const { wait, ...accepted } = result;
+    return { ...accepted, ...await wait() };
+  }));
 }

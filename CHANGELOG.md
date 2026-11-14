@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-14
+
+### Added
+
+- `npm run diagnose:tornado` reports runtime, CPU, memory, Linux pressure/quota information, and cold/warm MiMC tree timings using the installed Tornado SDK's Node backend. It checks parallel/single-threaded roots against each other using synthetic leaves, without wallets, RPC, or network access. Each benchmark has a timeout.
+- `transfer --from <public-sender> --to railgun|privacy-pools|tornado` runs the existing shield flow, including wallet/stealth selectors, names, external sender keys via hidden interactive prompt or `--sender-priv`, max amounts, and Tornado pool and batching options. Railgun and Privacy Pools accept arbitrary amounts within token precision and protocol limits. Tornado ETH amounts must pack exactly into 0.01 ETH multiples by default (0.1 with classic pools); ERC-20 amounts follow pool denominations. Protocol-to-protocol transfers and shield-incompatible flags fail before preparation.
+
+### Fixed
+
+- Restore missing platform-specific optional Rollup and esbuild packages in the lockfile, including Linux x64 GNU, while retaining every existing dependency version. Ubuntu installs no longer need to delete the lockfile to resolve these native build helpers. `npm run check:platform-lock` detects missing variants before they reach another machine.
+
+### Changed
+
+- Bump the CLI to `0.1.9`. CI checks native-package lockfile coverage and runs installation, build, launcher, and Tornado Merkle-worker smoke checks on Ubuntu and macOS, alongside the existing typecheck and test suite.
+- Update Privacy Pools v1 to `0.1.0-alpha.40` and Tornado Cash to `0.1.0-alpha.37`.
+- Privacy Pools v1 rebuilds its protocol cache once after upgrading, using the new SDK state format. Legacy and signature notes share public chain state while keeping separate secrets. Mainnet reuses Saga history (including installed public sync snapshots); Sepolia resyncs from RPC instead of the retired bundled state. Existing wallet keys and notes remain recoverable; the first sync can take longer.
+- Paymaster SDK `broadcast()` now means the bundler accepted the UserOperation; `.wait()` confirms that it mined successfully. The CLI waits before reporting success or saving a fresh recipient, retains submitted hashes when confirmation is uncertain, and fails on reverted operations.
+
 ## [0.1.8] - 2026-11-07
 
 ### Changed

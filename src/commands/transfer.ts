@@ -51,6 +51,7 @@ import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
 import { runPrivateTransfer } from "./private-transfer.js";
+import { runShield } from "./shield.js";
 import { isSupportedProtocol, SUPPORTED_PROTOCOLS_HELP } from "../utils/plugins.js";
 import {
   estimateEthTransferGasReserveWei,
@@ -75,6 +76,11 @@ type TransferOpts = {
   amountFormatted?: string;
   amountMax?: boolean;
   excludeNewPools?: boolean;
+  excludeDenomination?: string[];
+  disallowMultipleUserops?: boolean;
+  skipSim?: boolean;
+  baseFeeGwei?: string;
+  priorityFeeGwei?: string;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -210,7 +216,7 @@ function printTransferDryRunInteractive(
 export function registerTransferCommand(program: Command): void {
   program
     .command("transfer")
-    .description("Transfer ETH or ERC-20 from a public account or private protocol")
+    .description("Transfer ETH or ERC-20 between public accounts, or shield/unshield via a private protocol")
     .option("--wallet <name>", cliOptions.walletPickList)
     .option("--password <password>", cliOptions.password)
     .addOption(passwordFileOption())
@@ -219,7 +225,7 @@ export function registerTransferCommand(program: Command): void {
       "--sender-priv <key>",
       "Private key for an external sender (interactive broadcasts prompt when needed)"
     )
-    .option("--to <address>", "Recipient address, Railgun 0zk address, name (.eth/.gwei/.wei), or stealth meta-address")
+    .option("--to <address|protocol>", `Recipient address, Railgun 0zk address, name (.eth/.gwei/.wei), stealth meta-address, or shield protocol: ${SUPPORTED_PROTOCOLS_HELP}`)
     .option(
       "--stealth",
       "Send via EIP-5564: resolve scheme-1 meta from --to (meta URI, name text record, or ERC-6538 registry)"
@@ -233,15 +239,44 @@ export function registerTransferCommand(program: Command): void {
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
     .option(
       "--amount-max",
-      "Transfer the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance)"
+      "Transfer/shield the maximum spendable amount after fees and gas; Tornado shields floor to an allowed denomination"
     )
-    .option("--exclude-new-pools", "Tornado private transfer only: use classic pools")
+    .option("--exclude-new-pools", "With --from tornado or --to tornado: use classic pools")
+    .option("--exclude-denomination <amount>", "With --to tornado: exclude this denomination (repeatable)", (value: string, values: string[]) => [...values, value], [])
+    .option("--disallow-multiple-userops", "With --to tornado: require a packing of at most five deposit notes")
+    .option("--skip-sim", "With --to <protocol>: skip simulation and fee estimates (dry-run only)")
+    .option("--base-fee-gwei <gwei>", "With --to <protocol>: base fee (gwei)")
+    .option("--priority-fee-gwei <gwei>", "With --to <protocol>: priority fee (gwei)")
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransferOpts) => {
       const privateProtocol = opts.from?.trim();
+      const shieldProtocol = opts.to?.trim();
+      if (isSupportedProtocol(shieldProtocol)) {
+        if (isSupportedProtocol(privateProtocol)) {
+          cliError("Protocol-to-protocol transfers are not supported. Use a public sender with --to <protocol>.");
+          return;
+        }
+        if (opts.stealth) {
+          cliError("--stealth requires a public recipient, not --to <protocol>.");
+          return;
+        }
+        const { to, stealth, ...shieldOpts } = opts;
+        return runShield({ ...shieldOpts, protocol: shieldProtocol });
+      }
+      const shieldOnlyOption = [
+        opts.excludeDenomination?.length ? "--exclude-denomination" : undefined,
+        opts.disallowMultipleUserops ? "--disallow-multiple-userops" : undefined,
+        opts.skipSim ? "--skip-sim" : undefined,
+        opts.baseFeeGwei !== undefined ? "--base-fee-gwei" : undefined,
+        opts.priorityFeeGwei !== undefined ? "--priority-fee-gwei" : undefined,
+      ].find(Boolean);
+      if (shieldOnlyOption) {
+        cliError(`${shieldOnlyOption} requires --to <protocol>.`);
+        return;
+      }
       if (isSupportedProtocol(privateProtocol)) {
         if (opts.senderPriv !== undefined) {
           cliError("--sender-priv is only supported for public transfers.");
@@ -270,7 +305,7 @@ export function registerTransferCommand(program: Command): void {
         });
       }
       if (opts.excludeNewPools) {
-        cliError("--exclude-new-pools requires --from tornado.");
+        cliError("--exclude-new-pools requires --from tornado or --to tornado.");
         return;
       }
 

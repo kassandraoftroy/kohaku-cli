@@ -287,52 +287,8 @@ function printShieldDryRunInteractive(
   }
 }
 
-export function registerShieldCommand(program: Command): void {
-  program
-    .command("shield")
-    .description(
-      "Shield public funds (Tornado supports sequential EIP-7702 UserOps via Pimlico)"
-    )
-    .option(
-      "--protocol <protocol>",
-      `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
-    )
-    .option("--wallet <name>", cliOptions.walletPickList)
-    .option("--password <password>", cliOptions.password)
-    .addOption(passwordFileOption())
-    .option(
-      "--from <address-or-index>",
-      "Public sender address, HD index, or stealth selector (s0)"
-    )
-    .option(
-      "--sender-priv <key>",
-      "Private key for an external sender (interactive broadcasts prompt when needed)"
-    )
-    .option(
-      "--broadcast",
-      "Sign and submit on-chain; Tornado may use multiple sequential transactions"
-    )
-    .option(
-      "--skip-sim",
-      "Skip on-chain simulation and fee estimates (dry-run only; not allowed with --broadcast)"
-    )
-    .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
-    .option("--exclude-denomination <amount>", "Tornado only: exclude this pool denomination in token units (repeatable)", (value: string, values: string[]) => [...values, value], [])
-    .option("--disallow-multiple-userops", "Tornado only: fail before preparation unless the packing fits within five deposit notes")
-    .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
-    .option("--amount-wei <amount>", "Raw token amount in wei/base units")
-    .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
-    .option(
-      "--amount-max",
-      "Shield the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance; Tornado: floored to the smallest pool denomination)"
-    )
-    .option("--rpc-url <url>", cliOptions.rpcUrl)
-    .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
-    .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
-    .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
-    .option("--without-tor", cliOptions.withoutTor)
-    .option("--dataDir <path>", cliOptions.dataDir)
-    .action(async (opts: ShieldOpts) => {
+/** Shared shield flow for `shield` and `transfer --to <protocol>`. */
+export async function runShield(opts: ShieldOpts): Promise<void> {
       const resolvedProtocol = resolveProtocolOption(opts.protocol);
       if (!resolvedProtocol.ok) {
         cliError(
@@ -1323,5 +1279,52 @@ export function registerShieldCommand(program: Command): void {
         }
         console.log(chalk.green("✔ Shield flow completed."));
       }
-    });
+}
+
+export function registerShieldCommand(program: Command): void {
+  program
+    .command("shield")
+    .description(
+      "Shield public funds (Tornado supports sequential EIP-7702 UserOps via Pimlico)"
+    )
+    .option(
+      "--protocol <protocol>",
+      `Protocol: ${SUPPORTED_PROTOCOLS_HELP} (or set DEFAULT_PRIVACY_PROTOCOL)`
+    )
+    .option("--wallet <name>", cliOptions.walletPickList)
+    .option("--password <password>", cliOptions.password)
+    .addOption(passwordFileOption())
+    .option(
+      "--from <address-or-index>",
+      "Public sender address, HD index, or stealth selector (s0)"
+    )
+    .option(
+      "--sender-priv <key>",
+      "Private key for an external sender (interactive broadcasts prompt when needed)"
+    )
+    .option(
+      "--broadcast",
+      "Sign and submit on-chain; Tornado may use multiple sequential transactions"
+    )
+    .option(
+      "--skip-sim",
+      "Skip on-chain simulation and fee estimates (dry-run only; not allowed with --broadcast)"
+    )
+    .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
+    .option("--exclude-denomination <amount>", "Tornado only: exclude this pool denomination in token units (repeatable)", (value: string, values: string[]) => [...values, value], [])
+    .option("--disallow-multiple-userops", "Tornado only: fail before preparation unless the packing fits within five deposit notes")
+    .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
+    .option("--amount-wei <amount>", "Raw token amount in wei/base units")
+    .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")
+    .option(
+      "--amount-max",
+      "Shield the maximum spendable amount (ETH: balance minus estimated gas; ERC-20: full token balance; Tornado: floored to the smallest pool denomination)"
+    )
+    .option("--rpc-url <url>", cliOptions.rpcUrl)
+    .option("--base-fee-gwei <gwei>", "Base fee (gwei)")
+    .option("--priority-fee-gwei <gwei>", "Priority fee (gwei)")
+    .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
+    .option("--without-tor", cliOptions.withoutTor)
+    .option("--dataDir <path>", cliOptions.dataDir)
+    .action(runShield);
 }
