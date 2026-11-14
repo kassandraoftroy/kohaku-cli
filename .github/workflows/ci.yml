@@ -7,13 +7,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: node scripts/check-platform-lock.mjs
+      - run: npm ci --include=optional
+      - run: npm run build
+      - run: node bin/kohaku.mjs --version
+      - run: npm run diagnose:tornado -- --leaves 1024
       - run: npm run typecheck
       - run: npm test

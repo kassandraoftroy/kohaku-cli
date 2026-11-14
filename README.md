@@ -18,6 +18,8 @@ npm run build
 npm run dev:prod -- <command> ...
 ```
 
+Keep the committed `package-lock.json` when installing on another OS or CPU architecture. It includes the platform-specific Rollup and esbuild binaries; `node_modules` should be installed on the target machine. For a clean installation from the pinned versions, use `npm ci --include=optional` followed by `npm run build`. The explicit include also overrides an npm configuration that omits optional dependencies. After changing dependencies, run `npm run check:platform-lock` to catch platform entries removed by npm's [optional-dependency lockfile bug](https://github.com/npm/cli/issues/4828).
+
 After build, run via the bin launcher (registers an ESM resolve hook, then loads `dist/`):
 
 ```bash
@@ -27,6 +29,16 @@ npm start -- --version
 ```
 
 Examples below use `kohaku`; swap in `npm run dev:prod --` if you have not built yet.
+
+For slow Tornado `Merkle tree for ... leaves took ...ms` operations, run the same diagnostic on each machine:
+
+```bash
+npm run diagnose:tornado
+# Optionally match the leaf count from the slow operation:
+npm run diagnose:tornado -- --leaves 65536 --timeout-ms 180000
+```
+
+This reports Node/V8 versions, CPU availability, memory/load, Linux pressure and cgroup limits when available, and cold/warm SDK tree timings versus a single-threaded build. It also times proof extraction from an existing tree and checks that all roots match. Only synthetic leaves are used; no wallet, RPC, or network access is needed. Compare the same leaf count and runtime version. The installed SDK's MiMC trees use JavaScript BigInt and Node worker threads, independently of Rollup's native build binary. A full-node workload, CPU limits, memory pressure, or runtime differences can affect the results; a machine-specific speedup requires those measurements. The diagnostic measures Merkle construction, not Groth16 proving or RPC sync latency.
 
 Set your RPC once per shell (Sepolia for `--testnet` wallets):
 

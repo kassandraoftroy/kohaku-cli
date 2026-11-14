@@ -1,6 +1,6 @@
 {
     "name": "kohaku-cli",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "type": "module",
     "engines": {
         "node": ">=22"
@@ -12,6 +12,8 @@
         "build": "tsup",
         "typecheck": "tsc --noEmit",
         "test": "tsx --test tests/*.test.ts",
+        "check:platform-lock": "node scripts/check-platform-lock.mjs",
+        "diagnose:tornado": "node scripts/diagnose-tornado-performance.mjs",
         "dev": "tsx src/index.ts",
         "dev:prod": "NODE_ENV=production tsx src/index.ts",
         "start": "node ./bin/kohaku.mjs"
