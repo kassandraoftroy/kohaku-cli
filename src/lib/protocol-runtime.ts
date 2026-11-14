@@ -24,8 +24,8 @@ export type ProtocolRuntimeContext = {
 /**
  * Runs `fn` with a protocol host and both derivation plugins. Railgun reuses
  * one session per wallet/chain (both fields are that plugin). Tornado and
- * Privacy Pools open a legacy plugin on the existing storage keys and a
- * signature plugin on prefixed keys.
+ * Privacy Pools open separate note scanners. PPv1 shares public chain state;
+ * Tornado keeps signature state on prefixed keys.
  */
 export async function withProtocolRuntime<T>(
   ctx: ProtocolRuntimeContext,

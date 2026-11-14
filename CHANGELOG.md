@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Update Privacy Pools v1 to `0.1.0-alpha.40` and Tornado Cash to `0.1.0-alpha.37`.
+- Privacy Pools v1 rebuilds its protocol cache once after upgrading, using the new SDK state format. Legacy and signature notes share public chain state while keeping separate secrets. Mainnet reuses Saga history (including installed public sync snapshots); Sepolia resyncs from RPC instead of the retired bundled state. Existing wallet keys and notes remain recoverable; the first sync can take longer.
+- Paymaster SDK `broadcast()` now means the bundler accepted the UserOperation; `.wait()` confirms that it mined successfully. The CLI waits before reporting success or saving a fresh recipient, retains submitted hashes when confirmation is uncertain, and fails on reverted operations.
+
 ## [0.1.8] - 2026-11-07
 
 ### Changed
