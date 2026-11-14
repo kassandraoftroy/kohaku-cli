@@ -35,19 +35,24 @@ it("CLI rejects restricted or multi-UserOp plans before SDK preparation, and par
       { flags: ["--amount-formatted", "3.3", "--exclude-denomination", "3", "--exclude-denomination", "0.3", "--disallow-multiple-userops"], error: /five deposit notes/ },
       { flags: ["--amount-formatted", "0.02", "--exclude-denomination", "0.01"], error: /No exact Tornado packing/ },
       { flags: ["--amount-formatted", "1", "--exclude-denomination", "0.2"], error: /not a supported denomination/ },
+      { flags: ["--amount-formatted", "0.015"], error: /No exact Tornado packing/ },
+      { flags: ["--amount-wei", "15000000000000000"], error: /No exact Tornado packing/ },
+      { flags: ["--amount-formatted", "0.02", "--exclude-new-pools"], error: /No exact Tornado packing/ },
     ];
-    for (const { flags, error } of cases) {
-      const result = await new Promise<{ code: number | null; text: string }>((resolve, reject) => {
-        const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-        const child = spawn(process.execPath, ["--import", "tsx", cli, "shield", "--protocol", "tornado", "--non-interactive", "--without-tor",
-          "--wallet", "test", "--password", "password", "--dataDir", dir, "--rpc-url", `http://127.0.0.1:${address.port}`, "--from", "0", ...flags], { env });
-        let text = ""; child.stdout.on("data", (chunk) => { text += chunk; }); child.stderr.on("data", (chunk) => { text += chunk; });
-        const timeout = setTimeout(() => { child.kill(); reject(new Error("CLI did not stop before SDK preparation")); }, 15_000);
-        child.on("error", reject); child.on("close", (code) => { clearTimeout(timeout); resolve({ code, text }); });
-      });
-      assert.equal(result.code, 1, result.text); assert.match(result.text, error);
-      assert.equal(existsSync(join(walletDir, "shield-runs")), false);
-      assert.equal(existsSync(join(walletDir, "tc-storage.json")), false);
+    for (const command of [["shield", "--protocol", "tornado"], ["transfer", "--to", "tornado"]]) {
+      for (const { flags, error } of cases) {
+        const result = await new Promise<{ code: number | null; text: string }>((resolve, reject) => {
+          const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+          const child = spawn(process.execPath, ["--import", "tsx", cli, ...command, "--non-interactive", "--without-tor",
+            "--wallet", "test", "--password", "password", "--dataDir", dir, "--rpc-url", `http://127.0.0.1:${address.port}`, "--from", "0", ...flags], { env });
+          let text = ""; child.stdout.on("data", (chunk) => { text += chunk; }); child.stderr.on("data", (chunk) => { text += chunk; });
+          const timeout = setTimeout(() => { child.kill(); reject(new Error("CLI did not stop before SDK preparation")); }, 15_000);
+          child.on("error", reject); child.on("close", (code) => { clearTimeout(timeout); resolve({ code, text }); });
+        });
+        assert.equal(result.code, 1, result.text); assert.match(result.text, error);
+        assert.equal(existsSync(join(walletDir, "shield-runs")), false);
+        assert.equal(existsSync(join(walletDir, "tc-storage.json")), false);
+      }
     }
     assert.ok(methods.length > 0);
     assert.ok(methods.every((method) => method === "eth_chainId"), methods.join(","));

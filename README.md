@@ -363,7 +363,9 @@ kohaku balances --wallet testWallet --skip-stealth-scan
 
 ### `transfer`
 
-Transfer ETH or ERC-20 tokens from one wallet public account to any public address. For a public source, the command simulates the transfer and prints its transaction payload unless `--broadcast` is set. Set `--from` to `railgun`, `tornado`, or `privacy-pools` to run the same private transfer as `private-transfer --protocol <protocol>`. A Railgun `--to 0zk…` recipient receives an internal private transfer without unshielding; public recipients receive an exact amount through a fresh account.
+Transfer ETH or ERC-20 tokens from a public account to a public address or shield them into a private protocol. Set `--to` to `railgun`, `tornado`, or `privacy-pools` to run `shield --protocol <protocol>` with the same sender, amount, and broadcast options. The sender can be a wallet HD index, stored stealth selector, address, or name. External senders use `--sender-priv`, or a hidden key prompt during an interactive broadcast; their keys are checked against the sender and never saved. Dry runs need no external key. Privacy Pools and Railgun accept arbitrary token amounts subject to token precision, protocol minimums, fees, and available funds. Tornado ETH shields require an exact multiple of 0.01 ETH by default (0.1 with `--exclude-new-pools`); ERC-20 shields follow their pool denominations. Explicit amounts are never rounded.
+
+Set `--from` to `railgun`, `tornado`, or `privacy-pools` to run the same private transfer as `private-transfer --protocol <protocol>`. A Railgun `--to 0zk…` recipient receives an internal private transfer without unshielding; public recipients receive an exact amount through a fresh account. Protocol-to-protocol transfers are rejected. Omit `--broadcast` to prepare/simulate a transfer or shield without submitting it.
 
 | Option | Description |
 |--------|-------------|
@@ -371,19 +373,23 @@ Transfer ETH or ERC-20 tokens from one wallet public account to any public addre
 | `--password <password>` | Unlock password. |
 | `--from <address-or-index\|protocol>` | Public account address, HD index, stealth selector (`s0`), or private protocol (`railgun`, `tornado`, `privacy-pools`). |
 | `--sender-priv <key>` | Private key for an external sender. Interactive broadcasts prompt with hidden input if the selected address has no stored key. The key must match `--from` and is not saved. |
-| `--to <address>` | Recipient address. |
+| `--to <address\|protocol>` | Recipient address/name, or `railgun`, `tornado`, `privacy-pools` to shield. |
 | `--token <address\|symbol\|eth>` | Token address or symbol (default: `eth`). |
 | `--amount-wei <n>` | Amount in base units. |
 | `--amount-formatted <decimal>` | Human-readable amount using token decimals. |
 | `--amount-max` | Maximum recipient amount after estimated fees. Public ERC-20 transfers send the full token balance; public ETH transfers reserve gas using the signed fee caps. |
-| `--exclude-new-pools` | With `--from tornado` only, use classic Tornado pools. |
+| `--exclude-new-pools` | With `--from tornado` or `--to tornado`, use classic Tornado pools. |
+| `--exclude-denomination <amount>` | With `--to tornado`, exclude a denomination in token units (repeatable). |
+| `--disallow-multiple-userops` | With `--to tornado`, require a packing of at most five notes. |
+| `--skip-sim` | With `--to <protocol>`, skip simulation and fee estimates for a dry run. Cannot combine with `--broadcast`. |
+| `--base-fee-gwei <gwei>`, `--priority-fee-gwei <gwei>` | Shield fee settings with `--to <protocol>`. |
 | `--rpc-url <url>` | RPC endpoint. |
 | `--broadcast` | Sign and submit. Omit to print a public transaction payload or prepared private operation. |
 | `--without-tor` | Disable Tor for non-RPC HTTP (Pimlico UserOps, etc.). RPC stays clearnet. Or set `KOHAKU_WITHOUT_TOR=1`. |
 | `--non-interactive` | JSON output; requires `--wallet`, `--password`, `--from`, `--to`, and one amount flag. |
 | `--dataDir <path>` | Data root. |
 
-Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted. Private protocol sources accept the same options as `private-transfer`; `--sender-priv <key>` and `--stealth` are public-transfer-only. `--amount-max` also works with private protocol sources and reserves the relevant protocol and gas fees.
+Provide at most one of `--amount-wei`, `--amount-formatted`, or `--amount-max`. In interactive mode, omitted sender, recipient, and amount values are prompted. Private protocol sources accept the same options as `private-transfer`. `--sender-priv <key>` accepts public senders for both public transfers and shields; `--stealth` requires a public recipient. `--amount-max` works in all three flows and reserves the relevant fees and gas; Tornado shields floor it to an allowed denomination.
 
 **Examples:**
 
@@ -392,6 +398,10 @@ kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --amount-formatted
 kohaku transfer --wallet testWallet --from 0 --to 0xRecipient --token USDC --amount-max --broadcast
 kohaku transfer --wallet testWallet --from tornado --to 0xRecipient --amount-formatted 0.1 --broadcast
 kohaku transfer --wallet testWallet --from railgun --to 0xRecipient --amount-formatted 0.1 --broadcast
+kohaku transfer --wallet testWallet --from 0 --to tornado --amount-formatted 0.02 --broadcast
+kohaku transfer --wallet testWallet --from 0 --to privacy-pools --amount-formatted 0.012345 --broadcast
+kohaku transfer --wallet testWallet --from 0xExternalSender --to railgun --amount-formatted 0.012345 --broadcast
+# The last command prompts for the external sender's private key; automation uses --sender-priv <key>.
 ```
 
 ---

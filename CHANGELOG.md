@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `transfer --from <public-sender> --to railgun|privacy-pools|tornado` runs the existing shield flow, including wallet/stealth selectors, names, external sender keys via hidden interactive prompt or `--sender-priv`, max amounts, and Tornado pool and batching options. Railgun and Privacy Pools accept arbitrary amounts within token precision and protocol limits. Tornado ETH amounts must pack exactly into 0.01 ETH multiples by default (0.1 with classic pools); ERC-20 amounts follow pool denominations. Protocol-to-protocol transfers and shield-incompatible flags fail before preparation.
+
 ### Changed
 
 - Update Privacy Pools v1 to `0.1.0-alpha.40` and Tornado Cash to `0.1.0-alpha.37`.
