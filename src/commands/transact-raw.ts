@@ -4,7 +4,15 @@ import { confirm, select } from "@inquirer/prompts";
 import { spinner } from "@clack/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { getAddress, isAddress } from "viem";
+import {
+  getAddress,
+  isAddress,
+  isAddressEqual,
+  keccak256,
+  parseTransaction,
+  recoverTransactionAddress,
+} from "viem";
+import { createKeycardAccount } from "../utils/keycard-account.js";
 
 import {
   formatPublicAccountBalanceLabel,
@@ -48,6 +56,14 @@ import {
 } from "../utils/wallets-util";
 
 type TransactRawOpts = {
+  signer?: string;
+  keycardCli?: string;
+  keycardPath?: string;
+  chainId?: string;
+  nonce?: string;
+  gas?: string;
+  maxFeePerGas?: string;
+  maxPriorityFeePerGas?: string;
   wallet?: string;
   password?: string;
   passwordFile?: string;
@@ -233,12 +249,19 @@ export function registerTransactRawCommand(program: Command): void {
       "--broadcast",
       "Sign and submit on-chain (one EOA tx, or one EIP-7702 UserOp when 2+ calls)"
     )
+    .option("--signer <backend>", "Signer backend: software or keycard", "software")
+    .option("--keycard-cli <path>", "Patched Keycard CLI binary")
+    .option("--keycard-path <path>", "Keycard derivation path")
+    .option("--chain-id <id>", "Offline hardware transaction chain ID")
+    .option("--nonce <nonce>", "Offline hardware transaction nonce")
+    .option("--gas <units>", "Offline hardware transaction gas limit")
+    .option("--max-fee-per-gas <wei>", "EIP-1559 maximum fee per gas")
+    .option("--max-priority-fee-per-gas <wei>", "EIP-1559 priority fee per gas")
     .option("--rpc-url <url>", cliOptions.rpcUrl)
     .option("--non-interactive", cliOptions.nonInteractiveShieldLike)
     .option("--without-tor", cliOptions.withoutTor)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: TransactRawOpts) => {
-      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
 
       let targets: string[];
       let payloads: string[];
@@ -257,6 +280,166 @@ export function registerTransactRawCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+
+
+      // Prototype hardware path: offline, single EIP-1559 transaction.
+      // Never unlock a software wallet or initialize an RPC client.
+      if (opts.signer !== "software" && opts.signer !== "keycard") {
+        cliError("Unknown --signer backend.");
+        return;
+      }
+
+      if (opts.signer === "keycard") {
+        try {
+          if (opts.broadcast) {
+            throw new Error("Keycard broadcasting is disabled.");
+          }
+          if (opts.fromPriv) {
+            throw new Error("--from-priv cannot be used with Keycard.");
+          }
+          if (
+            opts.wallet || opts.password || opts.passwordFile ||
+            opts.rpcUrl
+          ) {
+            throw new Error(
+              "Offline Keycard signing does not use wallet, password, or RPC options."
+            );
+          }
+          if (targets.length !== 1) {
+            throw new Error(
+              "Keycard prototype supports exactly one transaction."
+            );
+          }
+
+          function integer(
+            raw: string | undefined,
+            flag: string,
+            minimum: number,
+          ): number {
+            if (!raw || !/^[0-9]+$/.test(raw)) {
+              throw new Error(`${flag} requires an unsigned integer.`);
+            }
+            const value = Number(raw);
+            if (!Number.isSafeInteger(value) || value < minimum) {
+              throw new Error(`Invalid ${flag}.`);
+            }
+            return value;
+          }
+
+          function amount(
+            raw: string | undefined,
+            flag: string,
+            minimum: bigint,
+          ): bigint {
+            if (!raw || !/^[0-9]+$/.test(raw)) {
+              throw new Error(`${flag} requires an unsigned integer.`);
+            }
+            const value = BigInt(raw);
+            if (value < minimum) {
+              throw new Error(`Invalid ${flag}.`);
+            }
+            return value;
+          }
+
+          const chainId = integer(opts.chainId, "--chain-id", 1);
+          if (chainId !== 31337) {
+            throw new Error(
+              "Prototype restricted to development chain 31337."
+            );
+          }
+
+          const nonce = integer(opts.nonce, "--nonce", 0);
+          const gas = amount(opts.gas, "--gas", 1n);
+          const maxFeePerGas = amount(
+            opts.maxFeePerGas, "--max-fee-per-gas", 0n
+          );
+          const maxPriorityFeePerGas = amount(
+            opts.maxPriorityFeePerGas,
+            "--max-priority-fee-per-gas", 0n
+          );
+
+          if (maxPriorityFeePerGas > maxFeePerGas) {
+            throw new Error("Priority fee exceeds maximum fee.");
+          }
+
+          const binary =
+            opts.keycardCli ?? process.env.KOHAKU_KEYCARD_CLI;
+
+          if (!binary) {
+            throw new Error(
+              "Provide --keycard-cli or KOHAKU_KEYCARD_CLI."
+            );
+          }
+
+          const account = createKeycardAccount({
+            binary,
+            path: opts.keycardPath,
+          });
+
+          if (
+            opts.from &&
+            (!isAddress(opts.from) ||
+              !isAddressEqual(opts.from, account.address))
+          ) {
+            throw new Error("--from does not match Keycard address.");
+          }
+
+          const tx = buildRawTransactions(
+            targets, payloads, values
+          )[0]!;
+
+          const signed = await account.signTransaction({
+            type: "eip1559",
+            chainId,
+            nonce,
+            to: tx.to as `0x${string}`,
+            data: tx.data as `0x${string}`,
+            value: tx.value,
+            gas,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
+          });
+
+          if (!signed.startsWith("0x02")) {
+            throw new Error("Expected EIP-1559 transaction.");
+          }
+
+          const parsed = parseTransaction(signed);
+          const recovered = await recoverTransactionAddress({
+            serializedTransaction: signed as `0x02${string}`,
+          });
+
+          if (
+            !isAddressEqual(recovered, account.address) ||
+            parsed.type !== "eip1559" ||
+            parsed.chainId !== chainId ||
+            parsed.nonce !== nonce ||
+            !parsed.to ||
+            !isAddressEqual(parsed.to, getAddress(tx.to))
+          ) {
+            throw new Error(
+              "Offline hardware transaction verification failed."
+            );
+          }
+
+          console.log(JSON.stringify({
+            mode: "keycard-offline-eip1559",
+            broadcast: false,
+            from: account.address,
+            to: tx.to,
+            chainId,
+            nonce,
+            value: tx.value.toString(),
+            transactionHash: keccak256(signed),
+            signedTransaction: signed,
+          }, null, 2));
+        } catch (e) {
+          cliErrorFromCaught(e);
+        }
+        return;
+      }
+
+      const rpcUrl = resolveRpcUrl(opts.rpcUrl);
 
       const dataDir = opts.dataDir ?? DEFAULT_DATA_DIR;
       const walletName = await resolveWalletNameOrPrompt({
