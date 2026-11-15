@@ -15,7 +15,7 @@ import {
   createBundlerClient,
   toSimple7702SmartAccount,
 } from "viem/account-abstraction";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { privateKeyToAccount, type LocalAccount, type PrivateKeyAccount } from "viem/accounts";
 
 import {
   buildFeePreview,
@@ -106,9 +106,55 @@ export async function needsSimple7702Authorization(
   return true;
 }
 
+export type Eip7702Owner = LocalAccount & {
+  signAuthorization: NonNullable<LocalAccount["signAuthorization"]>;
+};
+
+export function resolveEip7702Owner(opts: {
+  owner?: LocalAccount;
+  privateKey?: string;
+  senderAddress?: string;
+}): Eip7702Owner {
+  if (opts.owner && opts.privateKey) {
+    throw new Error("Provide either owner or privateKey, not both.");
+  }
+
+  const owner =
+    opts.owner ??
+    (opts.privateKey
+      ? privateKeyToAccount(normalizePrivateKey(opts.privateKey))
+      : undefined);
+
+  if (!owner) {
+    throw new Error("EIP-7702 requires an owner signer.");
+  }
+
+  if (typeof owner.signAuthorization !== "function") {
+    throw new Error("EIP-7702 owner must support signAuthorization.");
+  }
+
+  if (
+    opts.senderAddress &&
+    !isAddressEqual(owner.address, opts.senderAddress as Address)
+  ) {
+    throw new Error("EIP-7702 signer address does not match sender.");
+  }
+
+  return owner as Eip7702Owner;
+}
+
+/**
+ * Viem's Simple7702 helper expects PrivateKeyAccount.
+ * Keep compatibility isolated until upstream supports
+ * hardware-backed account types directly.
+ */
+function toViem7702Owner(owner: Eip7702Owner): PrivateKeyAccount {
+  return owner as PrivateKeyAccount;
+}
+
 async function signAuthIfNeeded(
   client: KohakuPublicClient,
-  owner: PrivateKeyAccount,
+  owner: Eip7702Owner,
   needsAuth: boolean
 ) {
   if (!needsAuth) return undefined;
@@ -182,6 +228,7 @@ export async function estimateEip7702BatchUserOpFee(
     senderAddress: string;
     calls: readonly Eip7702BatchCall[];
     privateKey?: string;
+    owner?: LocalAccount;
   } & Eip7702TorOpts
 ): Promise<FeePreview> {
   if (opts.calls.length === 0) {
@@ -192,15 +239,15 @@ export async function estimateEip7702BatchUserOpFee(
     !opts.withoutTor,
     { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
     async () => {
-      if (opts.privateKey) {
-        const owner = privateKeyToAccount(normalizePrivateKey(opts.privateKey));
+      if (opts.privateKey || opts.owner) {
+        const owner = resolveEip7702Owner(opts);
         const needsAuth = await needsSimple7702Authorization(
           opts.client,
           owner.address
         );
         const account = await toSimple7702SmartAccount({
           client: opts.client,
-          owner,
+          owner: toViem7702Owner(owner),
           implementation: SIMPLE_7702_IMPLEMENTATION,
         });
         const { bundlerClient } = createPimlicoBundlerClient({
@@ -257,7 +304,8 @@ export async function estimateEip7702BatchUserOpFee(
 export async function sendEip7702BatchUserOperation(
   opts: {
     client: KohakuPublicClient;
-    privateKey: string;
+    privateKey?: string;
+    owner?: LocalAccount;
     chainId: bigint;
     calls: readonly Eip7702BatchCall[];
     /** Persist the deterministic hash before sending. A timeout must not trigger the next batch. */
@@ -272,7 +320,7 @@ export async function sendEip7702BatchUserOperation(
     !opts.withoutTor,
     { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
     async () => {
-      const owner = privateKeyToAccount(normalizePrivateKey(opts.privateKey));
+      const owner = resolveEip7702Owner(opts);
       const needsAuth = await needsSimple7702Authorization(
         opts.client,
         owner.address
@@ -280,7 +328,7 @@ export async function sendEip7702BatchUserOperation(
 
       const account = await toSimple7702SmartAccount({
         client: opts.client,
-        owner,
+        owner: toViem7702Owner(owner),
         implementation: SIMPLE_7702_IMPLEMENTATION,
       });
 
