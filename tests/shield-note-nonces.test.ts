@@ -5,6 +5,7 @@ import { SignatureSecretManager as TornadoSecrets, TornadoInstances } from "@koh
 import { SignatureSecretManager as PrivacyPoolsSecrets, PrivacyPoolsV1_0xBow } from "@kohaku-eth/privacy-pools";
 import { decodeFunctionData, encodeFunctionData, getAddress, parseAbi, toHex } from "viem";
 import { allocateShieldNonces, freshShieldNoteNonces, shieldNonceHistory } from "../src/utils/shield-note-nonces.js";
+import { tornadoSignatureNonceStorage } from "../src/utils/tornado-signature-nonces.js";
 
 const host = { keystore: { deriveAt: async () => `0x${"12".repeat(32)}` }, provider: { getBlockNumber: async () => 10n } } as unknown as Host;
 const tcAbi = parseAbi(["function deposit(bytes32 commitment) payable"]);
@@ -24,6 +25,16 @@ function dump(protocol: "tornado" | "privacy-pools", deposits: unknown[] = [], w
     pools: { poolsTuples: tcPools.map((pool) => [toHex(pool.address), { lastSyncedBlock: "0xa" }]) },
     sync: { lastSyncedBlock: "0xa" },
   } };
+}
+
+function tornadoHost(state: ReturnType<typeof dump>, reserved?: number): Host {
+  const values = new Map(Object.entries(state).map(([key, value]) => [key, JSON.stringify({
+    ...value, ...(reserved === undefined ? {} : { signatureNonces: { nextNonce: reserved } }),
+  })]));
+  return { ...host, storage: tornadoSignatureNonceStorage({
+    _brand: "Storage", get: async (key) => values.get(key) ?? null,
+    set: async (key, value) => { values.set(key, value); },
+  }) };
 }
 
 it("allocates one sequence across a mixed-pool packing and skips any pool's spent or unspent nonce", async () => {
@@ -72,7 +83,7 @@ it("Tornado checks real SDK secrets for a different asset pool and preserves app
   const state = dump("tornado", [[toHex(usedPool), [[toHex(used.commitment), { spent: true }]]]]);
   const approval = { to: address(99n), data: "0x095ea7b3", value: 0n };
   let refreshes = 0;
-  const calls = await freshShieldNoteNonces({ protocol: "tornado", host, chainId,
+  const calls = await freshShieldNoteNonces({ protocol: "tornado", host: tornadoHost(state), chainId,
     source: { sync: async () => { refreshes++; }, dumpState: () => state },
     calls: [approval, tcCall(poolA), tcCall(poolB), tcCall(poolA)],
   });
@@ -90,7 +101,7 @@ it("Tornado rejects a matching nullifier at any pool even without a matching dep
   const manager = await TornadoSecrets({ host, accountIndex: 0 });
   const spent = await manager.getSignatureSecrets({ chainId, nonce: 0, poolAddress: poolB });
   const state = dump("tornado", [], [[toHex(spent.nullifierHash), {}]]);
-  const [call] = await freshShieldNoteNonces({ protocol: "tornado", host, chainId,
+  const [call] = await freshShieldNoteNonces({ protocol: "tornado", host: tornadoHost(state), chainId,
     source: { sync: async () => {}, dumpState: () => state }, calls: [tcCall(poolA)],
   });
   const next = await manager.getSignatureSecrets({ chainId, nonce: 1, poolAddress: poolA });
@@ -147,9 +158,32 @@ it("refreshes again after an externally submitted deposit and keeps protocol seq
   assert.notEqual(first[0]!.data, second[0]!.data);
   assert.equal(refreshes, 2);
   const tcManager = await TornadoSecrets({ host, accountIndex: 0 });
-  const tornado = await freshShieldNoteNonces({ protocol: "tornado", host, chainId,
+  const tornado = await freshShieldNoteNonces({ protocol: "tornado", host: tornadoHost(dump("tornado")), chainId,
     source: { sync: async () => {}, dumpState: () => dump("tornado") }, calls: [tcCall(poolA)],
   });
   const tcZero = await tcManager.getSignatureSecrets({ chainId, nonce: 0, poolAddress: poolA });
   assert.deepEqual(decodeFunctionData({ abi: tcAbi, data: tornado[0]!.data as `0x${string}` }).args, [toHex(tcZero.commitment, { size: 32 })]);
+});
+
+it("Tornado rewrites after durable reservations and retains them through stale SDK sync writes", async () => {
+  const state = dump("tornado");
+  const reservedHost = tornadoHost(state, 40);
+  const manager = await TornadoSecrets({ host: reservedHost, accountIndex: 0 });
+  const [key, publicState] = Object.entries(state)[0]!;
+  const prepare = () => freshShieldNoteNonces({ protocol: "tornado", host: reservedHost, chainId,
+    source: {
+      sync: async () => { await reservedHost.storage.set(key, JSON.stringify(publicState)); },
+      dumpState: () => state,
+    },
+    calls: [tcCall(poolA), tcCall(poolB)],
+  });
+  for (const firstNonce of [40, 42]) {
+    const calls = await prepare();
+    for (let i = 0; i < calls.length; i++) {
+      const secret = await manager.getSignatureSecrets({ chainId, nonce: firstNonce + i, poolAddress: BigInt(calls[i]!.to) });
+      assert.deepEqual(decodeFunctionData({ abi: tcAbi, data: calls[i]!.data as `0x${string}` }).args,
+        [toHex(secret.commitment, { size: 32 })]);
+    }
+    assert.equal(JSON.parse((await reservedHost.storage.get(key))!).signatureNonces.nextNonce, firstNonce + 2);
+  }
 });

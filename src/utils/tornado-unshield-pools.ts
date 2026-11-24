@@ -2,13 +2,14 @@ import { TornadoPaymasterConfigs, type TCNote } from "@kohaku-eth/tornado-cash";
 import { formatUnits, getAddress, parseAbi, type Address } from "viem";
 import type { KohakuPublicClient } from "./rpc.js";
 import { tornadoPoolsForChain } from "./tornado-pools.js";
+import { tornadoNoteSelection } from "./tornado-note-selection.js";
 
 export type TornadoWithdrawalNote = Pick<TCNote, "pool" | "amount" | "balance">;
 const PAYMASTER_ABI = parseAbi([
   "function instances(address instance) view returns (bool allowed, address token)",
 ]);
 
-/** Match the SDK's largest-denomination-first selection without overshooting. */
+/** Match the SDK's largest-first selection, including exact-combination recovery. */
 export function selectTornadoWithdrawalNotes<T extends TornadoWithdrawalNote>(
   notes: readonly T[],
   amount: bigint
@@ -16,15 +17,17 @@ export function selectTornadoWithdrawalNotes<T extends TornadoWithdrawalNote>(
   if (amount <= 0n) throw new Error("Amount must be greater than zero.");
   const candidates = notes.filter((note) => note.balance > 0n && note.amount > 0n)
     .sort((a, b) => a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0);
-  const selected: T[] = [];
-  let remaining = amount;
-  for (const note of candidates) {
-    if (note.amount > remaining) continue;
-    selected.push(note);
-    remaining -= note.amount;
-    if (remaining === 0n) return selected;
+  const selected = tornadoNoteSelection(candidates.map((note) => note.amount), amount);
+  if (selected.amount !== amount) {
+    throw new Error(`Insufficient Tornado notes to compose ${amount.toString()} base units exactly.`);
   }
-  throw new Error(`Insufficient Tornado notes to compose ${amount.toString()} base units exactly.`);
+  const counts = new Map(selected.counts);
+  return candidates.filter((note) => {
+    const remaining = counts.get(note.amount) ?? 0;
+    if (remaining === 0) return false;
+    counts.set(note.amount, remaining - 1);
+    return true;
+  });
 }
 
 /** Check all selected pools, including execution-phase withdrawals in a batch. */

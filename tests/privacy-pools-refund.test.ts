@@ -8,7 +8,7 @@ const recipient = "0x2222222222222222222222222222222222222222";
 const ETH = { isEth: true, tokenAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   symbol: "ETH", decimals: 18 } as ResolvedTokenMeta;
 const balance = 10n ** 18n;
-type Options = { refundRecipient?: string; exact?: object; delegation?: object };
+type Options = { refundRecipient?: string; exact?: object; delegation?: object; batch?: boolean };
 function plugin(prepare: (asset: { amount: bigint }, to: string, options: Options) => Promise<unknown>) {
   return { notes: async () => [{ balance, approved: true, assetAddress: BigInt(ETH.tokenAddress) }],
     prepareUnshield: prepare } as never;
@@ -30,6 +30,7 @@ test("Privacy Pools custom --to receives gas refunds for max, exact and fallback
           assert.equal(to, recipient);
           assert.equal(options.refundRecipient, recipient);
           assert.equal(options.delegation, undefined);
+          assert.equal(options.batch, false, "custom recipients must remain single-note after SDK fee repricing");
           if (mode === "fallback" && calls === 1) {
             assert.deepEqual(options.exact, {});
             throw new PPv1ExactOutputError(100n, 99n);
@@ -58,6 +59,7 @@ test("Privacy Pools keeps the refund recipient through execution-path fee repric
         assert.equal(to, recipient);
         assert.equal(options.refundRecipient, recipient);
         assert.deepEqual(options.delegation, { mode: "deterministic", path: "m/44'/60'/0'/0/1" });
+        assert.equal(options.batch, true);
         // Force a second preparation with a larger proof-bound fee.
         return { withdrawal: { fee: calls === 1 ? asset.amount - balance / 10n + 1n : 1n } };
       }),
@@ -67,5 +69,25 @@ test("Privacy Pools keeps the refund recipient through execution-path fee repric
       tailCalls: [{ to: recipient, value: 0n, data: "0x" }],
     });
     assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Privacy Pools exact withdrawals can add notes when the executor belongs to the wallet", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    result: { standard: { maxFeePerGas: "0x2", maxPriorityFeePerGas: "0x1" } },
+  });
+  try {
+    await preparePrivacyPoolsUnshield({
+      plugin: plugin(async (_asset, _to, options) => {
+        assert.deepEqual(options.exact, {});
+        assert.equal(options.batch, true);
+        assert.deepEqual(options.delegation, { mode: "deterministic", path: "m/44'/60'/0'/0/1" });
+        return { withdrawal: { fee: 1n } };
+      }),
+      chainId: 1n, rpcUrl: "https://rpc.invalid", tokenMeta: ETH,
+      amountWei: balance / 10n, recipient,
+      recipientDerivationPath: "m/44'/60'/0'/0/1", tailCalls: [],
+    });
   } finally { globalThis.fetch = originalFetch; }
 });

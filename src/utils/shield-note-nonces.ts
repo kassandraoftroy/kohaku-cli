@@ -2,6 +2,7 @@ import type { Host } from "@kohaku-eth/plugins";
 import { SignatureSecretManager as TornadoSecrets, TornadoInstances } from "@kohaku-eth/tornado-cash";
 import { SignatureSecretManager as PrivacyPoolsSecrets, PrivacyPoolsV1_0xBow } from "@kohaku-eth/privacy-pools";
 import { decodeFunctionData, encodeFunctionData, parseAbi, toHex } from "viem";
+import { withTornadoNonceReservation } from "./tornado-signature-nonces.js";
 
 type Protocol = "tornado" | "privacy-pools";
 type Call = { to: string; data: string; value: bigint };
@@ -137,23 +138,31 @@ export async function freshShieldNoteNonces(opts: {
     const index = object(note)[opts.protocol === "tornado" ? "nonce" : "deposit"];
     if (typeof index === "number" && Number.isSafeInteger(index) && index >= 0) startNonce = Math.max(startNonce, index + 1);
   }
-  const history = shieldNonceHistory(opts.protocol, await opts.source.dumpState(), opts.chainId, requiredBlock);
+  const stateDump = await opts.source.dumpState();
+  const history = shieldNonceHistory(opts.protocol, stateDump, opts.chainId, requiredBlock);
   if (opts.protocol === "tornado") {
     const deposits = opts.calls.filter((call) => call.data.slice(0, 10).toLowerCase() === "0xb214faa5");
     if (!deposits.length) throw new Error("No Tornado deposits to allocate.");
     const manager = await TornadoSecrets({ host: opts.host, accountIndex: 0 });
-    const allocations = await allocateShieldNonces({ ...history, startNonce,
-      destinations: deposits.map((call) => BigInt(call.to)),
-      derive: (nonce, poolAddress) => manager.getSignatureSecrets({ nonce, poolAddress, chainId: opts.chainId }),
-    });
-    let index = 0;
-    return opts.calls.map((call) => {
-      if (!deposits.includes(call)) return call;
-      // Decode as well as checking the selector: malformed SDK calls fail closed.
-      decodeFunctionData({ abi: tornadoDeposit, data: call.data as `0x${string}` });
-      const allocation = allocations[index++]!;
-      return { ...call, data: encodeFunctionData({ abi: tornadoDeposit, functionName: "deposit",
-        args: [toHex(allocation.secrets.commitment, { size: 32 })] }) };
+    // dumpState omits the SDK's private reservation counter. Read it from the
+    // signature storage after sync, then reserve the actual rewritten range
+    // before exposing any calls, even for dry runs or partly submitted plans.
+    const stateKey = Object.keys(object(stateDump)).find((key) => key.startsWith(`tornado-cash-state-${opts.chainId}-`))!;
+    return withTornadoNonceReservation(opts.host.storage, stateKey, async (reserved) => {
+      const allocations = await allocateShieldNonces({ ...history, startNonce: Math.max(startNonce, reserved),
+        destinations: deposits.map((call) => BigInt(call.to)),
+        derive: (nonce, poolAddress) => manager.getSignatureSecrets({ nonce, poolAddress, chainId: opts.chainId }),
+      });
+      let index = 0;
+      const value = opts.calls.map((call) => {
+        if (!deposits.includes(call)) return call;
+        // Decode as well as checking the selector: malformed SDK calls fail closed.
+        decodeFunctionData({ abi: tornadoDeposit, data: call.data as `0x${string}` });
+        const allocation = allocations[index++]!;
+        return { ...call, data: encodeFunctionData({ abi: tornadoDeposit, functionName: "deposit",
+          args: [toHex(allocation.secrets.commitment, { size: 32 })] }) };
+      });
+      return { value, nextNonce: allocations[allocations.length - 1]!.nonce + 1 };
     });
   }
   const config = PrivacyPoolsV1_0xBow[Number(opts.chainId) as keyof typeof PrivacyPoolsV1_0xBow];

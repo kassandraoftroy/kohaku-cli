@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  decodeAbiParameters,
   encodeAbiParameters,
   pad,
   toEventSelector,
@@ -102,6 +103,29 @@ describe("privacyPoolsSagaLogPlan", () => {
 });
 
 describe("privacyPoolsLogsFromSagaEvents", () => {
+  it("ignores other contracts before returning logs or counting pool leaves", () => {
+    const otherPool = "0x2222222222222222222222222222222222222222";
+    const logs = privacyPoolsLogsFromSagaEvents({
+      events: [
+        { ...deposit(5n, 999n), contractAddress: otherPool as Hex },
+        deposit(10n, 111n),
+        { ...deposit(20n, 888n), contractAddress: otherPool as Hex },
+        deposit(30n, 222n),
+      ],
+      pool: POOL.toUpperCase().replace("0X", "0x"),
+      fromBlock: 20n,
+      sagaTo: 31n,
+    });
+    assert.equal(logs.length, 2);
+    assert.equal(logs[0]!.address, POOL);
+    const [leafIndex, leaf] = decodeAbiParameters(
+      [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
+      logs[1]!.data as Hex,
+    );
+    assert.equal(leafIndex, 2n);
+    assert.equal(leaf, 222n);
+  });
+
   it("rejects Saga 0.3 entity records instead of silently losing pool history", () => {
     assert.throws(() => privacyPoolsLogsFromSagaEvents({
       events: [deposit(10n, 111n), { entity: "derived-operation", blockNumber: "0x14", transactionIndex: "0x0", opIndex: "0x0" }],

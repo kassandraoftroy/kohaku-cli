@@ -15,6 +15,8 @@ it("PPv1 ignores old wallet snapshots and shares the rebuilt chain state across 
   const reads: string[] = [];
   const scans: bigint[] = [];
   const head = entrypoint.deploymentBlock + 5n;
+  const finalized = head - 2n;
+  let finalizedReads = 0;
   const host = {
     storage: { _brand: "Storage", get: async (key: string) => {
       reads.push(key); return saved.get(key) ?? null;
@@ -22,8 +24,15 @@ it("PPv1 ignores old wallet snapshots and shares the rebuilt chain state across 
     provider: {
       getChainId: async () => chainId, getBlockNumber: async () => head,
       getLogs: async ({ fromBlock }: { fromBlock: bigint }) => { scans.push(fromBlock); return []; },
-      request: async ({ method }: { method: string }) => method === "eth_chainId"
-        ? toHex(chainId) : toHex(0n, { size: 32 }),
+      request: async ({ method, params }: { method: string; params?: unknown[] }) => {
+        if (method === "eth_chainId") return toHex(chainId);
+        if (method === "eth_getBlockByNumber") {
+          assert.deepEqual(params, ["finalized", false]);
+          finalizedReads++;
+          return { number: toHex(finalized) };
+        }
+        throw new Error(`Unexpected RPC request: ${method}`);
+      },
     },
     keystore: { deriveAt: async () => `0x${"12".repeat(32)}` },
     network: { fetch: async () => { throw new Error("Unexpected network request"); } },
@@ -36,5 +45,8 @@ it("PPv1 ignores old wallet snapshots and shares the rebuilt chain state across 
   assert.ok(saved.has(newKey));
   assert.ok(!saved.has(`sig:${newKey}`));
   assert.equal(saved.get(oldKey), "obsolete state");
-  assert.deepEqual(scans, [entrypoint.deploymentBlock, head]);
+  // The second scheme reuses the shared chain state and replays its unfinalized
+  // tail, rather than starting from deployment or the previous head.
+  assert.deepEqual(scans, [entrypoint.deploymentBlock, finalized]);
+  assert.equal(finalizedReads, 2);
 });

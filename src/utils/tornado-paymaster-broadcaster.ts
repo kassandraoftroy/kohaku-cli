@@ -1,26 +1,14 @@
 import { recordSubmission } from "./activity-log.js";
 /**
- * Tornado paymaster broadcast tuned for Tor-proxied Pimlico.
- *
- * Default viem HTTP timeout is 10s with retries on timeout. Tor often exceeds
- * that: the first eth_sendUserOperation reaches Pimlico, the client times out
- * and retries, then Pimlico returns "Already known".
- *
- * Fix: long timeout, no send retries, and on timeout / "Already known" recover
- * by checking the deterministic userOpHash (EntryPoint 0.8). Match the SDK's
- * acceptance/confirmation split: only wait() reports a successful receipt.
+ * Activity tracking around the SDK's paymaster broadcaster, shared by Tornado
+ * and PPv1. The SDK uses a 180s HTTP timeout, never retries sends, and routes
+ * requests through Host.network. Keep its signed-hash, lookup, receipt, and
+ * stale-nonce checks rather than maintaining a second broadcast implementation.
  */
-import { BaseError, RpcRequestError, http, type Hash, type Hex } from "viem";
-import { PaymasterBroadcastError, type PaymasterBroadcastResult } from "@kohaku-eth/tornado-cash";
-import {
-  createBundlerClient,
-  entryPoint08Address,
-  getUserOperationHash,
-  type UserOperation,
-} from "viem/account-abstraction";
-
-const BUNDLER_HTTP_TIMEOUT_MS = 180_000;
-const RECEIPT_WAIT_MS = 180_000;
+import type { Host } from "@kohaku-eth/plugins";
+import { type Hash, type Hex } from "viem";
+import { createTCBroadcaster, PaymasterBroadcastError, type PaymasterBroadcastResult, type TCPaymasterBroadcastResponse } from "@kohaku-eth/tornado-cash";
+import { getUserOperationHash, type UserOperation } from "viem/account-abstraction";
 
 export type SerializedUserOperation = {
   sender: `0x${string}`;
@@ -55,13 +43,6 @@ type PaymasterWithdrawal = {
   userOperation: SerializedUserOperation;
   userOpHash?: Hash;
 };
-
-/** Never forward viem's full message or cause: they contain the signed userOp. */
-function safeErrorText(err: unknown): string {
-  return err instanceof BaseError
-    ? [err.shortMessage, err.details].filter(Boolean).join(" ")
-    : "Unknown error.";
-}
 
 function toUserOperation(op: SerializedUserOperation): UserOperation {
   return {
@@ -101,90 +82,57 @@ function userOpHashFor(
   });
 }
 
-function createTorAwareBundlerClient(bundlerUrl: string) {
-  return createBundlerClient({
-    transport: http(bundlerUrl, {
-      // Tor RTT to public.pimlico.io regularly exceeds viem's 10s default.
-      timeout: BUNDLER_HTTP_TIMEOUT_MS,
-      // Timeouts must not re-send eth_sendUserOperation (causes "Already known").
-      retryCount: 0,
-    }),
-  });
-}
-
-async function sendSerializedUserOperation(
-  bundlerUrl: string,
-  op: SerializedUserOperation,
-  entryPoint: `0x${string}`,
-  chainId: bigint,
-  preparedHash?: Hash,
-): Promise<Hash> {
-  const client = createTorAwareBundlerClient(bundlerUrl);
-  try {
-    return (await client.request({
-      method: "eth_sendUserOperation",
-      params: [op, entryPoint],
-    }, { retryCount: 0 })) as Hash;
-  } catch (err) {
-    const userOpHash = preparedHash ?? userOpHashFor(op, entryPoint, chainId);
-    const rejection = err instanceof BaseError
-      ? err.walk((cause) => cause instanceof RpcRequestError) as RpcRequestError | null
-      : null;
-    if (/already known/i.test(rejection?.details ?? "")) return userOpHash;
-    const known = await client.request({
-      method: "eth_getUserOperationByHash", params: [userOpHash],
-    }).then((result) => result !== null).catch(() => false);
-    if (known) return userOpHash;
-    // A lost send response can still land even if the bundler only indexes mined ops.
-    throw new PaymasterBroadcastError(rejection ? "not-accepted" : "unconfirmed",
-      `${rejection ? "Bundler rejected" : "Could not confirm acceptance of"} userOp ${userOpHash}: ${safeErrorText(err)}`,
-      { userOpHash });
-  }
-}
-
 async function broadcastOne(
   withdrawal: PaymasterWithdrawal,
-  chainId: bigint
+  chainId: bigint,
+  host: Host,
 ): Promise<PaymasterBroadcastResult> {
-  const { bundlerUrl, entryPointAddress, userOperation } = withdrawal;
-  const entryPoint =
-    entryPointAddress.toLowerCase() === entryPoint08Address.toLowerCase()
-      ? entryPoint08Address
-      : entryPointAddress;
-  const client = createTorAwareBundlerClient(bundlerUrl);
-  let userOpHash: Hash;
+  // Older prepared payloads lack a hash. Include factory fields when recovering
+  // a SimpleAccount operation, as well as the chain known by the CLI.
+  const userOpHash = withdrawal.userOpHash ?? userOpHashFor(
+    withdrawal.userOperation, withdrawal.entryPointAddress, chainId,
+  );
+  // No custom paymasterClientFactory here: use the hardened SDK implementation.
+  const broadcaster = createTCBroadcaster(host);
+  let result: TCPaymasterBroadcastResponse | undefined;
   try {
-    userOpHash = await sendSerializedUserOperation(
-      bundlerUrl, userOperation, entryPoint, chainId, withdrawal.userOpHash,
-    );
-  } catch (err) {
-    if (err instanceof PaymasterBroadcastError && err.failure === "unconfirmed" && err.userOpHash) {
-      recordSubmission({ userOpHash: err.userOpHash });
+    [result] = await broadcaster.broadcast({
+      withdrawals: [{ ...withdrawal, userOpHash }],
+    } as never);
+  } catch (error) {
+    if (error instanceof PaymasterBroadcastError && error.failure === "unconfirmed" && error.userOpHash) {
+      recordSubmission({ userOpHash: error.userOpHash });
     }
-    throw err;
+    throw error;
   }
-  const updateActivity = recordSubmission({ userOpHash });
-  return { userOpHash, async wait() {
-    let receipt;
-    try {
-      receipt = await client.waitForUserOperationReceipt({ hash: userOpHash, timeout: RECEIPT_WAIT_MS });
-    } catch (err) {
-      throw new PaymasterBroadcastError("unconfirmed",
-        `Could not confirm userOp ${userOpHash}, it may still land: ${safeErrorText(err)}`, { userOpHash });
-    }
-    const txHash = receipt.receipt.transactionHash;
-    updateActivity({ txHash, status: receipt.success ? "confirmed" : "reverted" });
-    if (!receipt.success) throw new PaymasterBroadcastError("reverted",
-      `User operation reverted: ${userOpHash} (tx ${txHash})`, { userOpHash, txHash });
-    return { txHash };
-  } };
+  if (!result || !("wait" in result)) {
+    throw new Error("Paymaster broadcaster returned no confirmation handle.");
+  }
+  const updateActivity = recordSubmission({ userOpHash: result.id });
+  const accepted = result;
+  return {
+    // The SDK validates this id as the signed 32-byte hash before accepting.
+    userOpHash: accepted.id as Hash,
+    async wait() {
+      try {
+        const confirmed = await accepted.wait();
+        updateActivity({ txHash: confirmed.txHash, status: "confirmed" });
+        return confirmed;
+      } catch (error) {
+        if (error instanceof PaymasterBroadcastError && error.failure === "reverted") {
+          updateActivity({ txHash: error.txHash, status: "reverted" });
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 /**
  * Drop-in for Tornado `paymasterClientFactory`, also used for PPv1. Preserve
  * input order and serialize withdrawals sharing an executor until it confirms.
  */
-export function createTorAwarePaymasterBroadcaster(chainId: bigint): {
+export function createTorAwarePaymasterBroadcaster(chainId: bigint, host: Host): {
   broadcast: (
     withdrawals: PaymasterWithdrawal[]
   ) => Promise<PaymasterBroadcastResult[]>;
@@ -197,7 +145,7 @@ export function createTorAwarePaymasterBroadcaster(chainId: bigint): {
         const previous = bySender.get(key);
         const result = (async () => {
           if (previous) await (await previous).wait();
-          return broadcastOne(withdrawal, chainId);
+          return broadcastOne(withdrawal, chainId, host);
         })();
         bySender.set(key, result);
         return result;

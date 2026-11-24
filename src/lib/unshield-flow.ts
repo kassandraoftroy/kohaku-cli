@@ -235,7 +235,7 @@ export async function broadcastPreparedPrivateOp(
   if (!withdrawal?.userOperation) {
     throw new Error("Privacy Pools paymaster withdrawal is missing a signed user operation.");
   }
-  const [result] = await createTorAwarePaymasterBroadcaster(chainId).broadcast([
+  const [result] = await createTorAwarePaymasterBroadcaster(chainId, host).broadcast([
     withdrawal as never,
   ]);
   if (!result) {
