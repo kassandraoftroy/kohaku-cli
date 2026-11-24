@@ -390,11 +390,14 @@ export function partitionShieldTxs(txs: ShieldCall[]): {
   deposits: ShieldCall[];
   /** Aggregated allowance needed per pool/spender (from plugin approve txs). */
   approvalNeededBySpender: Map<string, bigint>;
+  /** Spenders whose SDK plan resets a leftover allowance before approving. */
+  approvalResetBySpender: Set<string>;
   /** Token contract from the first approve tx (when present). */
   approvalToken: string | undefined;
 } {
   const deposits: ShieldCall[] = [];
   const approvalNeededBySpender = new Map<string, bigint>();
+  const approvalResetBySpender = new Set<string>();
   let approvalToken: string | undefined;
 
   for (const tx of txs) {
@@ -402,6 +405,7 @@ export function partitionShieldTxs(txs: ShieldCall[]): {
     if (decoded && tx.value === 0n) {
       approvalToken = getAddress(tx.to);
       const key = getAddress(decoded.spender);
+      if (decoded.amount === 0n) approvalResetBySpender.add(key);
       approvalNeededBySpender.set(
         key,
         (approvalNeededBySpender.get(key) ?? 0n) + decoded.amount
@@ -411,7 +415,7 @@ export function partitionShieldTxs(txs: ShieldCall[]): {
     deposits.push(tx);
   }
 
-  return { deposits, approvalNeededBySpender, approvalToken };
+  return { deposits, approvalNeededBySpender, approvalResetBySpender, approvalToken };
 }
 
 /**
@@ -433,7 +437,7 @@ export async function resolveShieldApprovalCalls(opts: {
   /** Deposit/shield calls only (approves stripped). */
   deposits: ShieldCall[];
 }> {
-  const { deposits, approvalNeededBySpender, approvalToken } = partitionShieldTxs(
+  const { deposits, approvalNeededBySpender, approvalResetBySpender, approvalToken } = partitionShieldTxs(
     opts.shieldTxs
   );
   const token = approvalToken ?? getAddress(opts.tokenAddress);
@@ -463,6 +467,9 @@ export async function resolveShieldApprovalCalls(opts: {
       ],
     });
     if (allowance < approveAmount) {
+      if (allowance > 0n && approvalResetBySpender.has(spender)) {
+        approvals.push(encodeErc20ApproveTx(token, spender, 0n));
+      }
       approvals.push(encodeErc20ApproveTx(token, spender, approveAmount));
     }
   }

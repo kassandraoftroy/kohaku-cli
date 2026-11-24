@@ -201,6 +201,9 @@ export function privacyPoolsLogsFromSagaEvents(opts: {
     if (isEntityRecord(ev)) {
       throw new Error("Privacy Pools saga history must contain raw log events, not derived entity records.");
     }
+    // One Saga stream may include several contracts. Only this pool's events
+    // belong in its history or contribute to its absolute leaf index.
+    if (BigInt(ev.contractAddress) !== BigInt(opts.pool)) continue;
     const block = BigInt(ev.blockNumber);
     const leaf = insertedLeaf(ev);
     const inWindow = block >= opts.fromBlock && block < opts.sagaTo;

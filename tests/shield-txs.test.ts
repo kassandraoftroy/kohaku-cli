@@ -12,6 +12,7 @@ import {
   fromValueNeedsNameResolution,
   parseFromIndex,
   partitionShieldTxs,
+  resolveShieldApprovalCalls,
   resolveShieldSender,
   toShieldTxs,
   tryDecodeErc20Approve,
@@ -21,6 +22,7 @@ import { makeStealthAccountsStorage } from "../src/lib/stealth/storage.js";
 import { tornadoPoolsForChain } from "../src/utils/tornado-pools.js";
 import { ERC20_ABI } from "../src/utils/tokens-util.js";
 import { addressFromPrivateKey } from "../src/utils/viem-tx.js";
+import type { KohakuPublicClient } from "../src/utils/rpc.js";
 
 const TOKEN = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const POOL_A = getAddress("0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc");
@@ -204,6 +206,60 @@ describe("partitionShieldTxs", () => {
     ]);
     assert.equal(deposits.length, 1);
     assert.equal(approvalNeededBySpender.size, 0);
+  });
+});
+
+describe("resolveShieldApprovalCalls", () => {
+  const clientWithAllowance = (allowance: bigint) => ({
+    readContract: async () => allowance,
+  }) as unknown as KohakuPublicClient;
+
+  it("preserves SDK allowance resets before aggregated approvals", async () => {
+    const deposit = depositCall(POOL_A);
+    const { approvals, deposits } = await resolveShieldApprovalCalls({
+      client: clientWithAllowance(50n),
+      tokenAddress: TOKEN,
+      senderAddress: OTHER,
+      amount: 200n,
+      shieldTxs: [
+        approveCall(POOL_A, 0n), approveCall(POOL_A, 100n), deposit,
+        approveCall(POOL_A, 0n), approveCall(POOL_A, 100n), deposit,
+      ],
+    });
+    assert.deepEqual(approvals.map((tx) => tryDecodeErc20Approve(tx.data)), [
+      { spender: POOL_A, amount: 0n },
+      { spender: POOL_A, amount: 200n },
+    ]);
+    assert.deepEqual(deposits, [deposit, deposit]);
+  });
+
+  it("skips resets when the current allowance is zero or sufficient", async () => {
+    for (const allowance of [0n, 100n, 200n]) {
+      const { approvals } = await resolveShieldApprovalCalls({
+        client: clientWithAllowance(allowance),
+        tokenAddress: TOKEN,
+        senderAddress: OTHER,
+        amount: 100n,
+        shieldTxs: [approveCall(POOL_A, 0n), approveCall(POOL_A, 100n), depositCall(POOL_A)],
+      });
+      assert.deepEqual(approvals, allowance === 0n ? [approveCall(POOL_A, 100n)] : []);
+    }
+  });
+
+  it("resets only the spender marked by the SDK", async () => {
+    const { approvals } = await resolveShieldApprovalCalls({
+      client: clientWithAllowance(1n),
+      tokenAddress: TOKEN,
+      senderAddress: OTHER,
+      amount: 200n,
+      shieldTxs: [
+        approveCall(POOL_A, 0n), approveCall(POOL_A, 100n), depositCall(POOL_A),
+        approveCall(POOL_B, 100n), depositCall(POOL_B),
+      ],
+    });
+    assert.deepEqual(approvals, [
+      approveCall(POOL_A, 0n), approveCall(POOL_A, 100n), approveCall(POOL_B, 100n),
+    ]);
   });
 });
 

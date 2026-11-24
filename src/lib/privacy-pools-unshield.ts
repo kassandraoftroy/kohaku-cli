@@ -121,7 +121,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
     const delegation = privacyPoolsDelegationConfig({ delegationPath: opts.recipientDerivationPath,
       tailCallsCount: 0, withdrawalCount: notes.length });
     const operation = await prepare(privateUnshieldAsset("privacy-pools", opts.chainId, opts.tokenMeta, grossAmount),
-      opts.recipient, { mode: "paymaster", batch: true, refundRecipient: opts.recipient,
+      opts.recipient, { mode: "paymaster", batch: Boolean(delegation), refundRecipient: opts.recipient,
         ...(delegation ? { delegation } : {}) });
     const fee = privacyPoolsPreparedFee(operation);
     if (fee == null || fee >= grossAmount) throw new Error("Privacy Pools balance cannot cover the prepared paymaster fee.");
@@ -180,7 +180,9 @@ export async function preparePrivacyPoolsUnshield(opts: {
     try {
       return await prepare(assetFor(opts.amountWei), opts.recipient, {
         mode: "paymaster",
-        batch: true,
+        // Exact-output repricing can add notes. Only allow an execution phase
+        // when its account is recoverable through this wallet.
+        batch: Boolean(delegation),
         refundRecipient: opts.recipient,
         ...(delegation ? { delegation } : {}),
         exact: {},
@@ -201,7 +203,7 @@ export async function preparePrivacyPoolsUnshield(opts: {
 
   const options = {
     mode: "paymaster" as const,
-    batch: true as const,
+    batch: Boolean(delegation),
     refundRecipient: opts.recipient,
     ...(delegation ? { delegation } : {}),
     ...(userTailCalls

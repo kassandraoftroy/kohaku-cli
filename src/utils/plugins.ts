@@ -47,6 +47,8 @@ import {
 import { railgunPimlicoBundlerUrl } from "./rpc";
 import type { PluginId } from "../host/storage";
 import { freshShieldNoteNonces } from "./shield-note-nonces.js";
+import { tornadoNoteSelection } from "./tornado-note-selection.js";
+import { tornadoSignatureNonceStorage } from "./tornado-signature-nonces.js";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
@@ -564,39 +566,21 @@ export class TornadoCoverError extends Error {
 }
 
 /**
- * How many notes the Tornado SDK's largest-first packer spends to withdraw
- * `amount` exactly. Throws when the notes cannot compose that amount.
+ * How many notes the Tornado SDK spends, preserving its largest-first
+ * preference and exact-combination fallback.
  */
 export function tornadoWithdrawalCountForAmount(
   noteAmounts: readonly bigint[],
   amount: bigint
 ): number {
-  const notesByDenom = new Map<bigint, number>();
-  for (const noteAmount of noteAmounts) {
-    if (noteAmount <= 0n) continue;
-    notesByDenom.set(noteAmount, (notesByDenom.get(noteAmount) ?? 0) + 1);
-  }
-  const denominations = [...notesByDenom.keys()].sort((a, b) =>
-    a > b ? -1 : a < b ? 1 : 0
-  );
-
-  let amountToWithdraw = 0n;
-  let count = 0;
-  for (const denom of denominations) {
-    if (amountToWithdraw + denom > amount) continue;
-    let remaining = notesByDenom.get(denom)!;
-    while (remaining > 0 && amountToWithdraw + denom <= amount) {
-      count++;
-      amountToWithdraw += denom;
-      remaining--;
-    }
-  }
-  if (amountToWithdraw < amount) {
+  if (amount <= 0n) throw new Error("Withdrawal amount must be positive.");
+  const selected = tornadoNoteSelection(noteAmounts, amount);
+  if (selected.amount !== amount) {
     throw new Error(
-      `Insufficient Tornado balance to unshield ${amount.toString()} wei (notes cover ${amountToWithdraw.toString()} wei).`
+      `Insufficient Tornado balance to unshield ${amount.toString()} wei (notes cover ${selected.amount.toString()} wei).`
     );
   }
-  return count;
+  return selected.noteCount;
 }
 
 /** True when this scheme's notes can compose `amount` exactly. */
@@ -615,8 +599,7 @@ export function tornadoSchemeCanCover(
 
 /**
  * Smallest note sum `>= target` that `tornadoWithdrawalCountForAmount` can
- * withdraw exactly. Ties on sum keep the combination the largest-first packer
- * will actually spend (fewer large notes).
+ * withdraw exactly.
  */
 export function minimumTornadoNoteSumCovering(
   noteAmounts: readonly bigint[],
@@ -625,44 +608,17 @@ export function minimumTornadoNoteSumCovering(
   if (target <= 0n) {
     throw new Error("Tornado cover target must be greater than zero.");
   }
-  const counts = new Map<bigint, number>();
   let total = 0n;
   for (const noteAmount of noteAmounts) {
     if (noteAmount <= 0n) continue;
-    counts.set(noteAmount, (counts.get(noteAmount) ?? 0) + 1);
     total += noteAmount;
   }
   if (total < target) {
     throw new TornadoCoverError(target, total);
   }
 
-  let reachable = new Map<bigint, number>([[0n, 0]]);
-  for (const denom of counts.keys()) {
-    const count = counts.get(denom)!;
-    const next = new Map(reachable);
-    for (const [sum, notes] of reachable) {
-      for (let k = 1; k <= count; k++) {
-        const added = sum + denom * BigInt(k);
-        const used = notes + k;
-        const prev = next.get(added);
-        if (prev === undefined || used < prev) next.set(added, used);
-      }
-    }
-    reachable = next;
-  }
-
-  const candidates = [...reachable.keys()]
-    .filter((sum) => sum >= target)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  for (const sum of candidates) {
-    try {
-      tornadoWithdrawalCountForAmount(noteAmounts, sum);
-      return sum;
-    } catch {
-      continue;
-    }
-  }
-  throw new TornadoCoverError(target, total);
+  // The smallest qualifying sum leaves the largest possible unspent sum.
+  return total - tornadoNoteSelection(noteAmounts, total - target).amount;
 }
 
 /**
@@ -746,11 +702,18 @@ async function tornadoSchemeSecretManager(
   };
 }
 
+const signatureStorageByBase = new WeakMap<Host["storage"], Host["storage"]>();
+
 function hostForScheme(host: Host, scheme: NoteDerivation): Host {
   if (scheme === "legacy") return host;
+  let storage = signatureStorageByBase.get(host.storage);
+  if (!storage) {
+    storage = tornadoSignatureNonceStorage(prefixStorage(host.storage, SIGNATURE_STORAGE_PREFIX));
+    signatureStorageByBase.set(host.storage, storage);
+  }
   return {
     ...host,
-    storage: prefixStorage(host.storage, SIGNATURE_STORAGE_PREFIX),
+    storage,
   };
 }
 
@@ -779,7 +742,7 @@ export async function createSchemedPlugins(
   const legacy = await createProtocolPlugin(protocol, host, chainId, "legacy", excludeNewPools);
   const signature = await createProtocolPlugin(
     protocol,
-    protocol === "privacy-pools" ? host : hostForScheme(host, "signature"),
+    host,
     chainId,
     "signature",
     excludeNewPools
@@ -801,6 +764,9 @@ export async function createProtocolPlugin(
   }
 
   if (protocol === "tornado") {
+    // Standalone shield preparation and balance scans must use the same
+    // signature state, including the SDK's durable nonce reservations.
+    host = hostForScheme(host, scheme);
     const config = TornadoCashConfigs[Number(chainId) as 1 | 11155111];
     if (!config) {
       throw new Error(
@@ -886,10 +852,10 @@ export async function broadcastTornadoPrivateOp(
     ...(paymasterConfig
       ? { paymasterConfig: paymasterConfig as never }
       : {}),
-    // Viem's default 10s HTTP timeout + retries double-submits over Tor
-    // (Pimlico "Already known"). Use a Tor-aware client instead.
+    // Track activity while retaining the SDK's Tor-safe timeout, no send
+    // retries, and signed-operation/receipt validation.
     paymasterClientFactory: () =>
-      createTorAwarePaymasterBroadcaster(chainId),
+      createTorAwarePaymasterBroadcaster(chainId, host),
   });
 
   const results = await broadcaster.broadcast(operation as never);

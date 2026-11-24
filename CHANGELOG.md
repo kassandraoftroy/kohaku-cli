@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-24
+
+### Changed
+
+- Bump the CLI to `0.1.10`. Update Tornado Cash to `0.1.0-alpha.40` and Privacy Pools v1 to `0.1.0-alpha.41`, plus their shared plugin API to `0.0.1-alpha.20` and the Saga client to `0.4.0`. Railgun remains on `kohaku-rg-js-wrapper@0.0.3`.
+- Tornado and Privacy Pools syncs track finalized blocks and rescan the unfinalized tail. Existing state rewinds 7,200 blocks once; Tornado verifies pool roots and leaf counts at the scanned head and reports incomplete pool syncs as errors. RPC endpoints must support the `finalized` block tag and historical contract reads. Existing keys, note derivation, and imported Tornado notes remain compatible.
+- Paymaster broadcasts use the SDK's hardened signed-operation, lookup, receipt, and stale-nonce checks through the Tor-aware host network, retaining activity records and the acceptance/confirmation split. Withdrawal gas estimation uses the SDK's non-executable simulation payloads and requires a bundler supporting state overrides; execution-phase withdrawals require successful estimation.
+
+### Fixed
+
+- Tornado SDK alpha.40 natively preserves leading zeros in pool addresses during verifier lookups for gas estimation, fixing RPC `Invalid params` errors for affected withdrawals, including Sepolia 0.1 + 0.01 ETH batches.
+- Preserve SDK allowance resets when aggregating ERC-20 shield approvals, so leftover USDT allowances do not block deposits.
+- Match Tornado's exact note-combination selection across amount validation, executor sizing, pool preflight, private transfers, and nearby-amount suggestions. For example, four 0.03 ETH notes can fund a 0.12 ETH withdrawal even when a 0.1 ETH note is also available.
+- Filter Privacy Pools Saga events by the requested contract before counting leaves, keeping mixed-contract streams from shifting Merkle leaf indexes.
+- Keep Privacy Pools withdrawals to custom recipients single-note when exact-output fee repricing changes note selection; only a wallet-controlled executor can expand into a batch.
+- Preserve Tornado's durable signature nonce reservations across the CLI's pool and batch allocation. Pending and partially submitted plans do not reuse commitments, and discovery checks reserved nonces beyond its usual gap. Shield preparation and balances use the same signature-state namespace.
+
 ## [0.1.9] - 2026-11-14
 
 ### Added

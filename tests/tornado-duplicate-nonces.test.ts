@@ -3,11 +3,11 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 
-it("installed Tornado SDK discovers, totals, selects and re-derives old duplicate-nonce notes independently", async () => {
+async function runSdkFixture(args: string[] = []) {
   const fixture = fileURLToPath(new URL("./fixtures/tornado-duplicate-nonces.ts", import.meta.url));
   const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-    const child = spawn(process.execPath, ["--import", "tsx", fixture], { env });
+    const child = spawn(process.execPath, ["--import", "tsx", fixture, ...args], { env });
     let output = "";
     child.stdout.on("data", (chunk) => { output += chunk; });
     child.stderr.on("data", (chunk) => { output += chunk; });
@@ -16,4 +16,12 @@ it("installed Tornado SDK discovers, totals, selects and re-derives old duplicat
     child.on("close", (code) => { clearTimeout(timeout); resolve({ code, output }); });
   });
   assert.equal(result.code, 0, result.output);
+}
+
+it("installed Tornado SDK discovers, totals, selects and re-derives old duplicate-nonce notes independently", async () => {
+  await runSdkFixture();
+});
+
+it("installed Tornado SDK recovers a reserved signature nonce beyond its discovery gap after restart", async () => {
+  await runSdkFixture(["--reserved-nonce"]);
 });
