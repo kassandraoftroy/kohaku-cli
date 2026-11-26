@@ -12,10 +12,23 @@
  * transaction.
  */
 
-import { getAddress, isAddress } from "viem";
+import { createPublicClient, getAddress, http, isAddress } from "viem";
+import { mainnet } from "viem/chains";
 import { createEthereumNames } from "@1001-digital/ethereum-names";
+import { privateCcipRequest } from "./private-ccip-read.js";
+import { withTor } from "./tor.js";
 
 const SUPPORTED_TLDS = [".eth", ".gwei", ".wei"] as const;
+
+/** Keep chain reads on the configured RPC; route offchain resolver HTTP privately. */
+export function createNameResolutionClients(rpcUrl: string, reversePriority?: Array<"ens" | "gns" | "wns">) {
+  const client = createPublicClient({
+    chain: mainnet,
+    transport: http(rpcUrl),
+    ccipRead: { request: privateCcipRequest },
+  });
+  return { client, names: createEthereumNames({ client, ...(reversePriority ? { reversePriority } : {}) }) };
+}
 
 function hasNameTld(value: string): boolean {
   const lower = value.toLowerCase();
@@ -38,7 +51,8 @@ function hasNameTld(value: string): boolean {
  */
 export async function resolveAddressOrName(
   input: string,
-  rpcUrl?: string
+  rpcUrl?: string,
+  network?: { withoutTor?: boolean },
 ): Promise<`0x${string}`> {
   const trimmed = input.trim();
 
@@ -61,8 +75,10 @@ export async function resolveAddressOrName(
     );
   }
 
-  const names = createEthereumNames({ rpcUrl });
-  const resolved = await names.resolve(trimmed);
+  const resolve = async () => createNameResolutionClients(rpcUrl).names.resolve(trimmed);
+  // Callers resolving a sender before their main command scope can still
+  // propagate an explicit --without-tor opt-out to the offchain transport.
+  const resolved = network ? await withTor(!network.withoutTor, { rpcUrl }, resolve) : await resolve();
 
   if (!resolved) {
     throw new Error(

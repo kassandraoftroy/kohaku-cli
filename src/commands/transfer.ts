@@ -47,7 +47,7 @@ import {
 } from "../utils/rpc";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
-import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
+import { createNameResolutionClients, looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
 import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
 import { runPrivateTransfer } from "./private-transfer.js";
@@ -387,6 +387,9 @@ export function registerTransferCommand(program: Command): void {
       const broadcast = !!opts.broadcast;
       const dryRun = !broadcast;
 
+      // Keep name/CCIP and stealth resolution inside the same privacy session
+      // as preparation and submission. Only configured chain reads bypass Tor.
+      await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       let fromValue = opts.from ?? "";
       let toValue = opts.to ?? "";
 
@@ -583,6 +586,7 @@ export function registerTransferCommand(program: Command): void {
             input: toValue,
             rpcUrl,
             chainId,
+            ...createNameResolutionClients(rpcUrl, ["gns", "ens", "wns"]),
           });
           stealthMetaURI = resolved.uri;
           if (!opts.nonInteractive) {
@@ -661,7 +665,6 @@ export function registerTransferCommand(program: Command): void {
         : [buildTransferTx(tokenMeta, recipientAddress, amount)];
 
       const initialAmount = amount;
-      await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
       let sendAmount = initialAmount;
       const client = await makePublicClient(rpcUrl);
       const txSpinner = spinner();

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-26
+
+### Added
+
+- `unshield --protocol tornado --exit-mode relayer` offers an explicit traditional TORN relayer exit for one original-pool note. It displays the proof-bound fee and recipient net, submits over Tor, and confirms the exact pool withdrawal against a successful receipt before reporting completion. It rejects extended denominations, multi-note exits, tail calls, private transfers, and `--amount-max`. Paymaster remains the default; uncertain submissions never automatically switch routes.
+- Separate plain-transaction submission endpoints: PublicNode for Ethereum mainnet and Sepolia, overridden by `KOHAKU_SUBMIT_RPC_URL`. Signed transactions are sent once over Tor after checking the endpoint's chain. An uncertain response retains the deterministic transaction hash for reconciliation.
+- A smart-account withdrawal integration plan describes controller/account discovery, proposed commands and UX, SDK adapters, balances, and recovery alongside the default EIP-7702 route. This is a plan only. A manual GitHub tag/release checklist documents how to pin a reviewed post-merge version without npm publication.
+
+### Fixed
+
+- Start Tor before recipient name and stealth lookups in `unshield`, `private-transfer`, and `transfer`, then reuse that session for preparation/submission. ENS offchain gateways use a private transport even when they share the configured read RPC's hostname, and never silently fall back to clearnet. `--without-tor` and `KOHAKU_WITHOUT_TOR=1` remain explicit opt-outs.
+- Plain EOA transactions no longer send signed bytes to the configured read RPC. Nonce/gas queries, simulations, and receipt reads retain the configured read RPC; the separate submit route bypasses its clearnet hostname exemption. CLI version is `0.1.11`; private-protocol dependencies remain pinned to their existing versions.
+
 ## [0.1.10] - 2026-11-24
 
 ### Changed

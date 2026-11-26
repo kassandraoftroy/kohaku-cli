@@ -38,6 +38,8 @@ export function registerActivityCommand(program: Command): void {
           if (entry.to) console.log(`  to: ${entry.to}`);
           if (entry.txHash) console.log(`  ${entry.protocol === "railgun" ? "bundle tx" : "tx"}: ${entry.txHash}`);
           if (entry.userOpHash) console.log(`  userOp: ${entry.userOpHash}`);
+          if (entry.relayerUrl) console.log(`  relayer: ${entry.relayerUrl}`);
+          if (entry.relayerJobId) console.log(`  relayer job: ${entry.relayerJobId}`);
         }
       } catch (error) { cliErrorFromCaught(error); }
     });

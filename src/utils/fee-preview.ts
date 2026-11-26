@@ -13,6 +13,7 @@ export type FeePreview = {
     | "eip7702-userop"
     | "railgun-paymaster"
     | "tornado-paymaster"
+    | "tornado-relayer"
     | "privacy-pools-paymaster";
   /** Primary fee in asset base units (wei / token raw). */
   estimatedMax: string;

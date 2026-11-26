@@ -474,7 +474,7 @@ export async function runShield(opts: ShieldOpts): Promise<void> {
 
       try {
         if (fromValueNeedsNameResolution(fromValue)) {
-          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl, { withoutTor: opts.withoutTor });
         }
 
         if (fromValue) {
@@ -693,7 +693,7 @@ export async function runShield(opts: ShieldOpts): Promise<void> {
       // Resolve ENS / GNS / WNS names to addresses before the index/address branch.
       if (fromValueNeedsNameResolution(fromValue)) {
         try {
-          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl, { withoutTor: opts.withoutTor });
         } catch (e) {
           cliErrorFromCaught(e);
           return;

@@ -139,6 +139,12 @@ import {
 } from "../utils/tornado-unshield-delegation.js";
 import { parseTailCalls } from "../utils/unshield-tail-calls.js";
 import {
+  broadcastClassicTornadoRelayerUnshield,
+  classicTornadoRelayerPools,
+  prepareClassicTornadoRelayerUnshield,
+  resolveTornadoExitMode,
+} from "../utils/tornado-relayer.js";
+import {
   chooseDerivationScheme,
   largerSchemeCap,
   LEGACY_SPEND_WARNING,
@@ -163,6 +169,7 @@ export type UnshieldOpts = {
   amountFormatted?: string;
   amountMax?: boolean;
   excludeNewPools?: boolean;
+  exitMode?: string;
   rpcUrl?: string;
   nonInteractive?: boolean;
   broadcast?: boolean;
@@ -379,6 +386,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         return;
       }
       const protocol = resolvedProtocol.protocol;
+      let exitMode: ReturnType<typeof resolveTornadoExitMode>;
+      try { exitMode = resolveTornadoExitMode({ ...opts, protocol }); }
+      catch (error) { cliErrorFromCaught(error); return; }
+      const classicRelayer = exitMode === "relayer";
       if (opts.excludeNewPools && protocol !== "tornado") {
         cliError("--exclude-new-pools is only supported with --protocol tornado.");
         return;
@@ -517,7 +528,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       }
       if (protocol === "tornado") {
         try {
-          assertTornadoPaymasterTokenSupported(chainId, {
+          if (classicRelayer) classicTornadoRelayerPools(chainId, tokenMeta);
+          else assertTornadoPaymasterTokenSupported(chainId, {
             isEth: tokenMeta.isEth,
             tokenAddress: tokenMeta.tokenAddress,
             symbol: tokenMeta.symbol,
@@ -533,7 +545,28 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
       const stealthStorage = makeStealthAccountsStorage(walletDir, password);
       let persistFreshAccountAfterBroadcast = false;
 
-      let recipient: `0x${string}`;
+      let completed = false;
+      const rpcForHost = await makePublicClient(rpcUrl);
+      const spin = manageSpinner(spinner(), quietNonInteractive(opts.nonInteractive));
+      const quiet = quietNonInteractive(opts.nonInteractive);
+      const useTor = !opts.withoutTor;
+      try {
+        await withTor(
+          useTor,
+          {
+            rpcUrl,
+            walletDir,
+            onStatus: (message) => {
+              spin.start(message);
+            },
+          },
+          async () => {
+        // Tor onStatus leaves the spinner running; stop before prompts / work.
+        if (spin.active) spin.stop("Tor ready.");
+
+      // Every recipient branch assigns this directly or through a selector;
+      // failed selectors return before preparation.
+      let recipient!: `0x${string}`;
       let recipientPriv: `0x${string}` | undefined;
       let recipientDerivationPath: string | undefined;
       let tornadoExecutor: TornadoExecutorAccount | undefined;
@@ -783,23 +816,6 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         );
       }
 
-      const rpcForHost = await makePublicClient(rpcUrl);
-      const spin = manageSpinner(spinner(), quietNonInteractive(opts.nonInteractive));
-      const quiet = quietNonInteractive(opts.nonInteractive);
-      const useTor = !opts.withoutTor;
-      try {
-        await withTor(
-          useTor,
-          {
-            rpcUrl,
-            walletDir,
-            onStatus: (message) => {
-              spin.start(message);
-            },
-          },
-          async () => {
-        // Tor onStatus leaves the spinner running; stop before prompts / work.
-        if (spin.active) spin.stop("Tor ready.");
 
         const host = await makeHost({
           rpc: rpcForHost,
@@ -848,7 +864,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             if (plugins.signature !== plugins.legacy) {
               await syncPluginWithProgress(plugins.signature, protocol);
             }
-            if (protocol === "tornado" && opts.excludeNewPools) {
+            if (protocol === "tornado" && (opts.excludeNewPools || classicRelayer)) {
               plugins = await createSchemedPlugins(protocol, host, chainId, true);
               plugin = plugins.signature;
             }
@@ -876,8 +892,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
               const signatureNotes = (
                 await listTornadoUnspentNotes(plugins.signature, probe.asset)
               ).map((note) => note.amount);
-              const legacySum = legacyNotes.reduce((sum, note) => sum + note, 0n);
-              const signatureSum = signatureNotes.reduce((sum, note) => sum + note, 0n);
+              const legacySum = classicRelayer ? legacyNotes.reduce((largest, note) => note > largest ? note : largest, 0n) : legacyNotes.reduce((sum, note) => sum + note, 0n);
+              const signatureSum = classicRelayer ? signatureNotes.reduce((largest, note) => note > largest ? note : largest, 0n) : signatureNotes.reduce((sum, note) => sum + note, 0n);
               return {
                 cap: largerSchemeCap(legacySum, signatureSum),
                 legacyCap: legacySum,
@@ -957,7 +973,8 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         // Custom Tornado recipients get a fresh wallet executor before prepare,
         // so every recipient can safely consolidate multiple notes.
         const tornadoAmountAllowed = (value: bigint) =>
-          tornadoSchemeCanCover(signatureTornadoNotes, value) || tornadoSchemeCanCover(legacyTornadoNotes, value);
+          classicRelayer ? signatureTornadoNotes.includes(value) || legacyTornadoNotes.includes(value) :
+            tornadoSchemeCanCover(signatureTornadoNotes, value) || tornadoSchemeCanCover(legacyTornadoNotes, value);
         let amount: bigint | null = null;
         if (opts.amountMax) {
           if (
@@ -1040,9 +1057,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           } else {
           while (true) {
             const amountInput = await input({
-              message: `Amount to unshield (${tokenMeta.symbol}, ${maxCapLabel}: ${maxFormatted}, or "max"):`,
+              message: classicRelayer ? `One original-pool note to unshield (${tokenMeta.symbol}, largest note ${maxFormatted}):` : `Amount to unshield (${tokenMeta.symbol}, ${maxCapLabel}: ${maxFormatted}, or "max"):`,
               validate: (value) => {
                 if (!value.trim()) return "Amount is required.";
+                if (classicRelayer && value.trim().toLowerCase() === "max") return "Enter one original pool denomination for a classic relayer exit.";
                 try { parseUnshieldAmount(value, tokenMeta.decimals, protocol === "tornado" && value.trim().toLowerCase() !== "max" ? 0n : maxAmountHint); }
                 catch (error) { return error instanceof Error ? error.message : String(error); }
                 return true;
@@ -1056,10 +1074,10 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             const parsed = parseUnshieldAmount(amountInput, tokenMeta.decimals,
               protocol === "tornado" && amountInput.trim().toLowerCase() !== "max" ? 0n : maxAmountHint);
             if (protocol === "tornado" && !tornadoAmountAllowed(parsed)) {
-              const near = tornadoNearestAmounts({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, parsed);
+              const near = tornadoNearestAmounts({ signature: signatureTornadoNotes, legacy: legacyTornadoNotes }, parsed, classicRelayer);
               const alternatives = [near.lower, near.upper].filter((value) => value != null);
               const choice = await select<bigint | "other" | "cancel">({
-                message: `Cannot withdraw ${formatUnits(parsed, tokenMeta.decimals)} ${tokenMeta.symbol} exactly. Choose an amount leaving the pools, before paymaster fees:`,
+                message: `Cannot withdraw ${formatUnits(parsed, tokenMeta.decimals)} ${tokenMeta.symbol} exactly. Choose an amount leaving the pools, before ${classicRelayer ? "relayer" : "paymaster"} fees:`,
                 choices: [
                   ...alternatives.map((value) => ({ value: value.amount, name: `${value === near.lower ? "Nearest below" : "Nearest above"}: ${tornadoAlternativeLabel(value, tokenMeta)}` })),
                   { value: "other" as const, name: "Enter another amount" },
@@ -1150,12 +1168,12 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
             const legacyCanCover =
               opts.amountMax && protocol === "privacy-pools" ? legacyCap > 0n && legacyCap >= signatureCap :
               protocol === "tornado"
-                ? tornadoSchemeCanCover(legacyTornadoNotes, amountWei)
+                ? classicRelayer ? legacyTornadoNotes.includes(amountWei) : tornadoSchemeCanCover(legacyTornadoNotes, amountWei)
                 : await privacyPoolsPluginCovers(plugins.legacy);
             const signatureCanCover =
               opts.amountMax && protocol === "privacy-pools" ? signatureCap > 0n && signatureCap >= legacyCap :
               protocol === "tornado"
-                ? tornadoSchemeCanCover(signatureTornadoNotes, amountWei)
+                ? classicRelayer ? signatureTornadoNotes.includes(amountWei) : tornadoSchemeCanCover(signatureTornadoNotes, amountWei)
                 : await privacyPoolsPluginCovers(plugins.signature);
             const scheme = chooseDerivationScheme({
               legacyCanCover,
@@ -1246,6 +1264,59 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           asset = privateUnshieldAsset(protocol, chainId, tokenMeta, amountWei);
         } catch (e) {
           cliErrorFromCaught(e);
+          return;
+        }
+        if (classicRelayer) {
+          const quote = await runQuietSpinner(quiet, spin, {
+            start: "Discovering classic TORN relayers and preparing one withdrawal proof",
+            failure: "Classic relayer preparation failed.",
+          }, () => prepareClassicTornadoRelayerUnshield({
+            plugin, chainId, asset, recipient, token: tokenMeta,
+          }), () => "Classic relayer withdrawal prepared.");
+          const fees = buildFeePreview({ kind: "tornado-relayer", amount: quote.fee,
+            decimals: tokenMeta.decimals, asset: tokenMeta.symbol,
+            note: "fixed relayer fee committed in the proof; deducted from the single note; no EIP-7702 account or paymaster",
+          });
+          const fields = {
+            protocol, exitMode, recipient, token: tokenMeta.symbol,
+            amountWei: amountWei.toString(), amountFormatted: formatUnits(amountWei, tokenMeta.decimals),
+            expectedRecipientAmountWei: quote.net.toString(),
+            expectedRecipientAmountFormatted: formatUnits(quote.net, tokenMeta.decimals),
+            relayerUrl: quote.relayerUrl, poolAddress: quote.poolAddress, fees,
+          };
+          if (!opts.broadcast) {
+            if (!opts.nonInteractive) {
+              console.log(chalk.bold("Prepared classic TORN relayer withdrawal (not broadcast)"));
+              console.log(`  Pool amount: ${fields.amountFormatted} ${tokenMeta.symbol}`);
+              console.log(`  Recipient receives: ${fields.expectedRecipientAmountFormatted} ${tokenMeta.symbol}`);
+              console.log(`  To: ${recipient}`);
+              console.log(`  Relayer: ${quote.relayerUrl}`);
+              printFeePreview(fees);
+              console.log("Add --broadcast to submit this one-note withdrawal via the relayer.");
+            }
+            logCliJson({ mode: "prepare", ...fields, privateOperation: quote.operation });
+            return;
+          }
+          if (!opts.nonInteractive && !await confirm({
+            message: `Broadcast this one-note unshield via the classic TORN relayer?\n` +
+              `  Pool amount: ${fields.amountFormatted} ${tokenMeta.symbol}\n` +
+              `  Recipient receives: ${fields.expectedRecipientAmountFormatted} ${tokenMeta.symbol}\n` +
+              `  To: ${recipient}\n  Relayer: ${quote.relayerUrl}\n  ${feeConfirmLine(fees)}\n` +
+              "No EIP-7702 delegation or paymaster is used. Submission may be irreversible.",
+            default: false,
+          })) { log.warn("Cancelled."); process.exitCode = 1; return; }
+          const relay = await runQuietSpinner(quiet, spin, {
+            start: "Submitting to the classic relayer and waiting for the pool withdrawal",
+            failure: "Classic relayer withdrawal is not confirmed.",
+          }, () => broadcastClassicTornadoRelayerUnshield({ quote, host, client: rpcForHost }),
+          () => "Classic relayer withdrawal confirmed.");
+          if (persistFreshAccountAfterBroadcast) publicStorage.addNextAccounts(1);
+          if (opts.nonInteractive) logCliJson({ mode: "broadcast", ...fields, relay,
+            explorerHash: relay.txHash, explorerUrl: etherscanTxUrl(chainId, relay.txHash) });
+          else {
+            console.log(chalk.cyan(etherscanTxUrl(chainId, relay.txHash)));
+            console.log(chalk.green("✔ Classic relayer unshield completed."));
+          }
           return;
         }
         let tornadoWithdrawalCount: number | undefined;
@@ -1973,6 +2044,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
           const noHashMsg = "No mined transaction hash is available for an Etherscan link.";
           console.log(chalk.dim(noHashMsg));
         }
+        completed = true;
           }
         );
       } catch (e) {
@@ -1983,7 +2055,7 @@ export async function runUnshield(opts: UnshieldOpts): Promise<void> {
         disposePublicClient(rpcForHost);
       }
 
-      if (!opts.nonInteractive) {
+      if (!opts.nonInteractive && completed) {
         console.log(
           chalk.green(
             opts.privateTransfer
@@ -2014,6 +2086,7 @@ export function registerUnshieldCommand(program: Command): void {
       "Unshield to the next fresh public account (persisted only after a successful --broadcast). An index that already has a nonce, balance, or code is saved and skipped."
     )
     .option("--exclude-new-pools", "Tornado only: use classic pools; newer pools may have small anonymity sets")
+    .option("--exit-mode <mode>", "Tornado only: paymaster (default) or classic TORN relayer (one original-pool note, no tails)")
     .option("--token <address|symbol|eth>", "Token address or symbol (default: eth)")
     .option("--amount-wei <amount>", "Raw token amount in wei/base units")
     .option("--amount-formatted <amount>", "Decimal amount (converted using token decimals)")

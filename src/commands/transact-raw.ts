@@ -307,7 +307,7 @@ export function registerTransactRawCommand(program: Command): void {
 
       if (fromValueNeedsNameResolution(fromValue)) {
         try {
-          fromValue = await resolveAddressOrName(fromValue, rpcUrl);
+          fromValue = await resolveAddressOrName(fromValue, rpcUrl, { withoutTor: opts.withoutTor });
         } catch (e) {
           cliErrorFromCaught(e);
           return;

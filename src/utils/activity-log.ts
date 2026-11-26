@@ -24,6 +24,10 @@ export type ActivityEntry = {
   status: "submitted" | "confirmed" | "reverted";
   txHash?: string;
   userOpHash?: string;
+  relayerUrl?: string;
+  relayerJobId?: string;
+  poolAddress?: string;
+  nullifierHash?: string;
   from?: string;
   to?: string;
 };
@@ -58,10 +62,15 @@ function persist(ctx: ActivityContext, entry: ActivityEntry): void {
 }
 
 /** Logging must never turn an accepted submission into an apparent send failure. */
-export function recordSubmission(hashes: { txHash?: string; userOpHash?: string }):
-  (update: Partial<Pick<ActivityEntry, "status" | "txHash">>) => void {
+export function recordSubmission(hashes: { txHash?: string; userOpHash?: string;
+  relayerUrl?: string; relayerJobId?: string; poolAddress?: string; nullifierHash?: string },
+  options: { requirePersistence?: boolean } = {}):
+  (update: Partial<Pick<ActivityEntry, "status" | "txHash" | "relayerJobId">>) => void {
   const ctx = context.getStore();
-  if (!ctx) return () => {};
+  if (!ctx) {
+    if (options.requirePersistence) throw new Error("Cannot submit before starting encrypted activity tracking.");
+    return () => {};
+  }
   const timestamp = new Date().toISOString();
   const entry: ActivityEntry = {
     version: 1, id: randomUUID(), timestamp, updatedAt: timestamp,
@@ -69,13 +78,14 @@ export function recordSubmission(hashes: { txHash?: string; userOpHash?: string 
     chainId: ctx.chainId.toString(), status: "submitted", ...hashes,
     ...(ctx.protocol === "railgun" && ctx.from && ctx.to ? { from: ctx.from, to: ctx.to } : {}),
   };
-  const save = () => {
+  const save = (required = false) => {
     try { persist(ctx, entry); }
     catch (error) {
+      if (required) throw new Error("Cannot save encrypted submission metadata. No relayer proof was sent.");
       console.error(`Activity log could not be saved for ${entry.txHash ?? entry.userOpHash}: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
-  save();
+  save(options.requirePersistence);
   return (update) => {
     Object.assign(entry, update, { updatedAt: new Date().toISOString() });
     save();
