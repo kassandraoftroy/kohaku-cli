@@ -6,6 +6,8 @@ import type { Host } from "@kohaku-eth/plugins";
 import { TornadoCashConfigs } from "@kohaku-eth/tornado-cash";
 import { decodeFunctionData, encodeFunctionResult, parseAbi, toHex, type ContractFunctionReturnType } from "viem";
 import { namehash } from "viem/ens";
+import { registerPrivateEnsRpc } from "../src/host/private-ens-rpc.js";
+import { withFakeTor } from "./helpers/fake-tor.js";
 import {
   CLASSIC_RELAYER_MIN_STAKE, classicRelayerFeeBounds, classicRelayerGasPrice,
   classicRelayerWeight, createClassicRelayerPolicy, pickClassicRelayer,
@@ -90,18 +92,25 @@ function fixture() {
       });
     } },
   } as unknown as Host;
-  return { host, entries, seen };
+  registerPrivateEnsRpc(host.provider, "https://relayer-ens-rpc.invalid/rpc");
+  const run = <T>(operation: () => Promise<T>) => withFakeTor(async (url, init) => {
+    assert.equal(url, "https://relayer-ens-rpc.invalid/rpc");
+    const request = JSON.parse(String(init?.body));
+    assert.equal(request.method, "eth_call");
+    return Response.json({ jsonrpc: "2.0", id: request.id, result: await host.provider.request(request) });
+  }, operation);
+  return { host, entries, seen, run };
 }
 
 test("CLI status hook refreshes stake/owner/hostname, draws once, and defeats SDK cheapest ranking", async () => {
-  const { host, seen, entries } = fixture();
+  const { host, seen, entries, run } = fixture();
   let draws = 0;
   const policy = createClassicRelayerPolicy(host, 1n, (total) => { draws++; return total - 1n; });
   const client = policy.relayerClientFactory();
-  const outcomes = await policy.prepare(asset, { mode: "relayer" }, async () => {
+  const outcomes = await run(() => policy.prepare(asset, { mode: "relayer" }, async () => {
     assert.equal(await policy.host.provider.request({ method: "eth_gasPrice", params: [] }), toHex(3_220_000_000n));
     return Promise.allSettled(entries.map(entry => client.getStatus(entry.hostname)));
-  });
+  }));
   assert.equal(draws, 1);
   assert.equal(seen.aggregator, 1);
   assert.deepEqual(outcomes.map((outcome, index) => outcome.status === "fulfilled" ? entries[index]!.ensName : null).filter(Boolean), ["higher.eth"]);
@@ -138,12 +147,29 @@ test("fee policy resets after failures and serializes overlapping paymaster prep
 });
 
 test("omitted prepare options retain the SDK's default relayer mode", async () => {
-  const { host } = fixture();
+  const { host, run } = fixture();
   const policy = createClassicRelayerPolicy(host, 1n, () => 0n);
-  await policy.prepare(asset, undefined, async () => {
+  await run(() => policy.prepare(asset, undefined, async () => {
     assert.equal(await policy.host.provider.request({ method: "eth_gasPrice", params: [] }), toHex(3_220_000_000n));
     assert.equal((await policy.relayerClientFactory().getStatus("cheap.example")).tornadoServiceFee, 0.2);
-  });
+  }));
+});
+
+test("ENS lookup without RPC context or an active preparation fails closed", async () => {
+  const { host, seen } = fixture();
+  const request = { method: "eth_call", params: [{
+    to: toHex(TornadoCashConfigs[1].aggregator.address, { size: 20 }), data: "0x4d47d775",
+  }, "latest"] };
+  const providerWithoutContext = { ...host.provider };
+  const policy = createClassicRelayerPolicy({ ...host, provider: providerWithoutContext }, 1n);
+  await assert.rejects(policy.host.provider.request(request), /outside a protected preparation/);
+  await assert.rejects(policy.prepare(asset, { mode: "relayer" }, () => policy.host.provider.request(request)),
+    /missing its configured RPC endpoint/);
+  const sepolia = createClassicRelayerPolicy({ ...host, provider: providerWithoutContext }, 11155111n);
+  await assert.rejects(sepolia.host.provider.request({ ...request, params: [{
+    to: toHex(TornadoCashConfigs[11155111].aggregator.address), data: "0x4d47d775",
+  }, "latest"] }), /outside a protected preparation/, "unpadded Sepolia address must not evade the guard");
+  assert.deepEqual(seen.rpc, [], "missing metadata must not fall back to the ordinary provider");
 });
 
 test("installed Tornado worker honors the status hook and classic fee bridge before proving", async () => {

@@ -470,7 +470,11 @@ async function resolvePrivateBalanceItems(
   if (selected.length > 0) {
     // Each protocol has its own store. Its legacy/signature writes remain
     // sequential, and all protocols share one progress renderer and Tor session.
-    await withTor(!opts.withoutTor && cached.size < selected.length,
+    // Cache hits need no session, but must not establish an implicit Tor
+    // opt-out that private transports could inherit.
+    if (cached.size === selected.length && !opts.withoutTor) {
+      await loadAll();
+    } else await withTor(!opts.withoutTor,
       { rpcUrl, onStatus: opts.onTorStatus, walletDir },
       () => cached.size === selected.length ? loadAll() : runWithSyncProgress({
         source: selected.length === 1 ? selected[0]! : "private",

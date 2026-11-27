@@ -35,7 +35,7 @@ const callbacks = { reverse: "0x12345671", forward: "0x12345672", text: "0x12345
 const lookupData = { reverse: "0x01", forward: "0x02", text: "0x03", registry: "0x04" } as const;
 type Lookup = keyof typeof callbacks;
 
-it("protects balances discovery and init-profile reverse, forward and text callbacks, preserving cache and opt-outs", async () => {
+it("protects all balances/init-profile name RPC and callbacks, preserving cache and opt-outs", async () => {
   const walletDir = mkdtempSync(join(tmpdir(), "kohaku-profile-privacy-"));
   const password = "password";
   const accounts = makePublicAccountsStorage(walletDir, mnemonic, password);
@@ -52,6 +52,8 @@ it("protects balances discovery and init-profile reverse, forward and text callb
   let ready = false;
   let bootstraps = 0;
   const directUrls: string[] = [];
+  const torRpcCalls: string[] = [];
+  let directLookupCalls = 0;
   const torLookups: Lookup[] = [];
   const gatewayResponse = () => failGateway
     ? new Response("fixture gateway unavailable", { status: 503 })
@@ -66,16 +68,14 @@ it("protects balances discovery and init-profile reverse, forward and text callb
           : encodeAbiParameters([{ type: "address" }], [account]),
         resolver,
       ]);
-  globalThis.fetch = async (input, init) => {
-    const url = String(input);
-    directUrls.push(url);
-    if (url.includes("/gateway/")) return gatewayResponse();
-    assert.equal(url, rpcUrl);
-    assert.ok(ready || process.env.KOHAKU_WITHOUT_TOR === "1" || allowDirect,
-      "Tor must be ready before profile network discovery starts");
-    const body = JSON.parse(String(init?.body));
+  const rpcResponse = (bodyText: unknown, viaTor: boolean) => {
+    const body = JSON.parse(String(bodyText));
     const reply = (request: { id: number; method: string; params: [{ to: string; data: Hex }] }) => {
       assert.equal(request.method, "eth_call");
+      if (viaTor) torRpcCalls.push(request.method);
+      else directLookupCalls++;
+      assert.ok(viaTor || process.env.KOHAKU_WITHOUT_TOR === "1" || allowDirect,
+        "profile name and registry RPC calls must require an explicit Tor opt-out");
       const call = request.params[0];
       const callback = (Object.keys(callbacks) as Lookup[]).find((kind) => call.data.startsWith(callbacks[kind]));
       if (callback) return { jsonrpc: "2.0", id: request.id, result: resultFor(callback) };
@@ -95,10 +95,21 @@ it("protects balances discovery and init-profile reverse, forward and text callb
     };
     return Response.json(Array.isArray(body) ? body.map(reply) : reply(body));
   };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    directUrls.push(url);
+    if (url.includes("/gateway/")) {
+      assert.ok(process.env.KOHAKU_WITHOUT_TOR === "1" || allowDirect, "profile gateways must require an explicit Tor opt-out");
+      return gatewayResponse();
+    }
+    assert.equal(url, rpcUrl);
+    return rpcResponse(init?.body, false);
+  };
   let allowDirect = false;
   try {
-    await withFakeTor(async (url) => {
-      assert.ok(ready, "offchain profile callbacks must execute in a ready Tor session");
+    await withFakeTor(async (url, init) => {
+      assert.ok(ready, "profile RPC and callbacks must execute in a ready Tor session");
+      if (url === rpcUrl) return rpcResponse(init?.body, true);
       const kind = (Object.keys(lookupData) as Lookup[]).find((lookup) => url.endsWith(lookupData[lookup]));
       assert.ok(kind, `Unexpected offchain request: ${url}`);
       torLookups.push(kind);
@@ -116,12 +127,15 @@ it("protects balances discovery and init-profile reverse, forward and text callb
       assert.equal(profile.stealthMetaAddressURI, meta);
       assert.equal(profile.needsInit, false);
       assert.deepEqual(torLookups, ["reverse", "forward", "text"]);
-      assert.ok(directUrls.every((url) => url === rpcUrl));
+      assert.equal(directUrls.length, 0, "profile discovery must keep its RPC calls on Tor");
+      assert.ok(torRpcCalls.length >= 6, "initial reverse, forward, text and callback calls all use Tor");
       const cachedBootstrapCount = bootstraps;
       const cachedRequestCount = directUrls.length;
+      const cachedTorCalls = torRpcCalls.length;
       await resolveWalletProfile({ ...profileOpts, resyncProfile: false });
       assert.equal(bootstraps, cachedBootstrapCount);
       assert.equal(directUrls.length, cachedRequestCount);
+      assert.equal(torRpcCalls.length, cachedTorCalls);
 
       noReverse = true;
       torLookups.length = 0;
@@ -148,7 +162,8 @@ it("protects balances discovery and init-profile reverse, forward and text callb
       assert.equal(missing.needsInit, true);
       assert.equal(makeStealthAccountsStorage(walletDir, password).getStore().profile, null,
         "failed explicit resync must keep the existing cleared-profile semantics");
-      assert.ok(directUrls.every((url) => url === rpcUrl), "failed gateways must never retry over clearnet");
+      assert.equal(directUrls.length, 0, "failed RPC/gateway lookups must never retry over clearnet");
+      assert.equal(directLookupCalls, 0);
       failGateway = false;
 
       const beforeOptOut = bootstraps;
@@ -158,6 +173,7 @@ it("protects balances discovery and init-profile reverse, forward and text callb
       assert.equal((await readProfileNameRecords({ ...recordsOpts, withoutTor: true })).text, meta);
       assert.equal(bootstraps, beforeOptOut);
       assert.equal(torLookups.length, torCount);
+      assert.ok(directLookupCalls > 0, "profile RPC opt-outs must be respected as well as gateway opt-outs");
       assert.ok(directUrls.some((url) => url.includes("/gateway/")));
       allowDirect = false;
 
@@ -169,11 +185,13 @@ it("protects balances discovery and init-profile reverse, forward and text callb
       delete process.env.KOHAKU_WITHOUT_TOR;
 
       const beforeFailure = directUrls.length;
+      const torBeforeFailure = torRpcCalls.length;
       ready = false;
       failBootstrap = true;
       await assert.rejects(readProfileNameRecords(recordsOpts), /fixture bootstrap failure/);
       await assert.rejects(resolveWalletProfile(profileOpts), /fixture bootstrap failure/);
       assert.equal(directUrls.length, beforeFailure, "bootstrap failure must prevent all profile requests");
+      assert.equal(torRpcCalls.length, torBeforeFailure);
       assert.ok(makeStealthAccountsStorage(walletDir, password).getStore().profile,
         "Tor bootstrap failure must not erase a previously discovered profile");
     }, async () => {

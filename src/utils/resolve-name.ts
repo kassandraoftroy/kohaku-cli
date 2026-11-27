@@ -16,15 +16,15 @@ import { createPublicClient, getAddress, http, isAddress } from "viem";
 import { mainnet } from "viem/chains";
 import { createEthereumNames } from "@1001-digital/ethereum-names";
 import { privateCcipRequest } from "./private-ccip-read.js";
-import { withTor } from "./tor.js";
+import { kohakuPrivateFetch, withTor } from "./tor.js";
 
 const SUPPORTED_TLDS = [".eth", ".gwei", ".wei"] as const;
 
-/** Keep chain reads on the configured RPC; route offchain resolver HTTP privately. */
+/** Both resolver RPC calls and offchain callbacks must use Tor unless opted out. */
 export function createNameResolutionClients(rpcUrl: string, reversePriority?: Array<"ens" | "gns" | "wns">) {
   const client = createPublicClient({
     chain: mainnet,
-    transport: http(rpcUrl),
+    transport: http(rpcUrl, { fetchFn: kohakuPrivateFetch, retryCount: 0 }),
     ccipRead: { request: privateCcipRequest },
   });
   return { client, names: createEthereumNames({ client, ...(reversePriority ? { reversePriority } : {}) }) };
@@ -76,9 +76,9 @@ export async function resolveAddressOrName(
   }
 
   const resolve = async () => createNameResolutionClients(rpcUrl).names.resolve(trimmed);
-  // Callers resolving a sender before their main command scope can still
-  // propagate an explicit --without-tor opt-out to the offchain transport.
-  const resolved = network ? await withTor(!network.withoutTor, { rpcUrl }, resolve) : await resolve();
+  // Keep RPC, gateway and callback requests in one session even for standalone
+  // callers. An outer explicit opt-out is inherited by withTor.
+  const resolved = await withTor(!network?.withoutTor, { rpcUrl }, resolve);
 
   if (!resolved) {
     throw new Error(

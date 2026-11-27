@@ -46,15 +46,15 @@ Set your RPC once per shell (Sepolia for `--testnet` wallets):
 export RPC_URL="https://sepolia.infura.io/v3/YOUR_KEY"
 ```
 
-`RPC_URL` remains the read endpoint for balances, nonces, gas, simulations, and receipts, and those configured chain reads remain on clearnet. In v0.1.11, signed plain transactions use a separate submit endpoint over Tor: `https://ethereum-rpc.publicnode.com` on mainnet or `https://ethereum-sepolia-rpc.publicnode.com` on Sepolia. Override it explicitly when needed:
+`RPC_URL` remains the read endpoint for balances, nonces, gas, simulations, and receipts. Ordinary chain reads remain on clearnet; name lookups and name-management queries use the same endpoint over Tor. In v0.1.11, signed plain transactions use a separate submit endpoint over Tor: `https://ethereum-rpc.publicnode.com` on mainnet or `https://ethereum-sepolia-rpc.publicnode.com` on Sepolia. Override it explicitly when needed:
 
 ```bash
 export KOHAKU_SUBMIT_RPC_URL="https://your-submit-endpoint.example/rpc"
 ```
 
-The submit endpoint is checked for the selected chain before any signed bytes are sent. Remote endpoints require HTTPS (HTTP is allowed for onion services and local development). There is no automatic retry or fallback to `RPC_URL` after an uncertain send; use the retained transaction hash to reconcile before retrying. Tor does not hide read queries from your chosen read RPC or change on-chain transaction linkage. `--without-tor` or `KOHAKU_WITHOUT_TOR=1` explicitly disables Tor for private HTTP and transaction submission.
+The submit endpoint is checked for the selected chain before any signed bytes are sent. Remote endpoints require HTTPS (HTTP is allowed for onion services and local development). There is no automatic retry or fallback to `RPC_URL` after an uncertain send; use the retained transaction hash to reconcile before retrying. Your chosen read RPC still sees queries, and Tor does not change on-chain transaction linkage. `--without-tor` or `KOHAKU_WITHOUT_TOR=1` explicitly disables Tor for name lookups, private HTTP and transaction submission.
 
-Name resolution in `unshield`, `private-transfer`, and `transfer`, uncached `balances` profile discovery, and `init-profile` record checks run inside a Tor session. Offchain ENS/CCIP gateway requests use Tor, including gateways sharing the read RPC's hostname. Resolver contract calls still use the configured mainnet read RPC; `.eth`, `.gwei`, and `.wei` names require a suitable mainnet endpoint. Cached profile display needs no name lookup.
+Name resolution, uncached profile discovery, and all name-management queries use Tor for both resolver contract calls and offchain ENS/CCIP gateways, including gateways sharing the read RPC's hostname. This also covers `export-private-key --address <name>` and Tornado relayer ENS discovery inside the SDK worker. Tor failures stop the lookup without a clearnet fallback. `.eth`, `.gwei`, and `.wei` resolution requires a suitable mainnet RPC reachable over Tor. Cached profile display needs no name lookup.
 
 Optionally set a default privacy protocol so `shield` / `unshield` can omit `--protocol`, and so `balances` includes that protocol’s private balances by default:
 

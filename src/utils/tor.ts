@@ -23,8 +23,9 @@
  * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps large Tor GETs.
  *
  * Read RPC stays clearnet. Hosts from `rpcUrl` are allowlisted so ox / eth-prices
- * fetch-to-RPC stays off Tor. Signed transactions use kohakuPrivateFetch and a
- * separate submission endpoint, bypassing that hostname exemption.
+ * fetch-to-RPC stays off Tor. Name lookups use kohakuPrivateFetch for both RPC
+ * and offchain callbacks. Signed transactions use it with a separate submission
+ * endpoint. Both bypass the read RPC's hostname exemption.
  */
 import { existsSync, rmSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -521,6 +522,12 @@ export async function kohakuPrivateFetch(input: RequestInfo | URL, init?: Reques
   };
   if (activeSession || torMode.getStore() === false || envDisablesTor()) return run();
   return withTor(true, {}, run);
+}
+
+/** Preserve explicit Tor opt-outs when a worker invokes a host callback. */
+export function capturePrivateFetch(): typeof fetch {
+  const run = AsyncLocalStorage.snapshot();
+  return (input, init) => run(kohakuPrivateFetch, input, init);
 }
 
 async function kohakuFetchInner(

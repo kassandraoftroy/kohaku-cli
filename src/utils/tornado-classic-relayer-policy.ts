@@ -3,6 +3,8 @@ import type { AssetAmount, Host } from "@kohaku-eth/plugins";
 import { TornadoCashConfigs, TornadoInstances, type TCPluginParameters } from "@kohaku-eth/tornado-cash";
 import { decodeFunctionResult, encodeFunctionData, isAddress, parseAbi, toHex, zeroAddress } from "viem";
 import { namehash } from "viem/ens";
+import { privateEnsRpcRequest } from "../host/private-ens-rpc.js";
+import { capturePrivateFetch } from "./tor.js";
 
 type RelayerClient = ReturnType<NonNullable<TCPluginParameters["relayerClientFactory"]>>;
 type RelayerStatus = Awaited<ReturnType<RelayerClient["getStatus"]>>;
@@ -97,6 +99,7 @@ export function createClassicRelayerPolicy(
   const bounds = classicRelayerFeeBounds(chainId);
   type Preparation = {
     gasPrice?: Promise<bigint>; asset: AssetAmount; options: RelayerOptions;
+    privateFetch: typeof fetch;
     selection?: Promise<Candidate>; selectionError?: unknown;
   };
   let active: Preparation | undefined;
@@ -117,6 +120,12 @@ export function createClassicRelayerPolicy(
     get(target, property) {
       if (property === "request") return async (request: Parameters<Host["provider"]["request"]>[0]) => {
         if (active && request.method === "eth_gasPrice") return toHex(await gasPrice(active));
+        const call = (request.params as unknown[] | undefined)?.[0] as { to?: unknown } | undefined;
+        if (request.method === "eth_call" && typeof call?.to === "string" &&
+            /^0x[0-9a-f]+$/i.test(call.to) && BigInt(call.to) === config.aggregator.address) {
+          if (!active) throw new Error("ENS relayer lookup requested outside a protected preparation.");
+          return privateEnsRpcRequest(originalHost.provider, request, active.privateFetch);
+        }
         return target.request(request);
       };
       const value = Reflect.get(target, property, target);
@@ -138,7 +147,7 @@ export function createClassicRelayerPolicy(
     const hostnameIndex = subdomains.length - 1;
     const read = async (batch: RegisteredRelayer[], names = subdomains): Promise<RegisteredRelayer[]> => {
       try {
-        const result = await originalHost.provider.request({ method: "eth_call", params: [{
+        const result = await provider.request({ method: "eth_call", params: [{
           to: toHex(config.aggregator.address, { size: 20 }),
           data: encodeFunctionData({ abi: aggregatorAbi, functionName: "relayersData", args: [batch.map(({ ensName }) => namehash(ensName)), names] }),
         }, "latest"] });
@@ -228,11 +237,14 @@ export function createClassicRelayerPolicy(
     relayerConfig: { minFee: 0, maxFee: bounds.maxFee },
     relayerClientFactory,
     prepare<T>(asset: AssetAmount, options: RelayerOptions | undefined, operation: () => Promise<T>): Promise<T> {
+      // Comlink invokes Host callbacks from a different async context. Capture
+      // explicit --without-tor here, before scheduling or crossing the worker.
+      const privateFetch = capturePrivateFetch();
       // Serialize both modes: worker callbacks run outside caller async context,
       // so an instance-local flag must never overlap a paymaster preparation.
       const result = queue.then(async () => {
         if (options?.mode !== undefined && options.mode !== "relayer") return operation();
-        const preparation: Preparation = { asset, options: options ?? {} };
+        const preparation: Preparation = { asset, options: options ?? {}, privateFetch };
         active = preparation;
         try { return await operation(); }
         catch (error) { throw preparation.selectionError ?? error; }

@@ -6,6 +6,9 @@ import { createTCPlugin, SignatureSecretManager, TornadoCashConfigs, TornadoInst
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionResult, parseAbi, toHex, type ContractFunctionReturnType } from "viem";
 import { namehash } from "viem/ens";
 import { createClassicRelayerPolicy, CLASSIC_RELAYER_MIN_STAKE } from "../../src/utils/tornado-classic-relayer-policy.js";
+import { registerPrivateEnsRpc } from "../../src/host/private-ens-rpc.js";
+import { withTor } from "../../src/utils/tor.js";
+import { withFakeTor } from "../helpers/fake-tor.js";
 
 async function main() {
   const chainId = 1n;
@@ -34,7 +37,7 @@ async function main() {
     withdrawals: { withdrawalsTuples: [] },
     assets: { assetsTuples: [["0x0", { address: "0x0", name: "Ether", symbol: "ETH", decimals: 18 }]] },
     relayers: { relayersTuples: relayers.map(relayer => [relayer.ensName, relayer]) },
-    sync: { lastSyncedBlock: toHex(head), relayerRegistrySyncedBlock: toHex(head) },
+    sync: { lastSyncedBlock: toHex(head), relayerRegistrySyncedBlock: toHex(finalized - 1n) },
   };
   const key = `tornado-cash-state-${chainId}-${config.instanceRegistry.address}`;
   const storage = new Map([[key, JSON.stringify(state)]]);
@@ -49,6 +52,8 @@ async function main() {
   let persisted = 0;
   let selections = 0;
   let proofs = 0;
+  let servingPrivateRpc = false;
+  let sdkEnsCalls = 0;
   const statusHosts: string[] = [];
   const rawGasPrice = toHex(220_000_000n);
   const host = {
@@ -64,6 +69,11 @@ async function main() {
           data: encodeAbiParameters([{ type: "uint32" }, { type: "uint256" }], [0, 1n]),
           topics: encodeEventTopics({ abi: parseAbi(["event Deposit(bytes32 indexed commitment, uint32 leafIndex, uint256 timestamp)"]),
             eventName: "Deposit", args: { commitment: toHex(secret.commitment, { size: 32 }) } }),
+        }] : BigInt(address) === config.relayerRegistry.address && fromBlock <= finalized && toBlock >= finalized ? [{
+          address, blockNumber: finalized, transactionHash: toHex(1n, { size: 32 }),
+          topics: encodeEventTopics({ abi: parseAbi(["event RelayerRegistered(bytes32 relayer, string ensName, address relayerAddress, uint256 stakedAmount)"]), eventName: "RelayerRegistered" }),
+          data: encodeAbiParameters([{ type: "bytes32" }, { type: "string" }, { type: "address" }, { type: "uint256" }],
+            [namehash(relayers[0]!.ensName), relayers[0]!.ensName, toHex(BigInt(relayers[0]!.relayerAddress), { size: 20 }), CLASSIC_RELAYER_MIN_STAKE]),
         }] : [],
       request: async ({ method, params }: { method: string; params: any[] }) => {
         if (method === "eth_chainId") return toHex(chainId);
@@ -75,7 +85,8 @@ async function main() {
         assert.equal(method, "eth_call");
         const decoded = decodeFunctionData({ abi, data: params[0].data });
         if (decoded.functionName === "relayersData") {
-          assert.ok(persisted >= 2, "worker persists pool and refreshed registry state before the main-thread status hook");
+          assert.ok(servingPrivateRpc, "SDK and CLI ENS lookups must not use the ordinary read RPC transport");
+          if (persisted < 2) sdkEnsCalls++;
           return encodeFunctionResult({ abi, functionName: "relayersData", result: decoded.args[0].map(hash => {
             const relayer = relayers.find(relayer => namehash(relayer.ensName) === hash)!;
             return { owner: toHex(BigInt(relayer.relayerAddress), { size: 20 }), balance: CLASSIC_RELAYER_MIN_STAKE, isRegistered: true,
@@ -95,6 +106,34 @@ async function main() {
         rewardAccount: toHex(BigInt(relayers[index]!.relayerAddress), { size: 20 }), tornadoServiceFee: index === 0 ? 0.2 : 0.43 });
     } },
   } as unknown as Host;
+  const rpcUrl = "https://relayer-ens-rpc.invalid/rpc";
+  registerPrivateEnsRpc(host.provider, rpcUrl);
+  let torRequests = 0;
+  let directRequests = 0;
+  let allowDirect = false;
+  let failTor = false;
+  const originalFetch = globalThis.fetch;
+  const originalWithoutTor = process.env.KOHAKU_WITHOUT_TOR;
+  delete process.env.KOHAKU_WITHOUT_TOR;
+  const reply = async (url: string, init?: { body?: unknown }) => {
+    assert.equal(url, rpcUrl);
+    const request = JSON.parse(String(init?.body));
+    servingPrivateRpc = true;
+    try {
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: await host.provider.request(request) });
+    } finally { servingPrivateRpc = false; }
+  };
+  globalThis.fetch = async (input, init) => {
+    assert.ok(allowDirect, "ENS lookups must not leave on clearnet without an explicit opt-out");
+    directRequests++;
+    return reply(String(input), init);
+  };
+  try {
+  await withFakeTor(async (url, init) => {
+    torRequests++;
+    if (failTor) throw new Error("FIXTURE_TOR_FAILURE");
+    return reply(url, init);
+  }, async () => {
   const policy = createClassicRelayerPolicy(host, chainId, total => { selections++; return total - 1n; });
   const accepted: string[] = [];
   const workerGasPrices: unknown[] = [];
@@ -122,7 +161,7 @@ async function main() {
   });
   const asset = { asset: { __type: "erc20" as const, contract: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const }, amount: pool.denomination };
   const recipient = toHex(999n, { size: 20 });
-  await assert.rejects(policy.prepare(asset, { mode: "relayer" }, () => plugin.prepareUnshield(asset, recipient, { mode: "relayer" })), error => {
+  await assert.rejects(withTor(true, { rpcUrl }, () => policy.prepare(asset, { mode: "relayer" }, () => plugin.prepareUnshield(asset, recipient, { mode: "relayer" }))), error => {
     assert.match(String((error as { message?: string })?.message), /FIXTURE_PROOF_BOUNDARY/); return true;
   });
   assert.equal(proofs, 1, "native quote validates the policy result before loading proof artifacts");
@@ -131,6 +170,36 @@ async function main() {
   assert.deepEqual(accepted, ["higher.example"], "native cheapest ranking receives only the weighted, more expensive winner");
   assert.deepEqual(statusHosts.sort(), ["https://cheap.example/status", "https://higher.example/status"]);
   assert.equal(await policy.host.provider.request({ method: "eth_gasPrice", params: [] }), rawGasPrice);
+  assert.ok(sdkEnsCalls > 0, "the published SDK's own registry lookup crosses the protected Host bridge");
+  assert.equal(torRequests, 2, "both SDK registry sync and CLI fresh metadata lookups use Tor");
+  assert.equal(directRequests, 0);
+
+  // The worker loses the caller's async context. Capturing it at prepare keeps
+  // both explicit CLI opt-outs and default Tor routing across Comlink.
+  const prepare = () => policy.prepare(asset, { mode: "relayer" }, () => plugin.prepareUnshield(asset, recipient, { mode: "relayer" }));
+  allowDirect = true;
+  const beforeOptOutTor = torRequests;
+  await assert.rejects(withTor(false, { rpcUrl }, prepare), error => {
+    assert.match(String((error as { message?: string })?.message), /FIXTURE_PROOF_BOUNDARY/); return true;
+  });
+  assert.equal(torRequests, beforeOptOutTor);
+  assert.equal(directRequests, 1);
+  process.env.KOHAKU_WITHOUT_TOR = "1";
+  await assert.rejects(prepare(), error => {
+    assert.match(String((error as { message?: string })?.message), /FIXTURE_PROOF_BOUNDARY/); return true;
+  });
+  assert.equal(torRequests, beforeOptOutTor);
+  assert.equal(directRequests, 2);
+  delete process.env.KOHAKU_WITHOUT_TOR;
+  allowDirect = false;
+  const proofsBeforeFailure = proofs;
+  failTor = true;
+  await assert.rejects(prepare(), error => {
+    assert.match(String((error as { message?: string })?.message), /FIXTURE_TOR_FAILURE/); return true;
+  });
+  assert.equal(directRequests, 2, "Tor errors never fall back to the ordinary RPC transport");
+  assert.equal(proofs, proofsBeforeFailure);
+  failTor = false;
 
   // At ~34 gwei the floor moves this 0.1 ETH note above the SDK's 20% cap.
   // Without the worker-visible override the raw 0.22 gwei quote would pass.
@@ -138,9 +207,15 @@ async function main() {
   await assert.rejects(policy.prepare(asset, { mode: "relayer" }, () => plugin.prepareUnshield(asset, recipient, { mode: "relayer" })), error => {
     assert.match(String((error as { message?: string })?.message), /500 TORN|fee limits|liveness/); return true;
   });
-  assert.equal(proofs, 1, "unsafe high-network-fee quote is rejected before proof generation");
-  assert.deepEqual(workerGasPrices, [toHex(3_220_000_000n), toHex(37_000_000_000n)]);
+  assert.equal(proofs, proofsBeforeFailure, "unsafe high-network-fee quote is rejected before proof generation");
+  assert.equal(workerGasPrices.at(-1), toHex(37_000_000_000n));
   assert.equal(await policy.host.provider.request({ method: "eth_gasPrice", params: [] }), rawGasPrice);
+  });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWithoutTor === undefined) delete process.env.KOHAKU_WITHOUT_TOR;
+    else process.env.KOHAKU_WITHOUT_TOR = originalWithoutTor;
+  }
 }
 
 main().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
