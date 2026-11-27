@@ -54,9 +54,7 @@ export KOHAKU_SUBMIT_RPC_URL="https://your-submit-endpoint.example/rpc"
 
 The submit endpoint is checked for the selected chain before any signed bytes are sent. Remote endpoints require HTTPS (HTTP is allowed for onion services and local development). There is no automatic retry or fallback to `RPC_URL` after an uncertain send; use the retained transaction hash to reconcile before retrying. Tor does not hide read queries from your chosen read RPC or change on-chain transaction linkage. `--without-tor` or `KOHAKU_WITHOUT_TOR=1` explicitly disables Tor for private HTTP and transaction submission.
 
-Name resolution in `unshield`, `private-transfer`, and `transfer` starts inside the Tor session. Offchain ENS/CCIP gateway requests use Tor, including gateways sharing the read RPC's hostname. Resolver contract calls still use the configured mainnet read RPC; `.eth`, `.gwei`, and `.wei` names require a suitable mainnet endpoint.
-
-Manual GitHub tags/releases can pin a reviewed CLI commit without npm publication; see [the release checklist](docs/RELEASING.md). The [smart-account withdrawal plan](docs/SMART_ACCOUNT_WITHDRAWALS_PLAN.md) proposes future commands and discovery UX; none of that smart-account functionality ships in v0.1.11.
+Name resolution in `unshield`, `private-transfer`, and `transfer`, uncached `balances` profile discovery, and `init-profile` record checks run inside a Tor session. Offchain ENS/CCIP gateway requests use Tor, including gateways sharing the read RPC's hostname. Resolver contract calls still use the configured mainnet read RPC; `.eth`, `.gwei`, and `.wei` names require a suitable mainnet endpoint. Cached profile display needs no name lookup.
 
 Optionally set a default privacy protocol so `shield` / `unshield` can omit `--protocol`, and so `balances` includes that protocol’s private balances by default:
 
@@ -540,6 +538,8 @@ Withdraw **private** balance to a **public** address. By default, Railgun, Torna
 **Interactive:** recipient menu (next fresh / custom address / existing public or stealth account) → amount (shows max: the larger single-scheme amount; Railgun and Privacy Pools after estimated fees; Tornado by that scheme's unspent notes) → a warning only when the withdrawal spends legacy notes → prepared op or broadcast confirmation.
 
 **Classic Tornado relayer exit:** `unshield --protocol tornado --exit-mode relayer` spends exactly one note in an original pool, without an EIP-7702 executor or a paymaster. Pass one explicit gross denomination; the recipient receives that denomination minus the quoted relayer fee. New pools, batches, `--amount-max`, tail calls, and `private-transfer` / `transfer --from tornado` are unsupported. Notes may be legacy, imported, or signature-derived, but one note must cover the selected denomination. Relayer availability and token support depend on live relayers; the command fails if no suitable quote exists. It does not automatically retry a paymaster withdrawal through a relayer. Relayer job IDs and pool/nullifier reconciliation data are retained in encrypted activity records if confirmation is uncertain; job acceptance alone is not success.
+
+Relayers need at least 500 TORN currently staked. The CLI draws randomly with the classic app's quadratic stake/fee weights: mainnet uses 0.33–0.53% and other chains use 0.01–0.30%. Fees below the lower bound keep full stake weight; fees at or above the upper bound are excluded. The network fee is `(latest base fee + max(suggested priority fee, 3 gwei)) × 550,000`, converted to the withdrawn asset for tokens. These policies are applied locally in the CLI; the SDK still checks token pricing and the 20% total-fee cap before proving.
 
 ```bash
 kohaku unshield --protocol tornado --wallet testWallet --next \

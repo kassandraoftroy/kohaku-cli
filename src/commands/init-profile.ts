@@ -1,7 +1,6 @@
 import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { createEthereumNames } from "@1001-digital/ethereum-names";
 import { formatEther, namehash, type Address, type Hex } from "viem";
 
 import {
@@ -78,6 +77,7 @@ import { NAME_NFT_ABI } from "../lib/names/abis.js";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import type { KohakuPublicClient } from "../utils/rpc.js";
 import { withTor } from "../utils/tor.js";
+import { createNameResolutionClients } from "../utils/resolve-name.js";
 
 type Opts = NameWalletOpts & {
   protocol?: string;
@@ -94,6 +94,28 @@ type NameOffer = {
   parsed: ReturnType<typeof parseRegisterName>;
   status: Exclude<NameProbeStatus, "unavailable">;
 };
+
+/** Read profile records within one session, including any offchain ENS callbacks. */
+export async function readProfileNameRecords(opts: {
+  rpcUrl: string;
+  walletDir: string;
+  withoutTor?: boolean;
+  name: string;
+  address?: Address;
+}) {
+  return withTor(
+    !opts.withoutTor,
+    { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
+    async () => {
+      const { names } = createNameResolutionClients(opts.rpcUrl);
+      const primaries = opts.address
+        ? await names.reverseAll(opts.address).catch(() => undefined)
+        : undefined;
+      const text = await names.getText(opts.name, STEALTH_TEXT_RECORD_KEY).catch(() => null);
+      return { primaries, text };
+    }
+  );
+}
 
 function toBatchCall(t: PreparedTx): Eip7702BatchCall {
   return { to: t.to, data: t.data, value: t.value };
@@ -769,11 +791,12 @@ export function registerInitProfileCommand(program: Command): void {
         });
 
         try {
-          const ethNames = createEthereumNames({ rpcUrl: ctx.rpcUrl });
-          const published = await ethNames.getText(
-            parsed.name,
-            STEALTH_TEXT_RECORD_KEY
-          );
+          const { text: published } = await readProfileNameRecords({
+            rpcUrl: ctx.rpcUrl,
+            walletDir: ctx.walletDir,
+            withoutTor: ctx.withoutTor,
+            name: parsed.name,
+          });
           if (
             published &&
             published.toLowerCase() !==
@@ -837,51 +860,38 @@ export function registerInitProfileCommand(program: Command): void {
         dryRun: ctx.dryRun,
       });
 
-      const ethNames = createEthereumNames({ rpcUrl: ctx.rpcUrl });
+      const { primaries, text: existingText } = await readProfileNameRecords({
+        rpcUrl: ctx.rpcUrl,
+        walletDir: ctx.walletDir,
+        withoutTor: ctx.withoutTor,
+        name: parsed.name,
+        address: recordSigner.address,
+      });
       const wantName = parsed.name.toLowerCase();
       const wantMeta = keypair.stealthMetaAddressURI.toLowerCase();
 
-      let needsReverse = true;
-      try {
-        const primaries = await ethNames.reverseAll(recordSigner.address);
-        const current =
-          parsed.protocol === "ens"
-            ? primaries.ens
-            : parsed.protocol === "gns"
-              ? primaries.gns
-              : primaries.wns;
-        if (current && current.toLowerCase() === wantName) {
-          needsReverse = false;
-          if (!ctx.nonInteractive) {
-            console.log(
-              chalk.dim(
-                `Reverse already set to ${parsed.name}; skipping set-reverse.`
-              )
-            );
-          }
-        }
-      } catch {
-        needsReverse = true;
+      const current =
+        parsed.protocol === "ens"
+          ? primaries?.ens
+          : parsed.protocol === "gns"
+            ? primaries?.gns
+            : primaries?.wns;
+      const needsReverse = !current || current.toLowerCase() !== wantName;
+      if (!needsReverse && !ctx.nonInteractive) {
+        console.log(
+          chalk.dim(
+            `Reverse already set to ${parsed.name}; skipping set-reverse.`
+          )
+        );
       }
 
-      let needsText = true;
-      try {
-        const existingText = await ethNames.getText(
-          parsed.name,
-          STEALTH_TEXT_RECORD_KEY
+      const needsText = !existingText || existingText.toLowerCase() !== wantMeta;
+      if (!needsText && !ctx.nonInteractive) {
+        console.log(
+          chalk.dim(
+            `${STEALTH_TEXT_RECORD_KEY} already set; skipping set-text.`
+          )
         );
-        if (existingText && existingText.toLowerCase() === wantMeta) {
-          needsText = false;
-          if (!ctx.nonInteractive) {
-            console.log(
-              chalk.dim(
-                `${STEALTH_TEXT_RECORD_KEY} already set; skipping set-text.`
-              )
-            );
-          }
-        }
-      } catch {
-        needsText = true;
       }
 
       if (!registryTx && !ctx.nonInteractive) {
@@ -1124,10 +1134,12 @@ export function registerInitProfileCommand(program: Command): void {
       });
 
       try {
-        const published = await ethNames.getText(
-          parsed.name,
-          STEALTH_TEXT_RECORD_KEY
-        );
+        const { text: published } = await readProfileNameRecords({
+          rpcUrl: ctx.rpcUrl,
+          walletDir: ctx.walletDir,
+          withoutTor: ctx.withoutTor,
+          name: parsed.name,
+        });
         if (
           published &&
           published.toLowerCase() !==
