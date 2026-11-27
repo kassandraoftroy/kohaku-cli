@@ -25,6 +25,7 @@ type ExportPrivateKeyOpts = {
   rpcUrl?: string;
   nonInteractive?: boolean;
   dataDir?: string;
+  withoutTor?: boolean;
 };
 
 function parseIndex(raw: string): number | null {
@@ -44,6 +45,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
     .option("--address <address>", "Public account address or ENS/GNS/WNS name to export")
     .option("--index <index>", "Public account index to export")
     .option("--rpc-url <url>", `${cliOptions.rpcUrl} (required when --address is a name)`)
+    .option("--without-tor", "Disable Tor for name lookups")
     .option("--non-interactive", cliOptions.nonInteractiveCompact)
     .option("--dataDir <path>", cliOptions.dataDir)
     .action(async (opts: ExportPrivateKeyOpts) => {
@@ -117,7 +119,7 @@ export function registerExportPrivateKeyCommand(program: Command): void {
           const raw = opts.address!;
           let normalized: string;
           try {
-            normalized = await resolveAddressOrName(raw, resolveRpcUrl(opts.rpcUrl));
+            normalized = await resolveAddressOrName(raw, resolveRpcUrl(opts.rpcUrl), { withoutTor: opts.withoutTor });
           } catch (e) {
             cliErrorFromCaught(e);
             return;

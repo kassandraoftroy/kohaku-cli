@@ -22,10 +22,13 @@
  * logged as `post-body` lines, truncated to 4KB.
  * Optional `KOHAKU_TOR_CDN_TIMEOUT_MS` (default 45000) caps large Tor GETs.
  *
- * Ethereum RPC stays clearnet: viem http transport uses fetch (not Tor by default). Hosts
- * from `rpcUrl` are also allowlisted so ox / eth-prices fetch-to-RPC stays off Tor.
+ * Read RPC stays clearnet. Hosts from `rpcUrl` are allowlisted so ox / eth-prices
+ * fetch-to-RPC stays off Tor. Name lookups use kohakuPrivateFetch for both RPC
+ * and offchain callbacks. Signed transactions use it with a separate submission
+ * endpoint. Both bypass the read RPC's hostname exemption.
  */
 import { existsSync, rmSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import http from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -85,6 +88,9 @@ type ActiveTorSession = {
 let activeSession: ActiveTorSession | null = null;
 let clearnetFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 let fetchPatched = false;
+// Explicit opt-outs must also reach private submission transports nested below
+// the command, even when those transports establish their own Tor scope.
+const torMode = new AsyncLocalStorage<boolean>();
 
 function torDebug(...args: unknown[]): void {
   if (process.env.KOHAKU_TOR_DEBUG?.trim()) {
@@ -260,9 +266,10 @@ async function loggedFetch(
     via: "tor" | "clearnet";
     clearnetReason?: TrafficClearnetReason;
     url: string;
-    category?: "pimlico";
+    category?: TrafficCategory;
     requestBytes?: number;
     rpcMethod?: string;
+    sensitive?: boolean;
   },
   doFetch: () => Promise<Response>
 ): Promise<Response> {
@@ -280,7 +287,7 @@ async function loggedFetch(
     if (cl && /^\d+$/.test(cl)) responseBytes = Number(cl);
     const res = fetched;
     appendNetworkTraffic({
-      kind: meta.category === "pimlico" ? "pimlico" : "http",
+      kind: meta.category === "pimlico" ? "pimlico" : meta.category === "rpc" ? "rpc" : "http",
       method: method.toUpperCase(),
       url: meta.url,
       via: meta.via,
@@ -296,7 +303,7 @@ async function loggedFetch(
     return res;
   } catch (err) {
     appendNetworkTraffic({
-      kind: meta.category === "pimlico" ? "pimlico" : "http",
+      kind: meta.category === "pimlico" ? "pimlico" : meta.category === "rpc" ? "rpc" : "http",
       method: method.toUpperCase(),
       url: meta.url,
       via: meta.via,
@@ -306,7 +313,7 @@ async function loggedFetch(
       durationMs: Date.now() - started,
       requestBytes: meta.requestBytes,
       rpcMethod: meta.rpcMethod,
-      error: err instanceof Error ? err.message : String(err),
+      error: meta.sensitive ? "Private network request failed" : err instanceof Error ? err.message : String(err),
     });
     throw err;
   }
@@ -488,6 +495,39 @@ export async function kohakuFetch(input: RequestInfo | URL, init?: RequestInit):
   } finally {
     finish?.();
   }
+}
+
+/**
+ * Privacy-sensitive HTTP, including signed transaction submission, must not
+ * inherit the read RPC's clearnet hostname exemption. Bootstrap Tor if needed;
+ * an explicit --without-tor scope or environment opt-out is the only fallback.
+ * Never print the request body: it can contain a signed transaction.
+ */
+export async function kohakuPrivateFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const run = async () => {
+    const url = resolveRequestUrl(input);
+    const method = resolveRequestMethod(input, init);
+    const body = method === "POST" ? await requestBodyBytesForCache(input, init) : undefined;
+    const rpcMethod = body ? peekJsonRpcMethod(body) : undefined;
+    if (torMode.getStore() === false || envDisablesTor()) {
+      return loggedFetch(input, init, { via: "clearnet", clearnetReason: "tor-disabled", url,
+        requestBytes: body?.length, rpcMethod, category: rpcMethod ? "rpc" : undefined, sensitive: true },
+      () => clearnetFetch(input, init));
+    }
+    if (!activeSession) throw new Error("A Tor session is required for private network requests.");
+    const torInit = await toTorInit(input, init);
+    return loggedFetch(input, init, { via: "tor", url, requestBytes: body?.length, rpcMethod,
+      category: rpcMethod ? "rpc" : undefined, sensitive: true },
+    async () => withRequestUrl(await activeSession!.client.fetch(url, torInit), url));
+  };
+  if (activeSession || torMode.getStore() === false || envDisablesTor()) return run();
+  return withTor(true, {}, run);
+}
+
+/** Preserve explicit Tor opt-outs when a worker invokes a host callback. */
+export function capturePrivateFetch(): typeof fetch {
+  const run = AsyncLocalStorage.snapshot();
+  return (input, init) => run(kohakuPrivateFetch, input, init);
 }
 
 async function kohakuFetchInner(
@@ -802,7 +842,8 @@ export async function withTor<T>(
   opts: WithTorOptions,
   fn: () => Promise<T>
 ): Promise<T> {
-  const run = () => withTorInner(enabled, opts, fn);
+  const useTor = enabled && !envDisablesTor() && torMode.getStore() !== false;
+  const run = () => torMode.run(useTor, () => withTorInner(useTor, opts, fn));
   if (opts.walletDir) {
     return runWithWalletTrafficLog(opts.walletDir, run);
   }

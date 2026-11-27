@@ -23,7 +23,7 @@ export const cliOptions = {
   nonInteractiveListWallets:
     "Agent mode: print JSON instead of human-readable output (no prompts)",
   withoutTor:
-    "Disable Tor for non-RPC HTTP (default: Tor on). RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
+    "Disable Tor for name lookups, offchain HTTP and transaction submission (default: Tor on). Other read RPC stays clearnet. Or set KOHAKU_WITHOUT_TOR=1",
   withoutTorSyncCacheFetch:
     "Download snapshot chunks over clearnet (default: Tor). Much faster, and reveals only that this IP fetched public Railgun/Tornado pool data. Or set KOHAKU_WITHOUT_TOR=1",
   stealthStartBlock:

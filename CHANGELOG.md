@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-26
+
+### Added
+
+- `unshield --protocol tornado --exit-mode relayer` offers an explicit traditional TORN relayer exit for one original-pool note. It displays the proof-bound fee and recipient net, submits over Tor, and confirms the exact pool withdrawal against a successful receipt before reporting completion. It rejects extended denominations, multi-note exits, tail calls, private transfers, and `--amount-max`. Paymaster remains the default; uncertain submissions never automatically switch routes.
+- Separate plain-transaction submission endpoints: PublicNode for Ethereum mainnet and Sepolia, overridden by `KOHAKU_SUBMIT_RPC_URL`. Signed transactions are sent once over Tor after checking the endpoint's chain. An uncertain response retains the deterministic transaction hash for reconciliation.
+
+### Fixed
+
+- Apply classic relayer selection locally in the CLI: use the mainnet 0.33–0.53% quadratic fee weights (0.01–0.30% on other chains), draw randomly by stake and fee instead of choosing the cheapest quote, and require a freshly checked minimum stake of 500 TORN. Cheaper-than-minimum fees retain full stake weight. Quote the network fee using `(base fee + max(priority fee, 3 gwei)) × 550,000`. Native SDK proof preparation, token-price validation, and the total-fee cap remain in place; upstream packages are unchanged.
+- Route all name lookups through Tor, including resolver RPC calls, ENS offchain gateways, name-management queries, uncached profiles, stealth resolution, standalone `export-private-key` name resolution, and Tornado relayer ENS discovery inside the SDK worker. These routes bypass the configured read RPC's clearnet hostname exemption and fail closed on Tor errors. Preserve `--without-tor` / `KOHAKU_WITHOUT_TOR=1` opt-outs across worker callbacks; ordinary chain reads remain on the existing route.
+- Plain EOA transactions no longer send signed bytes to the configured read RPC. Nonce/gas queries, simulations, and receipt reads retain the configured read RPC; the separate submit route bypasses its clearnet hostname exemption. CLI version is `0.1.11`; private-protocol dependencies remain pinned to their existing versions.
+
 ## [0.1.10] - 2026-11-24
 
 ### Changed

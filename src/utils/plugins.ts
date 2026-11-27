@@ -49,6 +49,7 @@ import type { PluginId } from "../host/storage";
 import { freshShieldNoteNonces } from "./shield-note-nonces.js";
 import { tornadoNoteSelection } from "./tornado-note-selection.js";
 import { tornadoSignatureNonceStorage } from "./tornado-signature-nonces.js";
+import { createClassicRelayerPolicy } from "./tornado-classic-relayer-policy.js";
 
 const OXBOW_ASP_URL_SEPOLIA = "https://dw.0xbow.io";
 const OXBOW_ASP_URL_MAINNET = "https://api.0xbow.io";
@@ -774,6 +775,8 @@ export async function createProtocolPlugin(
       );
     }
     const paymasterConfig = tornadoPaymasterConfig(chainId);
+    const relayerPolicy = createClassicRelayerPolicy(host, chainId);
+    host = relayerPolicy.host;
     const plugin = createTCPlugin(host, {
       accountIndex: 0,
       protocolConfig: tornadoShieldPools ? {
@@ -784,9 +787,16 @@ export async function createProtocolPlugin(
       useExtendedEthPools: !excludeNewPools,
       minExternalSyncBlocksAmount: TORNADO_MIN_EXTERNAL_SYNC_BLOCKS,
       artifactsLoader: makeTornadoArtifactsLoader(),
+      relayerConfig: relayerPolicy.relayerConfig,
+      relayerClientFactory: relayerPolicy.relayerClientFactory,
       secretManagerFactory: (params) => tornadoSchemeSecretManager(scheme, params),
       ...(paymasterConfig ? { paymasterConfig: paymasterConfig as never } : {}),
     }) as AnyPlugin;
+    const prepareUnshield = plugin.prepareUnshield!.bind(plugin);
+    plugin.prepareUnshield = (asset, recipient, ...args) => relayerPolicy.prepare(
+      asset, args[0] as { mode?: string; preferredRelayersEns?: string[] } | undefined,
+      () => prepareUnshield(asset, recipient, ...args),
+    );
     const sources = tornadoFullSources.get(host.keystore) ?? new Map<bigint, ShieldNonceSource>();
     tornadoFullSources.set(host.keystore, sources);
     if (scheme === "signature" && !tornadoShieldPools && !excludeNewPools) sources.set(chainId, plugin as ShieldNonceSource);

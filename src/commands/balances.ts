@@ -1,4 +1,3 @@
-import { createEthereumNames } from "@1001-digital/ethereum-names";
 import {
   resolveStealthMetaAddress,
 } from "eth-stealth-address-resolver";
@@ -44,6 +43,8 @@ import {
   resolveWalletPassword,
 } from "../utils/wallets-util";
 import { readSeedKeystore } from "../utils/mnemonic";
+import { createNameResolutionClients } from "../utils/resolve-name.js";
+import { withTor } from "../utils/tor.js";
 
 type BalancesOpts = {
   wallet?: string;
@@ -107,7 +108,7 @@ function walletProfileFromCached(p: StealthWalletProfile): WalletProfile {
  * Profile header for balances: prefer stealth-accounts `profile` cache;
  * otherwise onchain reverse (GNS→ENS→WNS) + stealth meta via resolver.
  */
-async function resolveWalletProfile(opts: {
+export async function resolveWalletProfile(opts: {
   rpcUrl: string;
   chainId: bigint;
   walletDir: string;
@@ -115,6 +116,7 @@ async function resolveWalletProfile(opts: {
   password: string;
   resyncProfile: boolean;
   profileIndexFlag?: string;
+  withoutTor?: boolean;
 }): Promise<WalletProfile> {
   const stealthStorage = makeStealthAccountsStorage(
     opts.walletDir,
@@ -161,53 +163,41 @@ async function resolveWalletProfile(opts: {
     return empty();
   }
 
-  const reversePriority = ["gns", "ens", "wns"] as const;
-  let reverseName = "";
-  try {
-    const names = createEthereumNames({
-      rpcUrl: opts.rpcUrl,
-      reversePriority: [...reversePriority],
-    });
-    reverseName = (await names.reverse(account))?.trim() ?? "";
-  } catch {
-    reverseName = "";
-  }
+  return withTor(
+    !opts.withoutTor,
+    { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
+    async () => {
+      const reversePriority = ["gns", "ens", "wns"] as const;
+      const { client, names } = createNameResolutionClients(opts.rpcUrl, [...reversePriority]);
+      let reverseName = "";
+      try {
+        reverseName = (await names.reverse(account))?.trim() ?? "";
+      } catch {
+        reverseName = "";
+      }
 
-  try {
-    if (reverseName) {
-      const resolved = await resolveStealthMetaAddress({
-        input: reverseName,
-        rpcUrl: opts.rpcUrl,
-        chainId: opts.chainId,
-        reversePriority: [...reversePriority],
-      });
-      const profile: StealthWalletProfile = {
-        name: reverseName,
-        index,
-        address: account,
-        stealthMetaAddressURI: resolved.uri,
-      };
-      stealthStorage.setProfile(profile);
-      return walletProfileFromCached(profile);
+      try {
+        const resolved = await resolveStealthMetaAddress({
+          input: reverseName || account,
+          rpcUrl: opts.rpcUrl,
+          chainId: opts.chainId,
+          reversePriority: [...reversePriority],
+          client,
+          names,
+        });
+        const profile: StealthWalletProfile = {
+          name: reverseName || account,
+          index,
+          address: account,
+          stealthMetaAddressURI: resolved.uri,
+        };
+        stealthStorage.setProfile(profile);
+        return walletProfileFromCached(profile);
+      } catch {
+        return empty();
+      }
     }
-
-    const resolved = await resolveStealthMetaAddress({
-      input: account,
-      rpcUrl: opts.rpcUrl,
-      chainId: opts.chainId,
-      reversePriority: [...reversePriority],
-    });
-    const profile: StealthWalletProfile = {
-      name: account,
-      index,
-      address: account,
-      stealthMetaAddressURI: resolved.uri,
-    };
-    stealthStorage.setProfile(profile);
-    return walletProfileFromCached(profile);
-  } catch {
-    return empty();
-  }
+  );
 }
 
 function parseTokensList(raw: string | undefined): `0x${string}`[] {
@@ -680,6 +670,7 @@ export function registerBalancesCommand(program: Command): void {
               password,
               resyncProfile: !!opts.resyncProfile,
               profileIndexFlag: opts.profileIndex,
+              withoutTor: opts.withoutTor,
             });
 
             const privateNotesOut = snap.privateNotes;

@@ -11,7 +11,7 @@ import {
   DEFAULT_DATA_DIR,
   disposePublicClient,
   getRpcChainIdMatchingWallet,
-  makePublicClient,
+  makePrivatePublicClient,
   resolveRpcUrl,
   type KohakuPublicClient,
 } from "../../utils/rpc.js";
@@ -105,29 +105,31 @@ export async function withNameCommandContext(
   }
 
   const broadcast = !!opts.broadcast;
-  const client = await makePublicClient(rpcUrl);
   try {
     await withTor(!opts.withoutTor, { rpcUrl, walletDir }, async () => {
-      await run({
-        walletName,
-        walletDir,
-        password,
-        mnemonic,
-        rpcUrl,
-        chainId,
-        client,
-        nonInteractive: !!opts.nonInteractive,
-        broadcast,
-        dryRun: !broadcast,
-        ownerPriv: !!opts.ownerPriv,
-        dataDir,
-        withoutTor: !!opts.withoutTor,
-      });
+      const client = await makePrivatePublicClient(rpcUrl);
+      try {
+        await run({
+          walletName,
+          walletDir,
+          password,
+          mnemonic,
+          rpcUrl,
+          chainId,
+          client,
+          nonInteractive: !!opts.nonInteractive,
+          broadcast,
+          dryRun: !broadcast,
+          ownerPriv: !!opts.ownerPriv,
+          dataDir,
+          withoutTor: !!opts.withoutTor,
+        });
+      } finally {
+        disposePublicClient(client);
+      }
     });
   } catch (e) {
     cliErrorFromCaught(e);
-  } finally {
-    disposePublicClient(client);
   }
 }
 

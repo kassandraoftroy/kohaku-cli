@@ -12,10 +12,23 @@
  * transaction.
  */
 
-import { getAddress, isAddress } from "viem";
+import { createPublicClient, getAddress, http, isAddress } from "viem";
+import { mainnet } from "viem/chains";
 import { createEthereumNames } from "@1001-digital/ethereum-names";
+import { privateCcipRequest } from "./private-ccip-read.js";
+import { kohakuPrivateFetch, withTor } from "./tor.js";
 
 const SUPPORTED_TLDS = [".eth", ".gwei", ".wei"] as const;
+
+/** Both resolver RPC calls and offchain callbacks must use Tor unless opted out. */
+export function createNameResolutionClients(rpcUrl: string, reversePriority?: Array<"ens" | "gns" | "wns">) {
+  const client = createPublicClient({
+    chain: mainnet,
+    transport: http(rpcUrl, { fetchFn: kohakuPrivateFetch, retryCount: 0 }),
+    ccipRead: { request: privateCcipRequest },
+  });
+  return { client, names: createEthereumNames({ client, ...(reversePriority ? { reversePriority } : {}) }) };
+}
 
 function hasNameTld(value: string): boolean {
   const lower = value.toLowerCase();
@@ -38,7 +51,8 @@ function hasNameTld(value: string): boolean {
  */
 export async function resolveAddressOrName(
   input: string,
-  rpcUrl?: string
+  rpcUrl?: string,
+  network?: { withoutTor?: boolean },
 ): Promise<`0x${string}`> {
   const trimmed = input.trim();
 
@@ -61,8 +75,10 @@ export async function resolveAddressOrName(
     );
   }
 
-  const names = createEthereumNames({ rpcUrl });
-  const resolved = await names.resolve(trimmed);
+  const resolve = async () => createNameResolutionClients(rpcUrl).names.resolve(trimmed);
+  // Keep RPC, gateway and callback requests in one session even for standalone
+  // callers. An outer explicit opt-out is inherited by withTor.
+  const resolved = await withTor(!network?.withoutTor, { rpcUrl }, resolve);
 
   if (!resolved) {
     throw new Error(

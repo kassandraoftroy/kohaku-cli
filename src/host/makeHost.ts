@@ -10,6 +10,7 @@ import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 import { kohakuFetch } from "../utils/tor";
 import { setRailgunHostContext } from "./railgun-host-context";
 import type { KohakuPublicClient } from "../utils/rpc.js";
+import { registerPrivateEnsRpc } from "./private-ens-rpc.js";
 
 export type MakeHostOptions = {
   rpc: KohakuPublicClient;
@@ -54,6 +55,7 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
     withTransactionCount(kohakuViemProvider(rpc)),
     { syncToHead: true }
   );
+  registerPrivateEnsRpc(provider, options.rpcUrl);
 
   const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const keystore =

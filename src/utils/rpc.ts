@@ -11,7 +11,8 @@ import {
 import { mainnet, sepolia } from "viem/chains";
 
 import { appendNetworkTraffic, redactUrl } from "./network-traffic-log.js";
-import { resolvePimlicoBundlerUrl } from "./tor.js";
+import { kohakuPrivateFetch, resolvePimlicoBundlerUrl } from "./tor.js";
+import { privateCcipRequest } from "./private-ccip-read.js";
 import { expectedChainIdStringFromWalletDir } from "./wallets-util";
 
 export type KohakuPublicClient = PublicClient<Transport, Chain>;
@@ -42,8 +43,8 @@ function chainForId(chainId: bigint, rpcUrl: string): Chain {
   });
 }
 
-async function detectChainId(rpcUrl: string): Promise<bigint> {
-  const res = await fetch(rpcUrl, {
+async function detectChainId(rpcUrl: string, fetchFn: typeof fetch = fetch): Promise<bigint> {
+  const res = await fetchFn(rpcUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
@@ -131,9 +132,18 @@ function wrapFetchWithTrafficLog(rpcUrl: string): typeof fetch {
 
 /** Create a viem public client for the given RPC URL (chain detected on first use). */
 export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClient> {
+  return makeRpcClient(rpcUrl, false);
+}
+
+/** Name-management reads and simulations cannot inherit the read-RPC exemption. */
+export async function makePrivatePublicClient(rpcUrl: string): Promise<KohakuPublicClient> {
+  return makeRpcClient(rpcUrl, true);
+}
+
+async function makeRpcClient(rpcUrl: string, privateNetwork: boolean): Promise<KohakuPublicClient> {
   let chainId: bigint;
   try {
-    chainId = await detectChainId(rpcUrl);
+    chainId = await detectChainId(rpcUrl, privateNetwork ? kohakuPrivateFetch : fetch);
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     throw new Error(
@@ -146,11 +156,13 @@ export async function makePublicClient(rpcUrl: string): Promise<KohakuPublicClie
   return createPublicClient({
     chain,
     transport: http(rpcUrl, {
-      fetchFn: wrapFetchWithTrafficLog(rpcUrl),
+      fetchFn: privateNetwork ? kohakuPrivateFetch : wrapFetchWithTrafficLog(rpcUrl),
+      ...(privateNetwork ? { retryCount: 0 } : {}),
       timeout: RPC_HTTP_TIMEOUT_MS,
       // Coalesce concurrent JSON-RPC calls into one HTTP POST (any compliant node).
       batch: { batchSize: 100, wait: 10 },
     }),
+    ...(privateNetwork ? { ccipRead: { request: privateCcipRequest } } : {}),
   });
 }
 
